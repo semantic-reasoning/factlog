@@ -54,21 +54,116 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+_TEMPLATES: dict[str, str] = {
+    "policy/prompts/text_to_fact.md": """\
+# Text-to-Fact Extraction Prompt
+
+You are a fact extraction assistant. Given the source text below, extract
+atomic, verifiable facts in the form (subject, relation, object).
+
+## Source text
+
+{source_text}
+
+## Output format
+
+Return one fact per line as CSV with columns:
+subject,relation,object,source,status,confidence,note
+""",
+    "policy/prompts/text_to_datalog.md": """\
+# Text-to-Datalog Query Prompt
+
+Given the following schema context and natural-language question, produce a
+valid Datalog query that answers the question.
+
+## Schema context
+
+{{SCHEMA_CONTEXT}}
+
+## Question
+
+{{QUESTION}}
+
+## Output
+
+Return only the Datalog query, no explanation.
+""",
+    "policy/prompts/self_correct.md": """\
+# Self-Correction Prompt
+
+The Datalog query below produced errors. Fix the query so it is valid.
+
+## Schema context
+
+{{SCHEMA_CONTEXT}}
+
+## Logic report
+
+{{LOGIC_REPORT}}
+
+## Draft query
+
+{{DRAFT_QUERY}}
+
+## Output
+
+Return only the corrected Datalog query, no explanation.
+""",
+    "policy/prompts/natural_language_to_policy.md": """\
+# Natural Language to Policy Prompt
+
+Convert the following natural-language policy description into Datalog rules.
+
+## Policy text
+
+{{POLICY_TEXT}}
+
+## Output
+
+Return only valid Datalog rules, one per line, no explanation.
+""",
+    "policy/questions.md": """\
+# Research questions
+
+- [q1] What are the key facts to extract from this knowledge base?
+""",
+    "policy/logic-policy.md": """\
+# Logic policy
+
+This file describes the Datalog rules used to reason over the knowledge base.
+
+## Rules
+
+Add your policy rules here. Each rule should be documented with a brief
+explanation of its purpose.
+""",
+}
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     from pathlib import Path
 
     target = Path(args.target).expanduser().resolve()
-    dirs = ["sources", "pages", "facts", "decisions", "policy", "runs",
-            "policy/prompts"]
-    created: list[str] = []
+    dirs = ["sources", "pages", "facts", "decisions", "policy", "policy/prompts", "runs"]
+    created_dirs: list[str] = []
     for dirname in dirs:
         d = target / dirname
         if not d.exists():
             d.mkdir(parents=True, exist_ok=True)
-            created.append(dirname + "/")
-    if created:
+            created_dirs.append(dirname + "/")
+
+    created_files: list[str] = []
+    for rel_path, content in _TEMPLATES.items():
+        dest = target / rel_path
+        if not dest.exists():
+            dest.write_text(content, encoding="utf-8")
+            created_files.append(rel_path)
+
+    if created_dirs or created_files:
         print(f"factlog init: created {target}")
-        for name in created:
+        for name in created_dirs:
+            print(f"  {name}")
+        for name in created_files:
             print(f"  {name}")
     else:
         print(f"factlog init: {target} already exists, nothing to do")
