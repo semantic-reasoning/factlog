@@ -8,5 +8,5 @@ The deterministic scripts the skill calls live here (migrated in plan T1):
 - `merge_candidates.py` — merge/dedup/stale-detect candidate facts into `facts/candidates.csv`
 - `review_candidates.py`, `validate.py`, `resolve_stale_refs.py`, `common.py`
 
-The skill invokes these via `${CLAUDE_SKILL_DIR}/tools/<script>.py`. They are the
+The skill invokes these via `${CLAUDE_PLUGIN_ROOT}/tools/<script>.py`. They are the
 verifiable anchor — never replaced by model judgment.

@@ -19,11 +19,15 @@ allowed-tools: Bash(python3 *) Read Edit Write Grep Glob
 CLI. The CLI returns the verifiable report. Anything you produce is a *candidate*
 until the engine and a human confirm it.
 
+Bundled scripts live under `${CLAUDE_PLUGIN_ROOT}/tools/`; criteria documents under
+`${CLAUDE_PLUGIN_ROOT}/skills/factlog/references/`. The deterministic gate is also
+backed by a plugin hook (`hooks/hooks.json`).
+
 ## Deterministic gate (do not skip)
 
 1. Treat every fact/query you generate as `candidate`/draft — never promote it to
    engine input yourself.
-2. Always run `python3 ${CLAUDE_SKILL_DIR}/tools/run_logic_check.py` and show the
+2. Always run `python3 ${CLAUDE_PLUGIN_ROOT}/tools/run_logic_check.py` and show the
    resulting `facts/logic_report.txt` **verbatim** before stating any conclusion.
 3. If the report shows `errors > 0`, return to the human instead of concluding.
    Surface `Policy Findings`, `warnings`, and `review_required` under a separate
@@ -42,7 +46,7 @@ until the engine and a human confirm it.
 
 See bundled references (authored in T4):
 
-- `references/text-to-fact.md`
-- `references/text-to-datalog.md`
-- `references/natural-language-to-policy.md`
-- `references/self-correct.md`
+- `${CLAUDE_PLUGIN_ROOT}/skills/factlog/references/text-to-fact.md`
+- `${CLAUDE_PLUGIN_ROOT}/skills/factlog/references/text-to-datalog.md`
+- `${CLAUDE_PLUGIN_ROOT}/skills/factlog/references/natural-language-to-policy.md`
+- `${CLAUDE_PLUGIN_ROOT}/skills/factlog/references/self-correct.md`

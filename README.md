@@ -37,17 +37,23 @@ review_required  →  Claude repairs (gated)  →  decisions/correction_trace.md
 
 ## Install
 
+factlog is a **Claude Code plugin**. Install it from this repo's marketplace:
+
+```
+/plugin marketplace add semantic-reasoning/factlog
+/plugin install factlog@semantic-reasoning
+```
+
+Then install the engine's one Python dependency and verify the environment:
+
 ```bash
-git clone https://github.com/semantic-reasoning/factlog
-cd factlog
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-python3 -m factlog install --target ~/wiki      # installs the skill + bundled engine into a target KB
+pip install -r requirements.txt    # pyrewire>=1.0.1,<2.0
+python3 -m factlog doctor          # checks Python 3.10+ and pyrewire
 ```
 
 ## Usage
 
-In a Claude Code session inside your knowledge base:
+In a Claude Code session inside your knowledge base (the plugin is active in every session):
 
 ```
 /factlog sync      # read sources/, extract candidate facts, update pages & decisions

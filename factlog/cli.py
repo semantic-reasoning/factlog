@@ -1,9 +1,11 @@
-"""factlog command-line entry point.
+"""factlog command-line helper.
 
-Currently a scaffold. The `install` command (copy the skill + bundled engine
-into a target knowledge base) is implemented in a later milestone; see
-the delivery plan (T2). For now it reports its own status so
-`python3 -m factlog` is runnable end-to-end.
+The skill itself is installed as a Claude Code **plugin** (see README), so this
+CLI does not install the skill. It provides environment and knowledge-base
+helpers for the deterministic engine:
+
+- `doctor`  — verify Python and pyrewire meet factlog's requirements.
+- `init`    — scaffold an empty knowledge base layout (stub; see plan).
 """
 
 from __future__ import annotations
@@ -13,26 +15,65 @@ import sys
 
 from factlog import __version__
 
+MIN_PYTHON = (3, 10)
+MIN_PYREWIRE = (1, 0, 1)
 
-def cmd_install(args: argparse.Namespace) -> int:
+
+def _version_tuple(value: str) -> tuple[int, ...]:
+    import re
+
+    return tuple(int(part) for part in re.findall(r"\d+", value)[:3])
+
+
+def cmd_doctor(_args: argparse.Namespace) -> int:
+    ok = True
+
+    if sys.version_info[:2] >= MIN_PYTHON:
+        print(f"OK  Python {sys.version_info.major}.{sys.version_info.minor}")
+    else:
+        ok = False
+        print(f"FAIL Python {sys.version_info.major}.{sys.version_info.minor} < 3.10", file=sys.stderr)
+
+    try:
+        import pyrewire  # type: ignore
+
+        current = _version_tuple(str(getattr(pyrewire, "__version__", "0")))
+        if current >= MIN_PYREWIRE:
+            print(f"OK  pyrewire {getattr(pyrewire, '__version__', '?')}")
+        else:
+            ok = False
+            print(
+                f"FAIL pyrewire {getattr(pyrewire, '__version__', '?')} < 1.0.1 "
+                "(pip install -r requirements.txt)",
+                file=sys.stderr,
+            )
+    except ImportError:
+        ok = False
+        print("FAIL pyrewire not installed (pip install -r requirements.txt)", file=sys.stderr)
+
+    return 0 if ok else 1
+
+
+def cmd_init(args: argparse.Namespace) -> int:
     print(
-        "factlog install is not implemented yet (scaffold).\n"
-        f"  target: {args.target}\n"
-        "Next milestone wires this to copy skills/factlog/ into "
-        "<target>/.claude/skills/factlog/ and bundle the deterministic engine.",
+        f"factlog init is not implemented yet (scaffold). target: {args.target}\n"
+        "Will create sources/, pages/, facts/, decisions/, policy/ in an empty KB.",
         file=sys.stderr,
     )
     return 1
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="factlog", description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(prog="factlog", description="factlog environment and KB helpers")
     parser.add_argument("--version", action="version", version=f"factlog {__version__}")
     sub = parser.add_subparsers(dest="command")
 
-    install = sub.add_parser("install", help="install the factlog skill into a target knowledge base")
-    install.add_argument("--target", default="~/wiki", help="knowledge base root to install into")
-    install.set_defaults(func=cmd_install)
+    doctor = sub.add_parser("doctor", help="verify Python and pyrewire requirements")
+    doctor.set_defaults(func=cmd_doctor)
+
+    init = sub.add_parser("init", help="scaffold an empty knowledge base layout")
+    init.add_argument("--target", default="~/wiki", help="knowledge base root to create")
+    init.set_defaults(func=cmd_init)
 
     return parser
 
