@@ -1,0 +1,10 @@
+// generated from facts/candidates.csv
+// only confirmed/accepted facts become engine input
+
+relation("Claude Code", "developed_by", "Anthropic").
+relation("Claude Code", "is_a", "command-line tool").
+relation("Claude Code", "uses", "Claude model family").
+relation("factlog", "is_a", "Claude Code plugin").
+relation("factlog", "performs", "fact extraction").
+relation("factlog", "performs", "logic checking").
+relation("Claude Code", "supports", "plugin system").
