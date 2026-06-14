@@ -36,6 +36,18 @@ backed by a plugin hook (`hooks/hooks.json`).
    schema and engine re-validation; otherwise keep the original and log the attempt
    to `decisions/correction_trace.md`.
 
+## Canonical source value for fact extraction
+
+When writing extracted fact rows to `$FACTLOG_ROOT/runs/*.json`, the `source`
+field MUST be a path relative to the KB root, prefixed with `sources/`.
+
+Examples:
+- `"sources/my-doc.md"`
+- `"sources/subdir/notes.md#section-heading"`
+
+Bare filenames (e.g. `"my-doc.md"`) are NOT valid and will be silently dropped
+by `merge_candidates.py`.  Always include the `sources/` prefix.
+
 ## Commands (to be implemented)
 
 - `/factlog sync` — read `sources/`, extract candidate facts, update `pages/` and `decisions/`.

@@ -55,12 +55,24 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
 
 
 def cmd_init(args: argparse.Namespace) -> int:
-    print(
-        f"factlog init is not implemented yet (scaffold). target: {args.target}\n"
-        "Will create sources/, pages/, facts/, decisions/, policy/ in an empty KB.",
-        file=sys.stderr,
-    )
-    return 1
+    from pathlib import Path
+
+    target = Path(args.target).expanduser().resolve()
+    dirs = ["sources", "pages", "facts", "decisions", "policy", "runs",
+            "policy/prompts"]
+    created: list[str] = []
+    for dirname in dirs:
+        d = target / dirname
+        if not d.exists():
+            d.mkdir(parents=True, exist_ok=True)
+            created.append(dirname + "/")
+    if created:
+        print(f"factlog init: created {target}")
+        for name in created:
+            print(f"  {name}")
+    else:
+        print(f"factlog init: {target} already exists, nothing to do")
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
