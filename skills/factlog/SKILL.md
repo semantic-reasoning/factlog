@@ -203,9 +203,16 @@ Runs the wirelog/pyrewire engine over `facts/accepted.dl`,
 evaluated; `review_required(...)` lines are surfaced for human follow-up.
 Writes and prints `facts/logic_report.txt`.
 
-**Precondition:** run `/factlog query` first so `facts/query.dl` exists. If it
-is absent, the engine simply evaluates no queries (the report still compiles
-accepted facts), but the AC3 contract artifact will be missing.
+**Precondition:** `/factlog query` is the documented predecessor of this step —
+the intended order is **sync → query → check → repair**. Run `/factlog query`
+first so `facts/query.dl` exists for the logic check to evaluate.
+
+An absent `facts/query.dl` is tolerated by the engine only as *graceful
+degradation*, not as a supported shortcut: the report still compiles accepted
+facts and prints `no facts/query.dl found` under "Query evaluation", but this
+means the question→query step (`/factlog query`) was skipped and the AC3
+contract artifact is missing. Do not treat the query step as optional — run it
+before `/factlog check`.
 
 ### Step 3 — Show the report verbatim
 

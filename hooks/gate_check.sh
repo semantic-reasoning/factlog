@@ -116,24 +116,19 @@ if [ ! -f "$report" ]; then
 fi
 
 # Find the most recently modified engine input file that exists.
+# python3 availability is already guaranteed by the fail-closed check at the
+# top of this script, so the mtime probes below call it unconditionally.
 newest_input_mtime=0
 for f in "$accepted" "$query"; do
   if [ -f "$f" ]; then
-    if command -v python3 &>/dev/null; then
-      mtime="$(python3 -c 'import os,sys; print(int(os.path.getmtime(sys.argv[1])))' "$f" 2>/dev/null || echo 0)"
-    else
-      mtime=0
-    fi
+    mtime="$(python3 -c 'import os,sys; print(int(os.path.getmtime(sys.argv[1])))' "$f" 2>/dev/null || echo 0)"
     if [ "$mtime" -gt "$newest_input_mtime" ]; then
       newest_input_mtime="$mtime"
     fi
   fi
 done
 
-report_mtime=0
-if command -v python3 &>/dev/null; then
-  report_mtime="$(python3 -c 'import os,sys; print(int(os.path.getmtime(sys.argv[1])))' "$report" 2>/dev/null || echo 0)"
-fi
+report_mtime="$(python3 -c 'import os,sys; print(int(os.path.getmtime(sys.argv[1])))' "$report" 2>/dev/null || echo 0)"
 
 if [ "$report_mtime" -lt "$newest_input_mtime" ]; then
   echo "[factlog GATE] DENIED: facts/logic_report.txt is stale." >&2
