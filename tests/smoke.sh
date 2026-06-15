@@ -181,6 +181,21 @@ assert_exit0 "run_logic_check.py (with query.dl)" \
 assert_grep '^- relation results: [1-9][0-9]* rows' \
   "$SMOKE_KB/facts/logic_report.txt" \
   "Query evaluation populated with a resolved (>=1 row) result"
+
+# Strengthen the count-shape check with the EXACT resolved row content for the
+# stand-in query we wrote above. The query resolves against the sample-kb-derived
+# accepted.dl to relation("Claude Code","developed_by","Anthropic"), which the
+# engine prints as the literal row "Claude Code, developed_by, Anthropic". A
+# non-empty BUT WRONG row (e.g. a future engine change that resolves to a
+# different triple) would still satisfy the count-shape regex above, so we
+# assert the literal content here to catch that. Use grep -F (fixed string) so
+# the row is matched verbatim, not as a regex.
+if grep -qF "Claude Code, developed_by, Anthropic" "$SMOKE_KB/facts/logic_report.txt"; then
+  ok "Query evaluation contains the exact resolved row 'Claude Code, developed_by, Anthropic'"
+else
+  fail_msg "Query evaluation is missing the exact resolved row 'Claude Code, developed_by, Anthropic' (engine returned a non-empty but wrong/unexpected row?)"
+fi
+
 if grep -qF "no facts/query.dl found" "$SMOKE_KB/facts/logic_report.txt"; then
   fail_msg "Query evaluation still shows the empty 'no facts/query.dl found' placeholder"
 else

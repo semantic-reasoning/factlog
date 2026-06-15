@@ -201,6 +201,47 @@ run_case "single-quote in KB root, report stale — deny (apostrophe regression)
 rm -rf "$TMPBASE"
 
 # ---------------------------------------------------------------------------
+# CASE 11: FAIL-CLOSED INVARIANT — python3 unavailable on a Write to an engine
+# input — DENY (exit 2), not allow.
+#
+# u16 removed the dead `command -v python3` guards that sat *below* the mtime
+# probes, justified by the assertion that a fail-closed `exit 2` near the TOP of
+# gate_check.sh guarantees python3 is present before any probe runs. This case
+# pins that invariant behaviorally: if python3 cannot be found, the gate must
+# DENY before it ever reaches a probe — so a future edit that reorders the
+# top-of-file fail-closed check below the probes is caught here.
+#
+# Hermetic simulation: we build a throwaway PATH directory containing symlinks
+# to ONLY the shell utilities gate_check.sh needs before its fail-closed check
+# (`cat`), deliberately omitting python3/python. `command -v python3` then fails
+# regardless of where the host python3 lives, so the test does not depend on the
+# host python3 location beyond resolving the few utilities we explicitly shim.
+# ---------------------------------------------------------------------------
+KB_NOPY="$(mktemp -d)"
+make_kb "$KB_NOPY"
+touch_file "$KB_NOPY/facts/accepted.dl"  # existing engine input (not bootstrap)
+
+# Build a minimal PATH dir with the non-python utilities the gate needs.
+SHIM_PATH="$(mktemp -d)"
+for util in cat bash; do
+  src="$(command -v "$util")"
+  ln -s "$src" "$SHIM_PATH/$util"
+done
+
+nopy_exit=0
+PATH="$SHIM_PATH" FACTLOG_ROOT="$KB_NOPY" \
+  "$SHIM_PATH/bash" "$GATE" <<< "$(printf '{"file_path":"%s"}' "$KB_NOPY/facts/accepted.dl")" \
+  >/dev/null 2>&1 || nopy_exit=$?
+if [ "$nopy_exit" -eq 2 ]; then
+  echo "PASS: python3 unavailable on engine-input write — fail-closed deny (exit $nopy_exit)"
+  pass=$((pass + 1))
+else
+  echo "FAIL: python3 unavailable — expected fail-closed exit 2, got $nopy_exit"
+  fail=$((fail + 1))
+fi
+rm -rf "$KB_NOPY" "$SHIM_PATH"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
