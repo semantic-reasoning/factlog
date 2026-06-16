@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# tests/test_entity_audit.sh — entity fragmentation / literal-leak audit (#51)
+#
+# Pins:
+#   - no candidates.csv -> "no candidate facts", exit 0 (informational)
+#   - entity list reports each entity with its fact count
+#   - a substring-contained entity pair is surfaced as a fragmentation candidate
+#   - an object that looks literal under an UNDECLARED relation is a literal
+#     suspect, with a suggestion to declare it
+#   - once that relation IS declared in attribute-relations.md, its object moves
+#     to "declared literals", drops out of entities, and is no longer a suspect
+#   - always exits 0
+#
+# Deterministic; no pyrewire.  Usage: bash tests/test_entity_audit.sh
+
+set -euo pipefail
+
+PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+export PYTHONPATH="$PLUGIN_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+PYTHON="${PYTHON:-python3}"
+AUDIT="$PLUGIN_ROOT/tools/entity_audit.py"
+
+pass=0
+fail=0
+ok() { echo "PASS: $*"; pass=$((pass + 1)); }
+bad() { echo "FAIL: $*" >&2; fail=$((fail + 1)); }
+
+KB="$(mktemp -d)/wiki"
+"$PYTHON" -m factlog init --target "$KB" >/dev/null
+run() { set +e; out="$("$PYTHON" "$AUDIT" --wiki "$KB" 2>&1)"; rc=$?; set -e; }
+
+# --- empty KB -----------------------------------------------------------------
+rm -f "$KB/facts/candidates.csv"
+run
+[ "$rc" -eq 0 ] && printf '%s' "$out" | grep -qF "no candidate facts" && ok "no candidates -> informational, exit 0" || bad "empty KB not handled (rc=$rc)"
+
+# --- populated KB -------------------------------------------------------------
+H="subject,relation,object,source,status,confidence,note"
+printf '%s\n%s\n%s\n%s\n' "$H" \
+  '갑봇,통합_대상,을서비스,sources/a.md,accepted,0.9,' \
+  '갑봇,통합_대상,병서비스,sources/a.md,accepted,0.9,' \
+  '을서비스,정식_운영,2030.1,sources/a.md,accepted,0.9,' > "$KB/facts/candidates.csv"
+printf 'x\n' > "$KB/sources/a.md"
+# add a substring-contained pair for fragmentation
+printf '%s\n' '플랫폼가,예시,플랫폼가,sources/a.md,accepted,0.9,' >> "$KB/facts/candidates.csv"
+
+run
+[ "$rc" -eq 0 ] && ok "populated audit exits 0" || bad "exit $rc"
+printf '%s' "$out" | grep -qE "\[ *2\] 갑봇" && ok "entity list reports fact count" || bad "entity fact count missing"
+printf '%s' "$out" | grep -qF "'플랫폼가' ⟷ '플랫폼가'" && ok "substring fragmentation candidate surfaced" || bad "fragmentation candidate missing"
+printf '%s' "$out" | grep -qF "relation '정식_운영' has literal-looking object(s): 2030.1" && ok "literal suspect under undeclared relation surfaced" || bad "literal suspect missing"
+
+# the motivating non-date literal forms (ordinal '제1호안', year '2026년', amount '100억')
+printf '%s\n%s\n%s\n' \
+  '갑봇,공약_순위,제1호안,sources/a.md,accepted,0.9,' \
+  '을서비스,운영_연도,2026년,sources/a.md,accepted,0.9,' \
+  '예산,규모,100억,sources/a.md,accepted,0.9,' >> "$KB/facts/candidates.csv"
+run
+for v in "제1호안" "2026년" "100억"; do
+  printf '%s' "$out" | grep -qE "literal-looking object\(s\):.*$v" && ok "literal form '$v' detected as suspect" || bad "literal form '$v' missed"
+done
+printf '%s' "$out" | grep -qF "consider adding '정식_운영' to policy/attribute-relations.md" && ok "suggests declaring the relation" || bad "declare suggestion missing"
+# undeclared literal still counts as an entity
+printf '%s' "$out" | grep -qF "2030.1  (accepted)" && ok "undeclared literal still listed as entity" || bad "literal not listed as entity"
+
+# --- declare the relation: literal moves out of entities ----------------------
+printf -- '- `정식_운영`\n' > "$KB/policy/attribute-relations.md"
+run
+printf '%s' "$out" | grep -qF "declared literals (attribute-relation objects, not entities):" && ok "declared-literals section appears" || bad "declared-literals section missing"
+# 2030.1 should now be under declared literals, not flagged as a suspect
+printf '%s' "$out" | grep -qF "relation '정식_운영' has literal-looking" && bad "declared relation still flagged as suspect" || ok "declared relation no longer a literal suspect"
+
+echo ""
+echo "========================================"
+echo "test_entity_audit: $pass passed, $fail failed"
+echo "========================================"
+[ "$fail" -eq 0 ]
