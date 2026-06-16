@@ -180,6 +180,17 @@ def single_valued_relations() -> set[str]:
     return names
 
 
+def corroboration_counts(facts: list[dict[str, str]]) -> dict[tuple[str, str, str], int]:
+    """Map each engine-input fact (subject, relation, object) to the number of
+    DISTINCT sources backing it. A fact corroborated by several independent
+    sources is more trustworthy — a signal a plain notes wiki cannot give."""
+    sources: dict[tuple[str, str, str], set[str]] = {}
+    for row in engine_facts(facts):
+        key = (row["subject"], row["relation"], row["object"])
+        sources.setdefault(key, set()).add(row["source"])
+    return {key: len(srcs) for key, srcs in sources.items()}
+
+
 def engine_facts(facts: list[dict[str, str]]) -> list[dict[str, str]]:
     return [row for row in facts if row["status"] in ENGINE_STATUSES]
 

@@ -202,6 +202,13 @@ rm -f "$KB/facts/candidates.csv"
 # no accepted entity mentioned -> no grounding block
 if printf '%s' "$(router wiki "completely unrelated xyzzy topic")" | grep -qF "grounding"; then bad "grounding shown without a mentioned entity"; else ok "no grounding block when no accepted entity is mentioned"; fi
 
+# --- #33: engine answers annotated with multi-source corroboration ---
+printf 'subject,relation,object,source,status,confidence,note\nAcme API,uses,FastAPI,sources/a.md,confirmed,0.9,\nAcme API,uses,FastAPI,sources/b.md,confirmed,0.9,\n' > "$KB/facts/candidates.csv"
+if router render 'relation("Acme API", "uses", V)?' | grep -qF "(sources: 2)"; then ok "engine answer annotated with corroboration count"; else bad "no corroboration annotation"; fi
+rm -f "$KB/facts/candidates.csv"
+# no candidates.csv -> no annotation, still renders
+if router render 'relation("Acme API", "uses", V)?' | grep -qF "VERIFIED — engine"; then ok "engine answer renders without candidates.csv (no annotation)"; else bad "engine render broke without candidates.csv"; fi
+
 # --- read-only invariant (engine inputs untouched by any subcommand) ---
 if [ -f "$KB/facts/query.dl" ]; then bad "ask_router wrote facts/query.dl (must be read-only)"; else ok "facts/query.dl never written"; fi
 if [ "$(cat "$KB/facts/accepted.dl")" = "$ACCEPTED_BEFORE" ]; then ok "facts/accepted.dl unchanged"; else bad "facts/accepted.dl was mutated"; fi
