@@ -17,7 +17,7 @@ import sys
 
 from factlog import __version__
 
-MIN_PYTHON = (3, 10)
+MIN_PYTHON = (3, 11)
 MIN_PYREWIRE = (1, 0, 1)
 
 
@@ -48,7 +48,7 @@ def _run_doctor_checks() -> bool:
         print(f"OK  Python {sys.version_info.major}.{sys.version_info.minor}")
     else:
         ok = False
-        print(f"FAIL Python {sys.version_info.major}.{sys.version_info.minor} < 3.10", file=sys.stderr)
+        print(f"FAIL Python {sys.version_info.major}.{sys.version_info.minor} < 3.11", file=sys.stderr)
 
     try:
         import pyrewire  # type: ignore

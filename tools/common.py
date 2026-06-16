@@ -316,9 +316,10 @@ def decode_wirelog_value(session: EasySession, value: object) -> object:
     internals change in a future major release.  The <2.0 upper bound in
     requirements.txt mirrors this constraint.
 
-    Python 3.10+ is required (see ``requires-python`` in pyproject.toml); the
-    ``tuple[...]`` return annotations and structural-pattern constructs elsewhere
-    in this file rely on the 3.10 type-union syntax.
+    Python 3.11+ is required (the engine dependency ``pyrewire`` needs 3.11+;
+    see ``requires-python`` in pyproject.toml).  The ``X | Y`` unions and
+    ``tuple[...]`` annotations used here need 3.10+, which the 3.11 floor
+    satisfies.
     """
     if isinstance(value, int) and session._intern.contains_id(value):
         return session._intern.lookup(value)

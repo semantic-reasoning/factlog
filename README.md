@@ -54,7 +54,7 @@ textutil -convert txt report.docx -output report.txt # macOS built-in
 
 ## Requirements
 
-- Python **3.10+**
+- Python **3.11+** (required by the engine dependency `pyrewire`)
 - **pyrewire 1.0.1+** (`pip install -r requirements.txt`)
 - Claude Code CLI
 
@@ -94,7 +94,7 @@ Once published to the Claude Code marketplace:
 
 ```bash
 pip install -r ~/git/semantic-reasoning/factlog/requirements.txt   # pyrewire>=1.0.1,<2.0
-python3 -m factlog doctor          # checks Python 3.10+ and pyrewire
+python3 -m factlog doctor          # checks Python 3.11+ and pyrewire
 python3 -m factlog init --target ~/wiki   # scaffold the KB layout
 ```
 

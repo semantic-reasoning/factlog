@@ -1,7 +1,7 @@
 # Bundled deterministic engine
 
 The deterministic scripts the skill calls live here (migrated in plan T1).
-**Python 3.10+ required** (see `requires-python` in `pyproject.toml`).
+**Python 3.11+ required** (the engine dependency `pyrewire` needs 3.11+; see `requires-python` in `pyproject.toml`).
 
 ## Scripts (8 files)
 
