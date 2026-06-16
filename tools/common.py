@@ -32,6 +32,10 @@ QUESTIONS_MD = POLICY_DIR / "questions.md"
 FACT_HEADER = ["subject", "relation", "object", "source", "status", "confidence", "note"]
 ENGINE_STATUSES = {"confirmed", "accepted"}
 REVIEW_STATUSES = {"needs_review", "candidate"}
+# A row a human (or a resolution step) has marked as replaced by a newer fact.
+# Superseded rows are retained in candidates.csv for audit but are NOT engine
+# input (they never reach accepted.dl) and are ignored by conflict detection.
+SUPERSEDED_STATUSES = {"superseded"}
 QUERY_PREDICATES = {"relation", "path", "conflict", "review_required"}
 RELATION_FACT_RE = re.compile(r"^relation\((.*)\)\.$")
 MIN_PYREWIRE_VERSION = (1, 0, 1)
@@ -149,6 +153,28 @@ def load_questions() -> list[dict[str, str]]:
     if not rows:
         sys.exit("policy/questions.md has no questions. Add lines such as '- [q1] Claude Code가 사용하는 것은 무엇인가?'")
     return rows
+
+
+def single_valued_relations() -> set[str]:
+    """Relation names declared single-valued (functional) in policy/single-valued.md.
+
+    Such a relation may hold at most one object per subject; two distinct objects
+    are a contradiction (see tools/check_conflicts.py). The file is optional —
+    one relation name per line (bullets and `backticks` allowed); '#' lines and
+    blanks are ignored. Absent file → no single-valued relations → no conflicts.
+    """
+    path = POLICY_DIR / "single-valued.md"
+    if not path.is_file():
+        return set()
+    names: set[str] = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        stripped = re.sub(r"^[-*]\s+", "", stripped).strip().strip("`").strip()
+        if stripped:
+            names.add(stripped)
+    return names
 
 
 def engine_facts(facts: list[dict[str, str]]) -> list[dict[str, str]]:
