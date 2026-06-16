@@ -36,7 +36,7 @@ REVIEW_STATUSES = {"needs_review", "candidate"}
 # Superseded rows are retained in candidates.csv for audit but are NOT engine
 # input (they never reach accepted.dl) and are ignored by conflict detection.
 SUPERSEDED_STATUSES = {"superseded"}
-QUERY_PREDICATES = {"relation", "path", "conflict", "review_required"}
+QUERY_PREDICATES = {"relation", "path", "count", "conflict", "review_required"}
 RELATION_FACT_RE = re.compile(r"^relation\((.*)\)\.$")
 MIN_PYREWIRE_VERSION = (1, 0, 1)
 

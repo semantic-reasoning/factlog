@@ -90,6 +90,11 @@ def validate_query(line: str, entities: set[str], policy_query_predicates: set[s
         if args[0].startswith('"') and args[0].endswith('"') and arg_value(args[0]) not in entities:
             warnings.append(f"query references non-engine entity: {arg_value(args[0])}")
         return errors, warnings
+    if predicate == "count":
+        # count(subject, relation)? — engine-verified aggregate (see evaluate_queries).
+        if len(query_args(line)) != 2:
+            errors.append(f"count query must have subject and relation arguments: {line}")
+        return errors, warnings
     for constant in quoted_constants(line):
         if constant and constant not in entities and constant not in {"S", "R", "O", "X", "Q"}:
             warnings.append(f"query references non-engine entity or relation: {constant}")
@@ -135,6 +140,23 @@ def evaluate_queries(facts: list[dict[str, str]], inferred: dict[str, set[tuple[
                 result_values.append(", ".join(bindings) if bindings else f"{subject}, {relation}, {object_}")
             suffix = "; " + "; ".join(result_values) if result_values else ""
             results.append(f"relation results: {len(rows)} rows{suffix}")
+        elif line.startswith("count"):
+            # count(subject, relation)? -> number of DISTINCT objects for that
+            # (subject, relation) over engine facts (0 is a verified answer).
+            # Same semantics as ask_router.evaluate's count branch.
+            args = query_args(line)
+            if len(args) == 2:
+                subj_q, rel_q = args
+                subj, rel = arg_value(subj_q), arg_value(rel_q)
+                subj_const = subj_q.startswith('"') and subj_q.endswith('"')
+                rel_const = rel_q.startswith('"') and rel_q.endswith('"')
+                objects = {
+                    f["object"]
+                    for f in facts
+                    if (not subj_const or f["subject"] == subj)
+                    and (not rel_const or f["relation"] == rel)
+                }
+                results.append(f"count results: {len(objects)} (distinct objects)")
         elif line.startswith("review_required"):
             constants = quoted_constants(line)
             question = constants[0] if constants else "(missing question)"
