@@ -159,6 +159,22 @@ This file describes the Datalog rules used to reason over the knowledge base.
 Add your policy rules here. Each rule should be documented with a brief
 explanation of its purpose.
 """,
+    "policy/attribute-relations.md": """\
+# Attribute (literal-valued) relations
+#
+# List relation names whose OBJECT is a literal value (a date, number, ordinal,
+# ...) rather than a first-class entity. One relation NAME per line; '#' comment
+# lines and '-' bullets are allowed; quote a name containing spaces in backticks.
+#
+# Objects of these relations are kept OUT of the entity set (so they do not show
+# up as entities, path nodes, or count subjects) but remain valid, verifiable
+# relation-query objects. Leave this file with no declarations if every object
+# is a first-class entity.
+#
+# Example (remove the leading '# ' to activate):
+# operates_since
+# ranked
+""",
     # Concept-page layout used by `/factlog sync` (tools/merge_candidates.py).
     # Edit this file to change how pages/<entity>.md is generated. Placeholders:
     #   {{ENTITY}} {{SOURCES}} {{RELATIONS}} {{REVIEW}}
