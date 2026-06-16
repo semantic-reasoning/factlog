@@ -86,6 +86,7 @@ from common import (  # noqa: E402
     FACT_HEADER,
     ENGINE_STATUSES,
     REVIEW_STATUSES,
+    SUPERSEDED_STATUSES,
     RUNS_DIR,
     ensure_dirs,
     normalize_confidence,
@@ -101,7 +102,7 @@ from common import (  # noqa: E402
 # ENGINE_STATUSES={confirmed, accepted} and REVIEW_STATUSES={needs_review,
 # candidate}.  We accept all four so that rows produced by either the old
 # llmwiki-ops worker or the new native Claude extraction are preserved.
-VALID_STATUSES: frozenset[str] = frozenset(ENGINE_STATUSES | REVIEW_STATUSES)
+VALID_STATUSES: frozenset[str] = frozenset(ENGINE_STATUSES | REVIEW_STATUSES | SUPERSEDED_STATUSES)
 
 # Marker written into auto-generated concept pages.
 # We use a factlog-specific marker ("generated-by-factlog") so that pages

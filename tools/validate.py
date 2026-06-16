@@ -14,7 +14,7 @@ from pathlib import Path
 
 
 FACT_HEADER = ["subject", "relation", "object", "source", "status", "confidence", "note"]
-VALID_STATUSES = {"confirmed", "accepted", "needs_review", "candidate"}
+VALID_STATUSES = {"confirmed", "accepted", "needs_review", "candidate", "superseded"}
 
 
 def read(path: Path) -> str:
