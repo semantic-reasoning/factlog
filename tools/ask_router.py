@@ -75,10 +75,10 @@ from common import (  # noqa: E402
     _is_variable,
     _query_args,
     classify_query,
-    corroboration_counts,
     dependency_graph,
     dependency_path,
     entity_set,
+    fact_signals,
     load_accepted_facts,
     load_facts,
     policy_predicates,
@@ -217,22 +217,25 @@ def evaluate(draft: str, facts: list[dict[str, str]]) -> dict[str, object]:
 def render_engine_answer(
     draft: str,
     rows: list[list[str]],
-    corrob: dict[tuple[str, str, str], int] | None = None,
+    signals: dict[tuple[str, str, str], dict[str, object]] | None = None,
 ) -> str:
     """Render the VERIFIED — engine answer block (positive or negative).
 
     The literal marker 'VERIFIED — engine' is the greppable verification token.
-    When *corrob* is given, a relation row is annotated with the number of
-    distinct sources backing it ('(sources: N)') — a multi-source trust signal.
+    When *signals* is given, a relation row is annotated with answer-quality
+    signals — '(sources: N, confidence: C)' and '[stale: source missing]' when a
+    backing source has vanished.
     """
     lines = ["VERIFIED — engine", f"query: {draft}", f"rows: {len(rows)}"]
     if rows:
         for row in rows:
             line = f"  - {', '.join(row)}"
-            if corrob and len(row) == 3:
-                count = corrob.get((row[0], row[1], row[2]))
-                if count:
-                    line += f" (sources: {count})"
+            if signals and len(row) == 3:
+                sig = signals.get((row[0], row[1], row[2]))
+                if sig:
+                    line += f" (sources: {sig['sources']}, confidence: {sig['confidence']})"
+                    if sig.get("stale"):
+                        line += " [stale: source missing]"
             lines.append(line)
     else:
         lines.append("no such fact (verified negative)")
@@ -517,15 +520,16 @@ def cmd_render(args: argparse.Namespace) -> int:
             return 0
         # Positive engine answer: relation, path, and policy predicates are all
         # evaluated by the engine and rendered (0 rows -> a verified-empty result,
-        # never a wiki fallback). Corroboration annotates relation rows only (the
-        # (s,r,o) key is a relation triple); gate on the predicate so path/policy
-        # rows are never annotated by a coincidental 3-element shape.
-        corrob = (
-            corroboration_counts(load_facts())
+        # never a wiki fallback). Answer-quality signals (sources/confidence/
+        # staleness) annotate relation rows only (the (s,r,o) key is a relation
+        # triple); gate on the predicate so path/policy rows are never annotated
+        # by a coincidental 3-element shape.
+        signals = (
+            fact_signals(load_facts(), Path(os.environ["FACTLOG_ROOT"]))
             if decision["predicate"] == "relation" and CANDIDATES_CSV.is_file()
             else None
         )
-        print(render_engine_answer(args.draft, evaluate(args.draft, facts)["rows"], corrob))
+        print(render_engine_answer(args.draft, evaluate(args.draft, facts)["rows"], signals))
         return 0
     # route == wiki
     print(json.dumps({"route": "wiki", "reason": decision["reason"]}, ensure_ascii=False))
