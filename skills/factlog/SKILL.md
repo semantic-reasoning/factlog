@@ -487,8 +487,11 @@ python3 "${CLAUDE_PLUGIN_ROOT}/tools/ask_router.py" wiki "<question>" --reason "
 ```
 
 Show the `UNVERIFIED — wiki exploration` block verbatim (cited `sources/` /
-`runs/sources/` excerpts; `decisions/` is supplementary). It cites only source
-text, never `facts/accepted.dl` — its provenance marks it unverified. Do NOT
+`runs/sources/` excerpts; `decisions/` is supplementary). When the question
+mentions accepted entities, the block also carries a clearly-separated
+`VERIFIED — engine (grounding: ...)` section listing the engine-verified facts
+about those entities — verified anchors beside the unverified prose. The
+unverified excerpts cite only source text, never `facts/accepted.dl`. Do NOT
 present wiki excerpts as confirmed facts. Optionally record the unanswered
 question for later review (a non-engine-input sink, never `facts/query.dl`):
 

@@ -191,6 +191,17 @@ act0="$(FACTLOG_EMBED_MODULE=embed_stub PYTHONPATH="$PLUGIN_ROOT:$EMB" "$PYTHON"
 if [ -n "$act0" ] && [ "$act0" != "$top" ]; then ok "optional embedding backend reorders results (seam invoked, graceful when absent)"; else bad "embedding seam did not reorder (lex=$top act=$act0)"; fi
 rm -f "$KB/sources/rank-hi.md" "$KB/sources/rank-lo.md"
 
+# --- #32: grounded answers (verified facts about mentioned entities) ---
+gw="$(router wiki "tell me about Acme API")"
+printf '%s' "$gw" | grep -qF "VERIFIED — engine (grounding" && ok "wiki answer includes a VERIFIED grounding block" || bad "no grounding block"
+printf '%s' "$gw" | grep -qF "Acme API, uses, FastAPI" && ok "grounding lists accepted facts about the mentioned entity" || bad "grounding missing the accepted fact"
+# grounding draws ONLY from accepted.dl: a candidate-only relation must not appear
+printf 'subject,relation,object,source,status,confidence,note\nAcme API,may_use,Datadog,sources/x.md,candidate,0.4,\n' > "$KB/facts/candidates.csv"
+if printf '%s' "$(router wiki "tell me about Acme API")" | grep -qF "may_use"; then bad "candidate-only relation leaked into grounding"; else ok "grounding excludes candidate-only relations (accepted.dl only)"; fi
+rm -f "$KB/facts/candidates.csv"
+# no accepted entity mentioned -> no grounding block
+if printf '%s' "$(router wiki "completely unrelated xyzzy topic")" | grep -qF "grounding"; then bad "grounding shown without a mentioned entity"; else ok "no grounding block when no accepted entity is mentioned"; fi
+
 # --- read-only invariant (engine inputs untouched by any subcommand) ---
 if [ -f "$KB/facts/query.dl" ]; then bad "ask_router wrote facts/query.dl (must be read-only)"; else ok "facts/query.dl never written"; fi
 if [ "$(cat "$KB/facts/accepted.dl")" = "$ACCEPTED_BEFORE" ]; then ok "facts/accepted.dl unchanged"; else bad "facts/accepted.dl was mutated"; fi

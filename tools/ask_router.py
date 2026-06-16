@@ -65,6 +65,7 @@ def _resolve_target_prepass() -> str:
 os.environ["FACTLOG_ROOT"] = _resolve_target_prepass()
 
 from common import (  # noqa: E402
+    ACCEPTED_DL,
     LOGIC_POLICY_DL,
     QUERY_FACT_ABSENT,
     QUERY_OK,
@@ -75,6 +76,7 @@ from common import (  # noqa: E402
     classify_query,
     dependency_graph,
     dependency_path,
+    entity_set,
     load_accepted_facts,
     policy_predicates,
     run_wirelog,
@@ -378,19 +380,59 @@ def search(question: str, root: Path, *, limit: int = 10) -> list[dict[str, obje
     return _semantic_rerank(question, ranked)
 
 
-def render_wiki_answer(question: str, reason: str, results: list[dict[str, object]]) -> str:
+def _entity_mentioned(entity: str, question_low: str) -> bool:
+    """Whether an accepted entity name appears in the question (bilingual:
+    CJK substring; ASCII word-boundary, matching the keyword matcher)."""
+    name = entity.lower()
+    if _is_cjk(entity):
+        return name in question_low
+    return re.search(rf"\b{re.escape(name)}\b", question_low) is not None
+
+
+def grounding_facts(question: str, accepted: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Engine-verified accepted facts about the accepted entities the question
+    mentions — verified anchors to show alongside an unverified wiki answer.
+    Pure: only reads the accepted facts passed in."""
+    question_low = question.lower()
+    mentioned = {ent for ent in entity_set(accepted) if _entity_mentioned(ent, question_low)}
+    if not mentioned:
+        return []
+    seen: set[tuple[str, str, str]] = set()
+    out: list[dict[str, str]] = []
+    for row in accepted:
+        if row["subject"] in mentioned or row["object"] in mentioned:
+            key = (row["subject"], row["relation"], row["object"])
+            if key not in seen:
+                seen.add(key)
+                out.append(row)
+    return out
+
+
+def render_wiki_answer(
+    question: str,
+    reason: str,
+    results: list[dict[str, object]],
+    grounding: list[dict[str, str]] | None = None,
+) -> str:
     """Render the UNVERIFIED — wiki exploration answer block.
 
     The literal marker 'UNVERIFIED — wiki exploration' is the greppable token.
-    Citations point only at source text (sources/ , runs/sources/); this answer
-    never cites facts/accepted.dl, so its provenance alone marks it unverified.
+    Excerpt citations point only at source text (sources/ , runs/sources/). When
+    *grounding* is given, the answer additionally shows a clearly-separated
+    'VERIFIED — engine' block of accepted facts about the entities the question
+    mentions, so verified anchors sit beside the unverified prose.
     """
     lines = [
         "UNVERIFIED — wiki exploration",
         f"question: {question}",
         f"reason: {reason}",
-        f"sources searched: {', '.join(label for _rel, label in _wiki_corpus())}",
     ]
+    if grounding:
+        lines.append("")
+        lines.append("VERIFIED — engine (grounding: accepted facts about mentioned entities):")
+        lines.extend(f"  - {row['subject']}, {row['relation']}, {row['object']}" for row in grounding)
+        lines.append("")
+    lines.append(f"sources searched: {', '.join(label for _rel, label in _wiki_corpus())}")
     if results:
         for r in results:
             lines.append(f"[{r['file']}:{r['line']}] ({r['dir']})")
@@ -477,7 +519,10 @@ def cmd_search(args: argparse.Namespace) -> int:
 def cmd_wiki(args: argparse.Namespace) -> int:
     root = Path(os.environ["FACTLOG_ROOT"])
     results = search(args.text, root)
-    print(render_wiki_answer(args.text, args.reason, results))
+    # Grounding: accepted facts about mentioned entities (empty if not compiled yet).
+    accepted = load_accepted_facts() if ACCEPTED_DL.is_file() else []
+    grounding = grounding_facts(args.text, accepted)
+    print(render_wiki_answer(args.text, args.reason, results, grounding))
     return 0
 
 
