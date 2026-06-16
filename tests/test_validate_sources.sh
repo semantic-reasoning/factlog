@@ -27,11 +27,11 @@ bad() { echo "FAIL: $*" >&2; fail=$((fail + 1)); }
 KB="$(mktemp -d)/wiki"
 "$PYTHON" -m factlog init --target "$KB" >/dev/null
 mkdir -p "$KB/runs/sources"
-printf '# converted\n\nKoribot integrates HAI-MATE.\n' > "$KB/runs/sources/conv.md"
+printf '# converted\n\nWidgetX integrates ToolA.\n' > "$KB/runs/sources/conv.md"
 printf '# original\n\nAcme uses FastAPI.\n' > "$KB/sources/orig.md"
 
 # write a candidates.csv with the given source value (one row)
-write_csv() { printf '%s\nKoribot,integrates,HAI-MATE,%s,confirmed,0.90,\n' "$HEADER" "$1" > "$KB/facts/candidates.csv"; }
+write_csv() { printf '%s\nWidgetX,integrates,ToolA,%s,confirmed,0.90,\n' "$HEADER" "$1" > "$KB/facts/candidates.csv"; }
 prefix_err() { "$PYTHON" "$VALIDATE" "$KB" 2>&1 | grep -c "source must start with" || true; }
 
 # runs/sources/ source -> must NOT raise the prefix error

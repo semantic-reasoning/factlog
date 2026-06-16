@@ -108,12 +108,12 @@ rm -f "$KB/facts/candidates.csv"
 # --- Path B: wiki exploration (sources/ + runs/sources/ only; pages/ excluded) ---
 printf '# Acme\n\nAcme API uses FastAPI for routing.\n' > "$KB/sources/acme.md"
 mkdir -p "$KB/runs/sources"
-printf '<!-- ingested -->\n\nThe Koribot platform integrates HAI-MATE.\n' > "$KB/runs/sources/koribot.md"
+printf '<!-- ingested -->\n\nThe WidgetX platform integrates ToolA.\n' > "$KB/runs/sources/widgetx.md"
 # A pages/ file encoding an UNACCEPTED candidate triple — must NEVER surface in B.
 printf '<!-- generated-by-factlog -->\n# Acme API\n- may_use -> [[Datadog]] (sources/x.md, confidence=0.40)\n' > "$KB/pages/acme-api.md"
 
 if router search "what uses FastAPI" | "$PYTHON" -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if any(r['dir']=='sources' for r in d['results']) else 1)"; then ok "search finds excerpts in sources/"; else bad "search missed sources/"; fi
-if router search "Koribot HAI-MATE" | "$PYTHON" -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if any(r['dir']=='runs/sources' for r in d['results']) else 1)"; then ok "search finds excerpts in runs/sources/"; else bad "search missed runs/sources/"; fi
+if router search "WidgetX ToolA" | "$PYTHON" -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if any(r['dir']=='runs/sources' for r in d['results']) else 1)"; then ok "search finds excerpts in runs/sources/"; else bad "search missed runs/sources/"; fi
 # pages/ candidate content must never appear in search citations
 if router search "Datadog may_use" | grep -qE 'pages/|may_use|confidence=0\.40'; then bad "pages/ candidate content leaked into search results"; else ok "pages/ excluded from search (no candidate leak)"; fi
 
@@ -148,10 +148,10 @@ router note "   " >/dev/null
 if grep -qE '^- *$' "$KB/decisions/ask-open-questions.md" 2>/dev/null; then bad "blank note recorded"; else ok "blank note not recorded"; fi
 
 # --- bilingual keywords: 2-char Korean terms search; particle/josa tolerance ---
-printf '# 코리봇\n\n임용 관련 법적 근거는 부존재한다.\n' > "$KB/sources/ko.md"
-if router search "법적 근거" | grep -qF 'sources/ko.md'; then ok "2-char Korean keywords search (법적/근거) match"; else bad "2-char Korean keywords found nothing"; fi
-# substring match tolerates the attached particle: '근거' matches '근거는'
-if router search "근거" | grep -qF '근거는'; then ok "CJK substring tolerates a particle (근거 -> 근거는)"; else bad "CJK keyword did not match across a particle"; fi
+printf '# 갑봇\n\n검색 관련 문서 자료는 충분하다.\n' > "$KB/sources/ko.md"
+if router search "문서 자료" | grep -qF 'sources/ko.md'; then ok "2-char Korean keywords search (문서/자료) match"; else bad "2-char Korean keywords found nothing"; fi
+# substring match tolerates the attached particle: '자료' matches '자료는'
+if router search "자료" | grep -qF '자료는'; then ok "CJK substring tolerates a particle (자료 -> 자료는)"; else bad "CJK keyword did not match across a particle"; fi
 rm -f "$KB/sources/ko.md"
 
 # --- Phase 2: path (positive render / variable) + policy + decisions ---
@@ -179,15 +179,15 @@ if printf '%s' "$dout" | grep -qF 'decisions (supplementary)'; then ok "decision
 rm -f "$KB/decisions/open-questions.md"
 
 # --- #31: relevance ranking + optional embedding rerank seam ---
-printf '# hi\n\n임용 법적 근거 절차 모두 포함.\n' > "$KB/sources/rank-hi.md"
-printf '# lo\n\n임용 만 언급.\n' > "$KB/sources/rank-lo.md"
-top="$(router search "임용 법적 근거 절차" | "$PYTHON" -c "import json,sys; d=json.load(sys.stdin); print(d['results'][0]['file'] if d['results'] else '')")"
+printf '# hi\n\n검색 문서 자료 항목 모두 포함.\n' > "$KB/sources/rank-hi.md"
+printf '# lo\n\n검색 만 언급.\n' > "$KB/sources/rank-lo.md"
+top="$(router search "검색 문서 자료 항목" | "$PYTHON" -c "import json,sys; d=json.load(sys.stdin); print(d['results'][0]['file'] if d['results'] else '')")"
 [ "$top" = "sources/rank-hi.md" ] && ok "relevance ranking surfaces highest-coverage excerpt first" || bad "ranking did not rank most-relevant first (got $top)"
 # optional embedding backend (graceful degrade is exercised by every other search; here test the ACTIVE path)
 # stub scores ascending by position, so the lexical-best (index 0) gets the
 # LOWEST score and is pushed to the bottom — an unambiguous reorder (>=2 results).
 EMB="$(mktemp -d)"; printf 'def rank(q, texts):\n    return [float(i) for i in range(len(texts))]\n' > "$EMB/embed_stub.py"
-act0="$(FACTLOG_EMBED_MODULE=embed_stub PYTHONPATH="$PLUGIN_ROOT:$EMB" "$PYTHON" "$ROUTER" search "임용 법적 근거 절차" --target "$KB" | "$PYTHON" -c "import json,sys; d=json.load(sys.stdin); print(d['results'][0]['file'] if d['results'] else '')")"
+act0="$(FACTLOG_EMBED_MODULE=embed_stub PYTHONPATH="$PLUGIN_ROOT:$EMB" "$PYTHON" "$ROUTER" search "검색 문서 자료 항목" --target "$KB" | "$PYTHON" -c "import json,sys; d=json.load(sys.stdin); print(d['results'][0]['file'] if d['results'] else '')")"
 if [ -n "$act0" ] && [ "$act0" != "$top" ]; then ok "optional embedding backend reorders results (seam invoked, graceful when absent)"; else bad "embedding seam did not reorder (lex=$top act=$act0)"; fi
 rm -f "$KB/sources/rank-hi.md" "$KB/sources/rank-lo.md"
 
@@ -236,7 +236,7 @@ assert not any(p.search('the therapist') for p in a._keyword_patterns('api docs'
 assert a._entity_mentioned('C++', 'migrating to c++ now'), 'C++ entity'
 assert a._entity_mentioned('.NET', 'uses .net here'), '.NET entity'
 assert not a._entity_mentioned('물', '물고기 이야기'), 'single CJK char must not match a compound'
-assert a._entity_mentioned('코리봇', '코리봇 질문'), 'multi-char CJK entity matches'
+assert a._entity_mentioned('갑봇', '갑봇 질문'), 'multi-char CJK entity matches'
 " 2>/dev/null; then ok "matcher: C++/.NET/node.js tokens + single-CJK floor (no api/therapist regression)"; else bad "matcher boundary/tokenizer test failed"; fi
 
 # --- read-only invariant (engine inputs untouched by any subcommand) ---

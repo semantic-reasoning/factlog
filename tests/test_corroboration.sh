@@ -42,13 +42,13 @@ csv 'X,r,Y,sources/a.md,confirmed,0.9,' 'X,r,Y,sources/a.md,confirmed,0.9,dup'
 printf '%s' "$("$PYTHON" "$CORR" --wiki "$KB" 2>&1)" | grep -qF "1 source(s): X, r, Y" && ok "same source twice counts as 1 distinct" || bad "duplicate source miscounted"
 
 # single-valued competing values show per-source support
-printf '# single-valued\n- 기반_모델\n' > "$KB/policy/single-valued.md"
+printf '# single-valued\n- 주_속성\n' > "$KB/policy/single-valued.md"
 csv \
-  '화성in,기반_모델,ChatGPT,sources/a.md,confirmed,0.9,' \
-  '화성in,기반_모델,Claude,sources/b.md,confirmed,0.9,'
+  '을서비스,주_속성,값가,sources/a.md,confirmed,0.9,' \
+  '을서비스,주_속성,값나,sources/b.md,confirmed,0.9,'
 co="$("$PYTHON" "$CORR" --wiki "$KB" 2>&1)"
 printf '%s' "$co" | grep -qF "competing values" && ok "single-valued competing values reported" || bad "competing values not reported"
-printf '%s' "$co" | grep -qF "ChatGPT (1 src)" && ok "competing value shows per-source support" || bad "per-source support missing"
+printf '%s' "$co" | grep -qF "값가 (1 src)" && ok "competing value shows per-source support" || bad "per-source support missing"
 
 echo ""
 echo "========================================"
