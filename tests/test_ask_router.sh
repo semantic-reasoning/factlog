@@ -88,6 +88,15 @@ if printf '%s' "$pneg" | grep -qF "VERIFIED — engine" && printf '%s' "$pneg" |
 check_field "marker-collision relation name routes wiki" validate 'relation("Acme API", "does not match accepted facts", "X")?' route wiki
 check_field "marker-collision not flagged negative" validate 'relation("Acme API", "does not match accepted facts", "X")?' negative False
 
+# --- structured classification codes (routing is by code, not reason text) ---
+check_field "matching relation code=ok" validate 'relation("Acme API", "uses", V)?' code ok
+check_field "absent fact code=fact_absent" validate 'relation("Acme API", "uses", "Postgres")?' code fact_absent
+check_field "unknown predicate code=unknown_predicate" validate 'bogus("Acme API")?' code unknown_predicate
+# marker-collision: an unaccepted relation NAME containing the fact-absence
+# phrase classifies as relation_not_accepted — structurally NOT fact_absent —
+# so it can never masquerade as a verified negative regardless of its text.
+check_field "marker-collision code=relation_not_accepted (not fact_absent)" validate 'relation("Acme API", "does not match accepted facts", "X")?' code relation_not_accepted
+
 # --- Path B: wiki exploration (sources/ + runs/sources/ only; pages/ excluded) ---
 printf '# Acme\n\nAcme API uses FastAPI for routing.\n' > "$KB/sources/acme.md"
 mkdir -p "$KB/runs/sources"
