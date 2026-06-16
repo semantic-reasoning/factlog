@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """Generate policy/logic-policy.dl from controlled natural-language policy text."""
 
 from __future__ import annotations

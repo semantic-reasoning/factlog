@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """Interactively review candidate facts that still need human judgment."""
 
 from __future__ import annotations

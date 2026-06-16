@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """factlog command-line helper.
 
 The skill itself is installed as a Claude Code **plugin** (see README), so this
