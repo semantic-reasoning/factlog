@@ -66,6 +66,7 @@ os.environ["FACTLOG_ROOT"] = _resolve_target_prepass()
 
 from common import (  # noqa: E402
     ACCEPTED_DL,
+    CANDIDATES_CSV,
     LOGIC_POLICY_DL,
     QUERY_FACT_ABSENT,
     QUERY_OK,
@@ -74,10 +75,12 @@ from common import (  # noqa: E402
     _is_variable,
     _query_args,
     classify_query,
+    corroboration_counts,
     dependency_graph,
     dependency_path,
     entity_set,
     load_accepted_facts,
+    load_facts,
     policy_predicates,
     run_wirelog,
 )
@@ -211,14 +214,26 @@ def evaluate(draft: str, facts: list[dict[str, str]]) -> dict[str, object]:
     raise NotImplementedError(f"engine evaluation of predicate '{predicate}' is not supported")
 
 
-def render_engine_answer(draft: str, rows: list[list[str]]) -> str:
+def render_engine_answer(
+    draft: str,
+    rows: list[list[str]],
+    corrob: dict[tuple[str, str, str], int] | None = None,
+) -> str:
     """Render the VERIFIED — engine answer block (positive or negative).
 
     The literal marker 'VERIFIED — engine' is the greppable verification token.
+    When *corrob* is given, a relation row is annotated with the number of
+    distinct sources backing it ('(sources: N)') — a multi-source trust signal.
     """
     lines = ["VERIFIED — engine", f"query: {draft}", f"rows: {len(rows)}"]
     if rows:
-        lines.extend(f"  - {', '.join(row)}" for row in rows)
+        for row in rows:
+            line = f"  - {', '.join(row)}"
+            if corrob and len(row) == 3:
+                count = corrob.get((row[0], row[1], row[2]))
+                if count:
+                    line += f" (sources: {count})"
+            lines.append(line)
     else:
         lines.append("no such fact (verified negative)")
     return "\n".join(lines)
@@ -502,8 +517,9 @@ def cmd_render(args: argparse.Namespace) -> int:
             return 0
         # Positive engine answer: relation, path, and policy predicates are all
         # evaluated by the engine and rendered (0 rows -> a verified-empty result,
-        # never a wiki fallback).
-        print(render_engine_answer(args.draft, evaluate(args.draft, facts)["rows"]))
+        # never a wiki fallback). Annotate rows with multi-source corroboration.
+        corrob = corroboration_counts(load_facts()) if CANDIDATES_CSV.is_file() else None
+        print(render_engine_answer(args.draft, evaluate(args.draft, facts)["rows"], corrob))
         return 0
     # route == wiki
     print(json.dumps({"route": "wiki", "reason": decision["reason"]}, ensure_ascii=False))

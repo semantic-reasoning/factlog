@@ -478,7 +478,10 @@ python3 "${CLAUDE_PLUGIN_ROOT}/tools/ask_router.py" render "<draft>" --target "$
 ```
 
 Show the `VERIFIED — engine` block verbatim (positive rows, or `rows: 0` /
-"no such fact (verified negative)"). This is engine-backed evidence.
+"no such fact (verified negative)"). This is engine-backed evidence. Relation
+rows are annotated `(sources: N)` with the number of distinct sources backing
+the fact — a multi-source trust signal (`tools/corroboration.py` reports the
+full corroboration view).
 
 ### Step 3b — Wiki exploration (UNVERIFIED)
 
