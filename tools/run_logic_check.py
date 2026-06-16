@@ -11,7 +11,7 @@ from common import (
     QUERY_PREDICATES,
     allowed_relations,
     dependency_path,
-    entity_set,
+    value_set,
     ensure_dirs,
     load_accepted_facts,
     load_facts,
@@ -149,7 +149,9 @@ def main() -> None:
     inferred = run_wirelog()
     policy_program = load_logic_policy()
     policy_query_predicates = policy_predicates(policy_program)
-    entities = entity_set(facts)
+    # value_set (entities + literal values) so a query naming a literal object of
+    # an attribute relation is not falsely warned as a non-engine entity.
+    entities = value_set(facts)
     relations = allowed_relations(facts)
     errors: list[str] = []
     warnings: list[str] = []
