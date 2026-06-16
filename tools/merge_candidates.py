@@ -115,14 +115,26 @@ GENERATED_PAGE_MARKER = "<!-- generated-by-factlog -->"
 # Source-file helpers
 # ---------------------------------------------------------------------------
 
+# A KB has two source roots: sources/ (the user's originals) and runs/sources/
+# (text conversions of binary originals produced by `factlog ingest`). Both are
+# valid `source` locations for extracted facts.
+SOURCE_ROOTS = ("sources", "runs/sources")
+
+
 def source_files(root: Path) -> list[Path]:
-    return sorted(path for path in (root / "sources").rglob("*") if path.is_file())
+    files: list[Path] = []
+    for rel in SOURCE_ROOTS:
+        base = root / rel
+        if base.is_dir():
+            files.extend(path for path in base.rglob("*") if path.is_file())
+    return sorted(files)
 
 
 def source_file_refs(root: Path) -> set[str]:
-    """Return the set of source paths relative to the KB root (sources/-prefixed).
+    """Return source paths relative to the KB root (sources/- or runs/sources/-prefixed).
 
-    Example: for a file at <root>/sources/my-doc.md this returns 'sources/my-doc.md'.
+    Example: <root>/sources/my-doc.md -> 'sources/my-doc.md';
+             <root>/runs/sources/report.md -> 'runs/sources/report.md'.
     These paths match the canonical source value that candidate rows must use.
     """
     return {path.relative_to(root).as_posix() for path in source_files(root)}
@@ -152,18 +164,27 @@ def is_text_source(path: Path, *, sniff: int = 8192) -> bool:
     return True
 
 
-def nontext_source_files(root: Path) -> list[str]:
-    """List sources/ files (KB-relative) that extraction cannot read as text.
+def unconverted_binary_sources(root: Path) -> list[str]:
+    """List binary files under sources/ that have no runs/sources/ conversion.
 
-    Hidden/system files (names starting with '.', e.g. .DS_Store) are skipped to
-    avoid noise — they are not intended source documents.
+    A binary original in sources/ yields no facts on its own, but if
+    `factlog ingest` has produced a runs/sources/<stem>.{md,txt} conversion the
+    text IS ingested, so such originals are NOT reported. Hidden/system files
+    (names starting with '.', e.g. .DS_Store) are skipped to avoid noise.
     """
+    base = root / "sources"
+    derived = root / "runs" / "sources"
+    if not base.is_dir():
+        return []
     found: list[str] = []
-    for path in source_files(root):
+    for path in sorted(p for p in base.rglob("*") if p.is_file()):
         if path.name.startswith("."):
             continue
-        if not is_text_source(path):
-            found.append(path.relative_to(root).as_posix())
+        if is_text_source(path):
+            continue
+        if any((derived / f"{path.stem}{ext}").is_file() for ext in (".md", ".txt")):
+            continue
+        found.append(path.relative_to(root).as_posix())
     return found
 
 
@@ -244,7 +265,7 @@ def normalize_rows(
         if source_file not in known_sources:
             print(
                 f"  skip row: source '{source_file}' not found in sources/ "
-                f"(expected a sources/-prefixed path like 'sources/{Path(source_file).name}')",
+                f"(expected a sources/- or runs/sources/-prefixed path like 'sources/{Path(source_file).name}')",
                 file=sys.stderr,
             )
             dropped += 1
@@ -494,7 +515,7 @@ def main() -> int:
             "contain a JSON array of objects with the FACT_HEADER schema:\n"
             "  [subject, relation, object, source, status, confidence, note]\n"
             "\n"
-            "The 'source' field MUST be a sources/-prefixed path relative to the KB\n"
+            "The 'source' field MUST be a sources/- or runs/sources/-prefixed path relative to the KB\n"
             "root (e.g. 'sources/my-doc.md').  Bare filenames are not accepted.\n"
             "\n"
             "Output: facts/candidates.csv, pages/, decisions/open-questions.md"
@@ -540,16 +561,17 @@ def main() -> int:
     print(f"merge_candidates run_id={run_id} wiki={root}")
 
     # ------------------------------------------------------------------
-    # 0. Surface non-text (binary) source files. The in-session extraction
-    # reads sources/ as text, so these yield no facts (silent non-ingestion).
-    # Warn always; under --strict treat their presence as a hard failure.
+    # 0. Surface binary source files in sources/ that have NO runs/sources/
+    # conversion. Extraction reads sources/ as text, so an un-ingested binary
+    # yields no facts (silent non-ingestion). Warn always; under --strict treat
+    # their presence as a hard failure.
     # ------------------------------------------------------------------
-    nontext_sources = nontext_source_files(root)
+    nontext_sources = unconverted_binary_sources(root)
     if nontext_sources:
         print(
-            f"  WARNING: {len(nontext_sources)} non-text source file(s) in sources/ "
-            "cannot be read by fact extraction and will yield no facts "
-            "(convert first, e.g. `factlog ingest <file> --target <kb>`):",
+            f"  WARNING: {len(nontext_sources)} binary source file(s) in sources/ "
+            "have no runs/sources/ conversion and will yield no facts "
+            "(run `factlog ingest --scan` to convert them):",
             file=sys.stderr,
         )
         for name in nontext_sources:
@@ -572,7 +594,7 @@ def main() -> int:
     if raw_rows and not rows:
         print(
             "  WARNING: all candidate rows were dropped during normalise/dedup "
-            "(0 rows survived).  Check that source values are sources/-prefixed paths.",
+            "(0 rows survived).  Check that source values are sources/- or runs/sources/-prefixed paths.",
             file=sys.stderr,
         )
         if args.strict:
@@ -614,7 +636,7 @@ def main() -> int:
 
     if args.strict and nontext_sources:
         print(
-            f"--strict: {len(nontext_sources)} non-text source file(s) present in sources/",
+            f"--strict: {len(nontext_sources)} unconverted binary source file(s) in sources/",
             file=sys.stderr,
         )
         return 1

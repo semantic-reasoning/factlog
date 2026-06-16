@@ -171,7 +171,7 @@ def _init_kb(target) -> bool:
     created-vs-existing signal is surfaced for callers (e.g. ``cmd_setup``).
     """
     created_dirs: list[str] = []
-    dirs = ["sources", "pages", "facts", "decisions", "policy", "policy/prompts", "runs"]
+    dirs = ["sources", "pages", "facts", "decisions", "policy", "policy/prompts", "runs", "runs/sources"]
     for dirname in dirs:
         d = target / dirname
         if not d.exists():
@@ -410,13 +410,40 @@ _INSTALL_HINTS: dict[str, str] = {
 }
 
 
+def _looks_binary(path, sniff: int = 8192) -> bool:
+    """Heuristic inverse of merge_candidates.is_text_source for --scan discovery.
+
+    Treats a file as binary if its first *sniff* bytes contain a NUL or do not
+    decode as UTF-8 (tolerating a multi-byte char truncated at the boundary).
+    """
+    try:
+        chunk = path.read_bytes()[:sniff]
+    except OSError:
+        return True
+    if b"\x00" in chunk:
+        return True
+    try:
+        chunk.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        return exc.start < len(chunk) - 3
+    return False
+
+
 def cmd_ingest(args: argparse.Namespace) -> int:
     """Convert binary/office file(s) into text source(s) under <target>/sources/.
 
-    The original file is left untouched; only the converted text (with a
-    provenance header recording the source, converter, and date) is written into
-    sources/. Returns 0 only if every input was converted; non-zero if any input
-    was skipped or failed.
+    The original file is left untouched; the converted text (with a provenance
+    header recording the source, converter, and date) is written under the KB's
+    runs/sources/ directory — alongside the other generated run artifacts, never
+    into sources/, which holds the user's originals.
+
+    With --scan, every binary file under sources/ is auto-discovered (the
+    deterministic pre-step /factlog sync runs) and converted. Conversion is
+    idempotent: an up-to-date conversion is skipped, a stale one (original newer)
+    is refreshed.
+
+    Returns non-zero only on a genuine conversion failure; unconvertible formats
+    found by --scan are reported but do not fail the run.
     """
     import shutil
     import subprocess
@@ -424,19 +451,37 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     from pathlib import Path
 
     target = Path(args.target).expanduser().resolve()
-    sources = target / "sources"
-    if not sources.is_dir():
+    if not (target / "sources").is_dir():
         print(
-            f"factlog ingest: sources/ not found under {target}. "
+            f"factlog ingest: {target} is not a factlog KB (no sources/). "
             f"Run 'factlog init --target {args.target}' first.",
             file=sys.stderr,
         )
         return 1
+    # Converted files are *derived* artifacts, so they collect with the other
+    # generated run outputs under runs/sources/ — never in sources/, which holds
+    # the user's originals. sync reads both sources/ and runs/sources/.
+    derived = target / "runs" / "sources"
+    derived.mkdir(parents=True, exist_ok=True)
+
+    # Build the work list: explicit paths, plus (with --scan) every binary file
+    # found under sources/.
+    work: list[Path] = [Path(p).expanduser() for p in args.paths]
+    if args.scan:
+        for path in sorted(p for p in (target / "sources").rglob("*") if p.is_file()):
+            if not path.name.startswith(".") and _looks_binary(path):
+                work.append(path)
+    if not work:
+        if args.scan:
+            print("factlog ingest --scan: no binary source files to convert")
+            return 0
+        print("factlog ingest: no input files (give file paths or --scan)", file=sys.stderr)
+        return 2
 
     converted = 0
+    skipped = 0
     failures = 0
-    for raw in args.paths:
-        src = Path(raw).expanduser()
+    for src in work:
         if not src.is_file():
             print(f"factlog ingest: not a file: {src}", file=sys.stderr)
             failures += 1
@@ -450,7 +495,10 @@ def cmd_ingest(args: argparse.Namespace) -> int:
                 f"factlog ingest: skip {src.name} ({suffix or 'no extension'}): {hint}",
                 file=sys.stderr,
             )
-            failures += 1
+            # In --scan a stray unconvertible file should not fail sync; an
+            # explicitly-named one is a user error and does count as a failure.
+            skipped += 1 if args.scan else 0
+            failures += 0 if args.scan else 1
             continue
 
         chosen = next(((t, out, build) for (t, out, build) in chain if shutil.which(t)), None)
@@ -461,18 +509,15 @@ def cmd_ingest(args: argparse.Namespace) -> int:
                 f"factlog ingest: no converter on PATH for {suffix} (tried: {tools}). {hints}",
                 file=sys.stderr,
             )
-            failures += 1
+            skipped += 1 if args.scan else 0
+            failures += 0 if args.scan else 1
             continue
 
         tool, out_suffix, build = chosen
-        dst = sources / (src.stem + out_suffix)
-        if dst.exists() and not args.force:
-            print(
-                f"factlog ingest: {dst.relative_to(target)} already exists "
-                f"(use --force to overwrite); skipping {src.name}",
-                file=sys.stderr,
-            )
-            failures += 1
+        dst = derived / (src.stem + out_suffix)
+        if dst.exists() and not args.force and dst.stat().st_mtime >= src.stat().st_mtime:
+            print(f"factlog ingest: {dst.relative_to(target).as_posix()} up to date; skipping {src.name}")
+            skipped += 1
             continue
 
         proc = subprocess.run(build(src, dst), capture_output=True, text=True)
@@ -491,9 +536,9 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         dst.write_text(header + body, encoding="utf-8")
 
         converted += 1
-        print(f"factlog ingest: {src.name} -> sources/{dst.name} (via {tool})")
+        print(f"factlog ingest: {src.name} -> {dst.relative_to(target).as_posix()} (via {tool})")
 
-    print(f"factlog ingest: {converted} converted, {failures} failed/skipped")
+    print(f"factlog ingest: {converted} converted, {skipped} skipped, {failures} failed")
     return 1 if failures else 0
 
 
@@ -518,18 +563,27 @@ def build_parser() -> argparse.ArgumentParser:
 
     ingest = sub.add_parser(
         "ingest",
-        help="convert a binary/office file (docx, pdf, ...) into a text source under sources/",
+        help="convert binary/office file(s) (docx, pdf, ...) into text under runs/sources/",
     )
-    ingest.add_argument("paths", nargs="+", help="file(s) to convert and place in <target>/sources/")
+    ingest.add_argument(
+        "paths",
+        nargs="*",
+        help="file(s) to convert; omit and pass --scan to auto-discover binaries in sources/",
+    )
+    ingest.add_argument(
+        "--scan",
+        action="store_true",
+        help="auto-discover every binary file under sources/ and convert it (used by /factlog sync)",
+    )
     ingest.add_argument(
         "--target",
         default="~/wiki",
-        help="knowledge base root whose sources/ receives the converted file",
+        help="knowledge base root whose runs/sources/ receives the converted file(s)",
     )
     ingest.add_argument(
         "--force",
         action="store_true",
-        help="overwrite an existing converted file in sources/",
+        help="re-convert even when an up-to-date conversion already exists",
     )
     ingest.set_defaults(func=cmd_ingest)
 

@@ -2,10 +2,11 @@
 # tests/test_ingest.sh — `factlog ingest` binary→text conversion (#4)
 #
 # Covers:
-#   - a real .docx (minimal OOXML fixture) → sources/<name>.md with a
+#   - a real .docx (minimal OOXML fixture) → runs/sources/<name>.md with a
 #     provenance header and the document text (when a converter is available),
-#   - an unsupported format (.hwp) → non-zero exit + actionable hint,
-#   - the overwrite guard (skip without --force, replace with --force).
+#   - idempotency: a second run is a no-op ("up to date"), --force re-converts,
+#   - --scan: auto-discovers binaries under sources/ and converts them,
+#   - an unsupported format (.hwp) → non-zero exit + actionable hint.
 #
 # Runs factlog from the working tree via PYTHONPATH (no install / no pyrewire).
 #
@@ -28,13 +29,11 @@ KB="$(mktemp -d)/wiki"
 "${FACTLOG[@]}" init --target "$KB" >/dev/null
 SRC_DIR="$(mktemp -d)"
 
-# ---------------------------------------------------------------------------
-# Build a minimal, valid .docx (OOXML) fixture with python's zipfile.
-# ---------------------------------------------------------------------------
-DOCX="$SRC_DIR/report.docx"
-"$PYTHON" - "$DOCX" <<'PY'
+# Minimal, valid .docx (OOXML) fixture writer.
+make_docx() {  # make_docx <path> <text>
+  "$PYTHON" - "$1" "$2" <<'PY'
 import sys, zipfile
-path = sys.argv[1]
+path, text = sys.argv[1], sys.argv[2]
 ct = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
       '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
       '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
@@ -47,70 +46,84 @@ rels = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '</Relationships>')
 doc = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-       '<w:body><w:p><w:r><w:t>Acme uses Python for the ingest test.</w:t></w:r></w:p></w:body>'
-       '</w:document>')
+       f'<w:body><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:body></w:document>')
 with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
     z.writestr("[Content_Types].xml", ct)
     z.writestr("_rels/.rels", rels)
     z.writestr("word/document.xml", doc)
 PY
+}
 
-# A converter for .docx must exist for the conversion assertions to be meaningful.
-have_docx_converter=no
-command -v pandoc >/dev/null 2>&1 && have_docx_converter=yes
-command -v textutil >/dev/null 2>&1 && have_docx_converter=yes
+DOCX="$SRC_DIR/report.docx"
+make_docx "$DOCX" "Acme uses Python for the ingest test."
+
+have_conv=no
+command -v pandoc >/dev/null 2>&1 && have_conv=yes
+command -v textutil >/dev/null 2>&1 && have_conv=yes
 
 # ---------------------------------------------------------------------------
-# 1. ingest the .docx
+# 1. ingest an explicit .docx -> runs/sources/
 # ---------------------------------------------------------------------------
-if [ "$have_docx_converter" = yes ]; then
+if [ "$have_conv" = yes ]; then
   if "${FACTLOG[@]}" ingest "$DOCX" --target "$KB" >/dev/null 2>&1; then
     ok "ingest .docx exits 0"
   else
-    bad "ingest .docx should exit 0 (a docx converter is present)"
+    bad "ingest .docx should exit 0 (a converter is present)"
   fi
-  OUT_MD="$KB/sources/report.md"
-  OUT_TXT="$KB/sources/report.txt"
-  if [ -f "$OUT_MD" ] || [ -f "$OUT_TXT" ]; then
-    OUT="$([ -f "$OUT_MD" ] && echo "$OUT_MD" || echo "$OUT_TXT")"
-    ok "converted source written to sources/ ($(basename "$OUT"))"
+  OUT="$KB/runs/sources/report.md"; [ -f "$OUT" ] || OUT="$KB/runs/sources/report.txt"
+  if [ -f "$OUT" ]; then
+    ok "converted file written under runs/sources/ ($(basename "$OUT"))"
     grep -qF "ingested-by-factlog" "$OUT" && ok "provenance header present" || bad "missing provenance header"
     grep -qF "source: report.docx" "$OUT" && ok "provenance records original filename" || bad "provenance missing original filename"
     grep -qF "Acme uses Python" "$OUT" && ok "document text extracted" || bad "document text not extracted"
   else
-    bad "no converted source file found in sources/"
+    bad "no converted file found under runs/sources/"
   fi
+  # nothing was written into sources/
+  if [ -e "$KB/sources/report.md" ] || [ -e "$KB/sources/report.txt" ]; then
+    bad "converted file leaked into sources/ (must stay in runs/sources/)"
+  else
+    ok "sources/ kept free of generated files"
+  fi
+
+  # 2. idempotency: a second run is a no-op; --force re-converts
+  out2="$("${FACTLOG[@]}" ingest "$DOCX" --target "$KB" 2>&1)"; rc2=$?
+  if [ "$rc2" -eq 0 ] && printf '%s' "$out2" | grep -qF "up to date"; then
+    ok "second ingest is an idempotent no-op (up to date)"
+  else
+    bad "second ingest should be a no-op 'up to date' (rc=$rc2)"
+  fi
+  if "${FACTLOG[@]}" ingest "$DOCX" --target "$KB" --force >/dev/null 2>&1; then
+    ok "ingest --force re-converts (exit 0)"
+  else
+    bad "ingest --force should succeed"
+  fi
+
+  # 3. --scan: a binary copied into sources/ is auto-converted
+  cp "$DOCX" "$KB/sources/scanme.docx"
+  if "${FACTLOG[@]}" ingest --scan --target "$KB" >/dev/null 2>&1; then
+    ok "ingest --scan exits 0"
+  else
+    bad "ingest --scan should exit 0"
+  fi
+  [ -f "$KB/runs/sources/scanme.md" ] || [ -f "$KB/runs/sources/scanme.txt" ] \
+    && ok "--scan converted sources/scanme.docx into runs/sources/" \
+    || bad "--scan did not convert the binary under sources/"
 else
-  echo "SKIP: no docx converter (pandoc/textutil) available — skipping conversion assertions"
+  echo "SKIP: no docx converter (pandoc/textutil) — skipping conversion assertions"
 fi
 
 # ---------------------------------------------------------------------------
-# 2. unsupported format (.hwp) → non-zero + hint
+# 4. unsupported format (.hwp) named explicitly → non-zero + hint
 # ---------------------------------------------------------------------------
 touch "$SRC_DIR/notes.hwp"
 err="$(mktemp)"
 if "${FACTLOG[@]}" ingest "$SRC_DIR/notes.hwp" --target "$KB" >/dev/null 2>"$err"; then
-  bad "ingest .hwp should exit non-zero"
+  bad "ingest explicit .hwp should exit non-zero"
 else
-  ok "ingest unsupported .hwp exits non-zero"
+  ok "ingest explicit unsupported .hwp exits non-zero"
 fi
 grep -qiE "hwp|no common converter|no converter" "$err" && ok ".hwp prints an actionable hint" || bad ".hwp hint missing"
-
-# ---------------------------------------------------------------------------
-# 3. overwrite guard
-# ---------------------------------------------------------------------------
-if [ "$have_docx_converter" = yes ]; then
-  if "${FACTLOG[@]}" ingest "$DOCX" --target "$KB" >/dev/null 2>&1; then
-    bad "second ingest without --force should exit non-zero (file exists)"
-  else
-    ok "second ingest without --force is refused (exit non-zero)"
-  fi
-  if "${FACTLOG[@]}" ingest "$DOCX" --target "$KB" --force >/dev/null 2>&1; then
-    ok "ingest --force overwrites existing converted file"
-  else
-    bad "ingest --force should succeed"
-  fi
-fi
 
 # ---------------------------------------------------------------------------
 # Summary
