@@ -202,10 +202,17 @@ rm -f "$KB/facts/candidates.csv"
 # no accepted entity mentioned -> no grounding block
 if printf '%s' "$(router wiki "completely unrelated xyzzy topic")" | grep -qF "grounding"; then bad "grounding shown without a mentioned entity"; else ok "no grounding block when no accepted entity is mentioned"; fi
 
-# --- #33: engine answers annotated with multi-source corroboration ---
-printf 'subject,relation,object,source,status,confidence,note\nAcme API,uses,FastAPI,sources/a.md,confirmed,0.9,\nAcme API,uses,FastAPI,sources/b.md,confirmed,0.9,\n' > "$KB/facts/candidates.csv"
-if router render 'relation("Acme API", "uses", V)?' | grep -qF "(sources: 2)"; then ok "engine answer annotated with corroboration count"; else bad "no corroboration annotation"; fi
-rm -f "$KB/facts/candidates.csv"
+# --- #33/#34: engine answers annotated with sources, confidence, staleness ---
+printf '# a\n' > "$KB/sources/a.md"; printf '# b\n' > "$KB/sources/b.md"
+printf 'subject,relation,object,source,status,confidence,note\nAcme API,uses,FastAPI,sources/a.md,confirmed,0.90,\nAcme API,uses,FastAPI,sources/b.md,confirmed,0.95,\n' > "$KB/facts/candidates.csv"
+ann="$(router render 'relation("Acme API", "uses", V)?')"
+printf '%s' "$ann" | grep -qF "sources: 2" && ok "engine answer annotated with distinct-source count" || bad "no source count annotation"
+printf '%s' "$ann" | grep -qF "confidence: 0.95" && ok "annotation shows max confidence" || bad "confidence annotation missing/wrong"
+printf '%s' "$ann" | grep -qF "stale" && bad "non-stale fact wrongly flagged stale" || ok "present sources are not flagged stale"
+# staleness: backing source file missing -> flagged
+printf 'subject,relation,object,source,status,confidence,note\nAcme API,uses,FastAPI,sources/gone.md,confirmed,0.90,\n' > "$KB/facts/candidates.csv"
+if router render 'relation("Acme API", "uses", V)?' | grep -qF "[stale: source missing]"; then ok "fact with a vanished source is flagged stale"; else bad "stale source not flagged"; fi
+rm -f "$KB/facts/candidates.csv" "$KB/sources/a.md" "$KB/sources/b.md"
 # no candidates.csv -> no annotation, still renders
 if router render 'relation("Acme API", "uses", V)?' | grep -qF "VERIFIED — engine"; then ok "engine answer renders without candidates.csv (no annotation)"; else bad "engine render broke without candidates.csv"; fi
 
