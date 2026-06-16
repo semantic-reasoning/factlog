@@ -48,7 +48,7 @@ run_exit=0
 "$PYTHON" "$MERGE" --wiki "$KB" >/dev/null 2>"$ERR" || run_exit=$?
 
 if [ "$run_exit" -eq 0 ]; then ok "default run exits 0 despite binary sources"; else bad "default run should exit 0, got $run_exit"; fi
-if grep -qE "non-text source file\(s\)" "$ERR"; then ok "warning header emitted"; else bad "missing non-text warning header"; fi
+if grep -qE "binary source file\(s\)" "$ERR"; then ok "warning header emitted"; else bad "missing non-text warning header"; fi
 if grep -qF "sources/diagram.png" "$ERR"; then ok "diagram.png flagged"; else bad "diagram.png not flagged"; fi
 if grep -qF "sources/report.docx" "$ERR"; then ok "report.docx flagged"; else bad "report.docx not flagged"; fi
 if grep -qF "sources/note.md" "$ERR"; then bad "text note.md wrongly flagged as non-text"; else ok "text source note.md not flagged"; fi
@@ -62,14 +62,25 @@ strict_exit=0
 if [ "$strict_exit" -ne 0 ]; then ok "--strict exits non-zero with binary sources (exit $strict_exit)"; else bad "--strict should exit non-zero with binary sources"; fi
 
 # ---------------------------------------------------------------------------
+# Run 2.5: a binary with a runs/sources/ conversion is no longer flagged.
+# ---------------------------------------------------------------------------
+mkdir -p "$KB/runs/sources"
+printf '<!-- ingested-by-factlog -->\n\nAcme uses Python.\n' > "$KB/runs/sources/report.md"
+ERR3="$(mktemp)"
+"$PYTHON" "$MERGE" --wiki "$KB" >/dev/null 2>"$ERR3" || true
+if grep -qF "sources/report.docx" "$ERR3"; then bad "report.docx flagged despite runs/sources/ conversion"; else ok "converted binary (report.docx) no longer flagged"; fi
+if grep -qF "sources/diagram.png" "$ERR3"; then ok "unconverted diagram.png still flagged"; else bad "diagram.png should still be flagged"; fi
+
+# ---------------------------------------------------------------------------
 # Run 3 (text-only): no warning, and --strict exits 0.
 # ---------------------------------------------------------------------------
+rm -rf "$KB/runs/sources"
 rm -f "$KB/sources/diagram.png" "$KB/sources/report.docx" "$KB/sources/.DS_Store"
 ERR2="$(mktemp)"
 clean_exit=0
 "$PYTHON" "$MERGE" --wiki "$KB" --strict >/dev/null 2>"$ERR2" || clean_exit=$?
 if [ "$clean_exit" -eq 0 ]; then ok "text-only KB passes --strict (exit 0)"; else bad "text-only KB should pass --strict, got $clean_exit"; fi
-if grep -qE "non-text source file\(s\)" "$ERR2"; then bad "warning emitted for text-only KB"; else ok "no warning for text-only KB"; fi
+if grep -qE "binary source file\(s\)" "$ERR2"; then bad "warning emitted for text-only KB"; else ok "no warning for text-only KB"; fi
 
 # ---------------------------------------------------------------------------
 # Summary

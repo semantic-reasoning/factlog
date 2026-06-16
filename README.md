@@ -32,31 +32,33 @@ review_required  →  Claude repairs (gated)  →  decisions/correction_trace.md
 ## Source file formats
 
 `/factlog sync` extracts facts by reading each file under `sources/` **as text,
-in-session**. The bundled engine (`merge_candidates.py`) tracks every file in
-`sources/` as a source *path*, but it never parses file contents — so a file is
-only ingested if its text can be read during extraction. When a non-text file is
-found, `merge_candidates.py` prints a warning so the silent non-ingestion is
-visible.
+in-session**. The bundled engine (`merge_candidates.py`) tracks every file as a
+source *path* but never parses contents — so a file is only ingested if its text
+can be read during extraction. A binary original (e.g. `.docx`) therefore yields
+no facts on its own.
 
 | Format | Status | Notes |
 |--------|--------|-------|
 | `.md`, `.markdown`, `.txt` | **Directly supported** | UTF-8 text, read verbatim. This is what every extraction reference assumes. |
 | Other UTF-8 text (`.rst`, `.org`, `.csv`, source code) | Supported as plain text | No special parsing; treated as raw text. |
-| `.docx`, `.pptx`, `.xlsx`, `.hwp`, binary `.pdf`, images | **Not directly ingested** | Convert to Markdown/text first, then place the converted file in `sources/`. |
+| `.docx`, binary `.pdf`, `.odt`, `.epub`, `.html`, `.rtf` | **Auto-converted** | `factlog ingest` converts these to text via pandoc / textutil / pdftotext. |
+| `.pptx`, `.xlsx`, `.hwp`, images | **Not converted** | No bundled converter — reported with a hint; convert by hand. |
 
-A binary file left in `sources/` is registered as a source path but yields **no
-facts** (silent non-ingestion). Convert it first with `factlog ingest`, which
-wraps the available system converters (pandoc, textutil, pdftotext), writes the
-converted text into `sources/`, and prepends a provenance header:
+`factlog ingest` writes the converted text into the KB's **`runs/sources/`**
+directory (alongside the other generated run artifacts) — **never into
+`sources/`**, which stays the user's originals. The original is left untouched
+and the conversion carries a provenance header (source, converter, date). Both
+`sources/` and `runs/sources/` are valid source roots that extraction reads.
 
 ```bash
-factlog ingest report.docx --target ~/wiki   # → ~/wiki/sources/report.md (via pandoc)
-factlog ingest notes.pdf --target ~/wiki     # → ~/wiki/sources/notes.txt  (via pdftotext)
+factlog ingest report.docx --target ~/wiki   # → ~/wiki/runs/sources/report.md (pandoc)
+factlog ingest --scan --target ~/wiki        # auto-convert every binary under sources/
 ```
 
-`ingest` leaves the original file untouched. Formats with no bundled converter
-(`.pptx`, `.xlsx`, `.hwp`, images) are reported with a hint instead of being
-silently skipped. You can also convert by hand and drop the result in `sources/`.
+`/factlog sync` runs `factlog ingest --scan` as its first step, so binaries you
+drop in `sources/` are converted automatically (idempotently — unchanged files
+are skipped). If a binary has no `runs/sources/` conversion, `merge_candidates.py`
+warns so the silent non-ingestion is visible.
 
 ## Requirements
 

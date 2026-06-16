@@ -36,14 +36,17 @@ gate is also backed by a plugin hook (`hooks/hooks.json`).
 ## Canonical source value for fact extraction
 
 When writing extracted fact rows to `$FACTLOG_ROOT/runs/*.json`, the `source`
-field MUST be a path relative to the KB root, prefixed with `sources/`.
+field MUST be a path relative to the KB root, prefixed with `sources/` (the
+user's originals) or `runs/sources/` (text conversions of binary originals
+produced by `factlog ingest`).
 
 Examples:
 - `"sources/my-doc.md"`
 - `"sources/subdir/notes.md#section-heading"`
+- `"runs/sources/report.md"`  (a converted `.docx`/`.pdf` original)
 
 Bare filenames (e.g. `"my-doc.md"`) are NOT valid and will be silently dropped
-by `merge_candidates.py`. Always include the `sources/` prefix.
+by `merge_candidates.py`. Always include the `sources/` or `runs/sources/` prefix.
 
 ---
 
@@ -97,17 +100,26 @@ After `setup` succeeds, use the four operating commands — `/factlog sync`,
 native Claude in-session (no subprocess), write them as `runs/*.json`, then
 delegate merging and page generation to the deterministic engine.
 
-**Binary sources:** extraction reads `sources/` files as text. A binary/office
-file (`.docx`, `.pdf`, ...) left in `sources/` yields no facts —
-`merge_candidates.py` warns about it. Convert it first with the bundled CLI
-(`python3 -m factlog ingest <file> --target "$FACTLOG_ROOT"`), which writes a
-text copy into `sources/` with a provenance header, then proceed with sync.
-
 **Execution order:**
+
+### Step 0 — Convert binary sources (deterministic, run first)
+
+Extraction reads `sources/` files as text, so binary/office originals
+(`.docx`, `.pdf`, ...) yield no facts on their own. Run the bundled converter
+first:
+
+```bash
+python3 -m factlog ingest --scan --target "$FACTLOG_ROOT"
+```
+
+`--scan` auto-discovers every binary file under `sources/` and writes a text
+conversion (with a provenance header) into `runs/sources/` — never into
+`sources/`. It is idempotent (unchanged files are skipped). Then extract from
+**both** `sources/` (native text) and `runs/sources/` (conversions).
 
 ### Step 1 — Native fact extraction (LLM, in-session)
 
-For each file `sources/<name>` in the KB root:
+For each file under `sources/<name>` **and** `runs/sources/<name>` in the KB root:
 
 1. Read the file contents.
 2. Apply the extraction criteria in
