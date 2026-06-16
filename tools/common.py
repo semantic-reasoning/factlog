@@ -537,7 +537,7 @@ def classify_query(
     policy_query_predicates = policy_predicates(
         load_logic_policy() if policy_program is None else policy_program
     )
-    allowed_predicates = {"relation", "path", "review_required"} | policy_query_predicates
+    allowed_predicates = {"relation", "path", "count", "review_required"} | policy_query_predicates
     if predicate not in allowed_predicates:
         return False, QUERY_UNKNOWN_PREDICATE, f"unknown predicate: {predicate}"
 
@@ -573,6 +573,20 @@ def classify_query(
                 return False, QUERY_ENTITY_NOT_ACCEPTED, f"path argument is not an accepted entity: {_arg_value(arg)}"
         if all(_is_quoted_string(arg) for arg in args) and not dependency_path(facts, _arg_value(args[0]), _arg_value(args[1])):
             return False, QUERY_FACT_ABSENT, "path query does not match accepted facts"
+        return True, QUERY_OK, "passed"
+    if predicate == "count":
+        # count(subject, relation)? — how many objects (subject, relation) has.
+        # A valid count always has an answer (0 is a verified zero, never a
+        # FACT_ABSENT), so it is QUERY_OK whenever the vocabulary is accepted.
+        if len(args) != 2:
+            return False, QUERY_BAD_ARITY, "count query must have subject and relation arguments"
+        if not all(_is_valid_arg(arg) for arg in args):
+            return False, QUERY_MALFORMED, "count arguments must be variables or quoted strings"
+        subject, relation = args
+        if not _is_variable(subject) and _arg_value(subject) not in entities:
+            return False, QUERY_ENTITY_NOT_ACCEPTED, f"count subject is not an accepted entity: {_arg_value(subject)}"
+        if not _is_variable(relation) and _arg_value(relation) not in relations:
+            return False, QUERY_RELATION_NOT_ACCEPTED, f"count relation is not accepted: {_arg_value(relation)}"
         return True, QUERY_OK, "passed"
     if predicate in policy_query_predicates:
         if len(args) != 2:

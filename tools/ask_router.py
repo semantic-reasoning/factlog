@@ -190,6 +190,17 @@ def evaluate(draft: str, facts: list[dict[str, str]]) -> dict[str, object]:
     if predicate == "relation":
         rows = evaluate_relation(draft, facts)
         return {"rows": rows, "count": len(rows)}
+    if predicate == "count":
+        # count(subject, relation)? -> number of distinct objects (a verified
+        # aggregate; 0 is a real answer). Rendered as a single value row.
+        subject, relation = _arg_value(args[0]), _arg_value(args[1])
+        objects = {
+            row["object"]
+            for row in facts
+            if (_is_variable(args[0]) or row["subject"] == subject)
+            and (_is_variable(args[1]) or row["relation"] == relation)
+        }
+        return {"rows": [[str(len(objects))]], "count": len(objects)}
     if predicate == "path":
         if len(args) == 2 and all(_is_quoted_string(a) for a in args):
             path = dependency_path(facts, _arg_value(args[0]), _arg_value(args[1]))
