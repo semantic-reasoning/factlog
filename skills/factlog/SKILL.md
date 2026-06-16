@@ -97,6 +97,12 @@ After `setup` succeeds, use the four operating commands — `/factlog sync`,
 native Claude in-session (no subprocess), write them as `runs/*.json`, then
 delegate merging and page generation to the deterministic engine.
 
+**Binary sources:** extraction reads `sources/` files as text. A binary/office
+file (`.docx`, `.pdf`, ...) left in `sources/` yields no facts —
+`merge_candidates.py` warns about it. Convert it first with the bundled CLI
+(`python3 -m factlog ingest <file> --target "$FACTLOG_ROOT"`), which writes a
+text copy into `sources/` with a provenance header, then proceed with sync.
+
 **Execution order:**
 
 ### Step 1 — Native fact extraction (LLM, in-session)

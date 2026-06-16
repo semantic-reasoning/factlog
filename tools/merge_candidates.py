@@ -549,7 +549,7 @@ def main() -> int:
         print(
             f"  WARNING: {len(nontext_sources)} non-text source file(s) in sources/ "
             "cannot be read by fact extraction and will yield no facts "
-            "(convert to .md/.txt first, e.g. via pandoc/textutil):",
+            "(convert first, e.g. `factlog ingest <file> --target <kb>`):",
             file=sys.stderr,
         )
         for name in nontext_sources:

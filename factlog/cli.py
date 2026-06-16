@@ -8,6 +8,8 @@ helpers for the deterministic engine:
 - `doctor`  — verify Python and pyrewire meet factlog's requirements.
 - `init`    — scaffold an empty knowledge base layout (stub; see plan).
 - `setup`   — one-shot bootstrap: doctor, ensure deps, init KB, re-check.
+- `ingest`  — convert a binary/office file (docx, pdf, ...) into a text source
+              under sources/ so fact extraction can read it.
 """
 
 from __future__ import annotations
@@ -357,6 +359,144 @@ def cmd_setup(args: argparse.Namespace) -> int:
     return 1
 
 
+# ---------------------------------------------------------------------------
+# `ingest` — convert a binary/office source file into text under sources/
+# ---------------------------------------------------------------------------
+#
+# Fact extraction reads sources/ files as text, so binary formats (docx, pdf,
+# ...) must be converted first (see issue #1's non-text warning). `ingest`
+# wraps the common system converters and writes the converted text, with a
+# provenance header, into <target>/sources/ so /factlog sync can read it.
+
+
+def _conv_pandoc(src, dst) -> list[str]:
+    return ["pandoc", str(src), "-t", "gfm", "--wrap=none", "-o", str(dst)]
+
+
+def _conv_textutil(src, dst) -> list[str]:
+    return ["textutil", "-convert", "txt", str(src), "-output", str(dst)]
+
+
+def _conv_pdftotext(src, dst) -> list[str]:
+    return ["pdftotext", "-layout", str(src), str(dst)]
+
+
+# Per-extension converter chains, tried in order until one's tool is on PATH.
+# Each entry: (tool_name, output_suffix, argv_builder).
+_INGEST_CONVERTERS: dict[str, list[tuple]] = {
+    ".docx": [("pandoc", ".md", _conv_pandoc), ("textutil", ".txt", _conv_textutil)],
+    ".odt": [("pandoc", ".md", _conv_pandoc), ("textutil", ".txt", _conv_textutil)],
+    ".epub": [("pandoc", ".md", _conv_pandoc)],
+    ".html": [("pandoc", ".md", _conv_pandoc), ("textutil", ".txt", _conv_textutil)],
+    ".htm": [("pandoc", ".md", _conv_pandoc), ("textutil", ".txt", _conv_textutil)],
+    ".rtf": [("textutil", ".txt", _conv_textutil)],
+    ".pdf": [("pdftotext", ".txt", _conv_pdftotext)],
+}
+
+# Formats recognised as needing conversion but with no bundled converter.
+_INGEST_HINTS: dict[str, str] = {
+    ".pptx": "no built-in converter; export slides to text/markdown manually",
+    ".xlsx": "no built-in converter; export sheets to .csv and place those in sources/",
+    ".hwp": "no common converter; export to .docx or .pdf first, then ingest that",
+    ".png": "images need OCR (out of scope); transcribe to text manually",
+    ".jpg": "images need OCR (out of scope); transcribe to text manually",
+    ".jpeg": "images need OCR (out of scope); transcribe to text manually",
+}
+
+_INSTALL_HINTS: dict[str, str] = {
+    "pandoc": "install pandoc (e.g. `brew install pandoc`, https://pandoc.org)",
+    "pdftotext": "install poppler (e.g. `brew install poppler`)",
+    "textutil": "textutil ships with macOS",
+}
+
+
+def cmd_ingest(args: argparse.Namespace) -> int:
+    """Convert binary/office file(s) into text source(s) under <target>/sources/.
+
+    The original file is left untouched; only the converted text (with a
+    provenance header recording the source, converter, and date) is written into
+    sources/. Returns 0 only if every input was converted; non-zero if any input
+    was skipped or failed.
+    """
+    import shutil
+    import subprocess
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    target = Path(args.target).expanduser().resolve()
+    sources = target / "sources"
+    if not sources.is_dir():
+        print(
+            f"factlog ingest: sources/ not found under {target}. "
+            f"Run 'factlog init --target {args.target}' first.",
+            file=sys.stderr,
+        )
+        return 1
+
+    converted = 0
+    failures = 0
+    for raw in args.paths:
+        src = Path(raw).expanduser()
+        if not src.is_file():
+            print(f"factlog ingest: not a file: {src}", file=sys.stderr)
+            failures += 1
+            continue
+
+        suffix = src.suffix.lower()
+        chain = _INGEST_CONVERTERS.get(suffix)
+        if not chain:
+            hint = _INGEST_HINTS.get(suffix, "no converter available for this format")
+            print(
+                f"factlog ingest: skip {src.name} ({suffix or 'no extension'}): {hint}",
+                file=sys.stderr,
+            )
+            failures += 1
+            continue
+
+        chosen = next(((t, out, build) for (t, out, build) in chain if shutil.which(t)), None)
+        if chosen is None:
+            tools = ", ".join(t for (t, _, _) in chain)
+            hints = "; ".join(_INSTALL_HINTS.get(t, t) for (t, _, _) in chain)
+            print(
+                f"factlog ingest: no converter on PATH for {suffix} (tried: {tools}). {hints}",
+                file=sys.stderr,
+            )
+            failures += 1
+            continue
+
+        tool, out_suffix, build = chosen
+        dst = sources / (src.stem + out_suffix)
+        if dst.exists() and not args.force:
+            print(
+                f"factlog ingest: {dst.relative_to(target)} already exists "
+                f"(use --force to overwrite); skipping {src.name}",
+                file=sys.stderr,
+            )
+            failures += 1
+            continue
+
+        proc = subprocess.run(build(src, dst), capture_output=True, text=True)
+        if proc.returncode != 0 or not dst.is_file():
+            detail = (proc.stderr or proc.stdout or "").strip()
+            print(f"factlog ingest: {tool} failed on {src.name}: {detail}", file=sys.stderr)
+            failures += 1
+            continue
+
+        when = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        body = dst.read_text(encoding="utf-8", errors="replace")
+        if out_suffix == ".md":
+            header = f"<!-- ingested-by-factlog | source: {src.name} | converter: {tool} | date: {when} -->\n\n"
+        else:
+            header = f"[ingested-by-factlog] source: {src.name} | converter: {tool} | date: {when}\n\n"
+        dst.write_text(header + body, encoding="utf-8")
+
+        converted += 1
+        print(f"factlog ingest: {src.name} -> sources/{dst.name} (via {tool})")
+
+    print(f"factlog ingest: {converted} converted, {failures} failed/skipped")
+    return 1 if failures else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="factlog", description="factlog environment and KB helpers")
     parser.add_argument("--version", action="version", version=f"factlog {__version__}")
@@ -375,6 +515,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     setup.add_argument("--target", default="~/wiki", help="knowledge base root to create")
     setup.set_defaults(func=cmd_setup)
+
+    ingest = sub.add_parser(
+        "ingest",
+        help="convert a binary/office file (docx, pdf, ...) into a text source under sources/",
+    )
+    ingest.add_argument("paths", nargs="+", help="file(s) to convert and place in <target>/sources/")
+    ingest.add_argument(
+        "--target",
+        default="~/wiki",
+        help="knowledge base root whose sources/ receives the converted file",
+    )
+    ingest.add_argument(
+        "--force",
+        action="store_true",
+        help="overwrite an existing converted file in sources/",
+    )
+    ingest.set_defaults(func=cmd_ingest)
 
     return parser
 

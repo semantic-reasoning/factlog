@@ -45,12 +45,18 @@ visible.
 | `.docx`, `.pptx`, `.xlsx`, `.hwp`, binary `.pdf`, images | **Not directly ingested** | Convert to Markdown/text first, then place the converted file in `sources/`. |
 
 A binary file left in `sources/` is registered as a source path but yields **no
-facts** (silent non-ingestion). Convert it first, e.g.:
+facts** (silent non-ingestion). Convert it first with `factlog ingest`, which
+wraps the available system converters (pandoc, textutil, pdftotext), writes the
+converted text into `sources/`, and prepends a provenance header:
 
 ```bash
-pandoc report.docx -t gfm -o sources/report.md      # Office → Markdown
-textutil -convert txt report.docx -output report.txt # macOS built-in
+factlog ingest report.docx --target ~/wiki   # → ~/wiki/sources/report.md (via pandoc)
+factlog ingest notes.pdf --target ~/wiki     # → ~/wiki/sources/notes.txt  (via pdftotext)
 ```
+
+`ingest` leaves the original file untouched. Formats with no bundled converter
+(`.pptx`, `.xlsx`, `.hwp`, images) are reported with a hint instead of being
+silently skipped. You can also convert by hand and drop the result in `sources/`.
 
 ## Requirements
 
