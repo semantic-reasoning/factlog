@@ -191,6 +191,37 @@ def corroboration_counts(facts: list[dict[str, str]]) -> dict[tuple[str, str, st
     return {key: len(srcs) for key, srcs in sources.items()}
 
 
+def fact_signals(
+    facts: list[dict[str, str]],
+    root: Path | None = None,
+) -> dict[tuple[str, str, str], dict[str, object]]:
+    """Per engine fact (subject, relation, object), the answer-quality signals:
+    distinct ``sources`` count, max ``confidence``, and ``stale`` (True if any
+    backing source file no longer exists under the KB — the fact rests on a
+    vanished/changed source and should be re-verified)."""
+    base = ROOT if root is None else Path(root)
+    acc: dict[tuple[str, str, str], dict[str, object]] = {}
+    for row in engine_facts(facts):
+        key = (row["subject"], row["relation"], row["object"])
+        entry = acc.setdefault(key, {"sources": set(), "confidence": 0.0, "stale": False})
+        entry["sources"].add(row["source"])
+        try:
+            entry["confidence"] = max(float(entry["confidence"]), float(row["confidence"]))
+        except (TypeError, ValueError):
+            pass
+        source_file = row["source"].partition("#")[0]
+        if source_file and not (base / source_file).is_file():
+            entry["stale"] = True
+    return {
+        key: {
+            "sources": len(entry["sources"]),
+            "confidence": f"{float(entry['confidence']):.2f}",
+            "stale": entry["stale"],
+        }
+        for key, entry in acc.items()
+    }
+
+
 def engine_facts(facts: list[dict[str, str]]) -> list[dict[str, str]]:
     return [row for row in facts if row["status"] in ENGINE_STATUSES]
 
