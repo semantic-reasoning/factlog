@@ -425,6 +425,95 @@ def _relation_match_count(query: str, facts: list[dict[str, str]]) -> int:
     return 0
 
 
+# Stable structured outcome codes for query classification. Callers (e.g. the
+# ask router) route on these codes, NOT on the human-readable reason text, so a
+# reworded message — or an entity/relation constant that happens to contain a
+# reason phrase — can never change routing.
+QUERY_OK = "ok"
+QUERY_REVIEW_REQUIRED = "review_required"
+QUERY_FACT_ABSENT = "fact_absent"  # accepted vocabulary, but fact/path absent
+QUERY_MALFORMED = "malformed"
+QUERY_UNKNOWN_PREDICATE = "unknown_predicate"
+QUERY_BAD_ARITY = "bad_arity"
+QUERY_ENTITY_NOT_ACCEPTED = "entity_not_accepted"
+QUERY_RELATION_NOT_ACCEPTED = "relation_not_accepted"
+QUERY_UNSUPPORTED = "unsupported"
+
+
+def classify_query(
+    line: str,
+    facts: list[dict[str, str]],
+    policy_program: str | None = None,
+) -> tuple[bool, str, str]:
+    """Classify a candidate Datalog query line, returning (ok, code, reason).
+
+    ``code`` is one of the stable ``QUERY_*`` constants — the machine-readable
+    classification callers should branch on. ``reason`` is the human-readable
+    explanation (display only). ``ok`` is True only for a query that resolves
+    against accepted facts (or a well-formed ``review_required``).
+
+    ``policy_program`` — see ``validate_candidate_query``.
+    """
+    query = line.strip()
+    if "\n" in query or not query:
+        return False, QUERY_MALFORMED, "candidate query must be a single non-empty line"
+    if not query.endswith("?"):
+        return False, QUERY_MALFORMED, "candidate query must end with ?"
+    match = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\(", query)
+    if not match:
+        return False, QUERY_MALFORMED, "candidate query must call a predicate"
+    predicate = match.group(1)
+    policy_query_predicates = policy_predicates(
+        load_logic_policy() if policy_program is None else policy_program
+    )
+    allowed_predicates = {"relation", "path", "review_required"} | policy_query_predicates
+    if predicate not in allowed_predicates:
+        return False, QUERY_UNKNOWN_PREDICATE, f"unknown predicate: {predicate}"
+
+    args = _query_args(query)
+    entities = entity_set(facts)
+    relations = allowed_relations(facts)
+    if predicate == "review_required":
+        if len(args) != 1 or len(_quoted_constants(query)) != 1:
+            return False, QUERY_MALFORMED, "review_required must include the original question string"
+        return True, QUERY_REVIEW_REQUIRED, "passed"
+    if predicate == "relation":
+        if len(args) != 3:
+            return False, QUERY_BAD_ARITY, "relation query must have subject, relation, and object arguments"
+        if not all(_is_valid_arg(arg) for arg in args):
+            return False, QUERY_MALFORMED, "relation arguments must be variables or quoted strings"
+        subject, relation, object_ = args
+        if not _is_variable(subject) and _arg_value(subject) not in entities:
+            return False, QUERY_ENTITY_NOT_ACCEPTED, f"relation subject is not an accepted entity: {_arg_value(subject)}"
+        if not _is_variable(relation) and _arg_value(relation) not in relations:
+            return False, QUERY_RELATION_NOT_ACCEPTED, f"relation name is not accepted: {_arg_value(relation)}"
+        if not _is_variable(object_) and _arg_value(object_) not in entities:
+            return False, QUERY_ENTITY_NOT_ACCEPTED, f"relation object is not an accepted entity: {_arg_value(object_)}"
+        if _relation_match_count(query, facts) == 0:
+            return False, QUERY_FACT_ABSENT, "relation query does not match accepted facts"
+        return True, QUERY_OK, "passed"
+    if predicate == "path":
+        if len(args) != 2:
+            return False, QUERY_BAD_ARITY, "path query must have start and target arguments"
+        if not all(_is_valid_arg(arg) for arg in args):
+            return False, QUERY_MALFORMED, "path arguments must be variables or quoted strings"
+        for arg in args:
+            if not _is_variable(arg) and _arg_value(arg) not in entities:
+                return False, QUERY_ENTITY_NOT_ACCEPTED, f"path argument is not an accepted entity: {_arg_value(arg)}"
+        if all(_is_quoted_string(arg) for arg in args) and not dependency_path(facts, _arg_value(args[0]), _arg_value(args[1])):
+            return False, QUERY_FACT_ABSENT, "path query does not match accepted facts"
+        return True, QUERY_OK, "passed"
+    if predicate in policy_query_predicates:
+        if len(args) != 2:
+            return False, QUERY_BAD_ARITY, "policy query must have entity and reason arguments"
+        if not all(_is_valid_arg(arg) for arg in args):
+            return False, QUERY_MALFORMED, "policy query arguments must be variables or quoted strings"
+        if not _is_variable(args[0]) and _arg_value(args[0]) not in entities:
+            return False, QUERY_ENTITY_NOT_ACCEPTED, f"policy query entity is not accepted: {_arg_value(args[0])}"
+        return True, QUERY_OK, "passed"
+    return False, QUERY_UNSUPPORTED, "unsupported query"
+
+
 def validate_candidate_query(
     line: str,
     facts: list[dict[str, str]],
@@ -432,10 +521,11 @@ def validate_candidate_query(
 ) -> tuple[bool, str]:
     """Validate a single candidate Datalog query line against the current KB state.
 
-    Returns (True, "passed") on success or (False, reason) on failure.
-    This is the deterministic re-validation anchor used by the self-correction
-    loop (AC4): after each LLM repair attempt the corrected query is run
-    through this function before being accepted.
+    Returns (True, "passed") on success or (False, reason) on failure — a thin
+    back-compatible wrapper over ``classify_query`` (which also returns a stable
+    ``code``). This is the deterministic re-validation anchor used by the
+    self-correction loop (AC4): after each LLM repair attempt the corrected query
+    is run through this function before being accepted.
 
     ``policy_program`` lets callers supply the policy program text directly. When
     None (default) the compiled ``policy/logic-policy.dl`` is loaded, which
@@ -444,61 +534,5 @@ def validate_candidate_query(
     file's text if present or ``""`` if absent, so a missing policy yields an
     empty policy-predicate set instead of a hard exit.
     """
-    query = line.strip()
-    if "\n" in query or not query:
-        return False, "candidate query must be a single non-empty line"
-    if not query.endswith("?"):
-        return False, "candidate query must end with ?"
-    match = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\(", query)
-    if not match:
-        return False, "candidate query must call a predicate"
-    predicate = match.group(1)
-    policy_query_predicates = policy_predicates(
-        load_logic_policy() if policy_program is None else policy_program
-    )
-    allowed_predicates = {"relation", "path", "review_required"} | policy_query_predicates
-    if predicate not in allowed_predicates:
-        return False, f"unknown predicate: {predicate}"
-
-    args = _query_args(query)
-    entities = entity_set(facts)
-    relations = allowed_relations(facts)
-    if predicate == "review_required":
-        if len(args) != 1 or len(_quoted_constants(query)) != 1:
-            return False, "review_required must include the original question string"
-        return True, "passed"
-    if predicate == "relation":
-        if len(args) != 3:
-            return False, "relation query must have subject, relation, and object arguments"
-        if not all(_is_valid_arg(arg) for arg in args):
-            return False, "relation arguments must be variables or quoted strings"
-        subject, relation, object_ = args
-        if not _is_variable(subject) and _arg_value(subject) not in entities:
-            return False, f"relation subject is not an accepted entity: {_arg_value(subject)}"
-        if not _is_variable(relation) and _arg_value(relation) not in relations:
-            return False, f"relation name is not accepted: {_arg_value(relation)}"
-        if not _is_variable(object_) and _arg_value(object_) not in entities:
-            return False, f"relation object is not an accepted entity: {_arg_value(object_)}"
-        if _relation_match_count(query, facts) == 0:
-            return False, "relation query does not match accepted facts"
-        return True, "passed"
-    if predicate == "path":
-        if len(args) != 2:
-            return False, "path query must have start and target arguments"
-        if not all(_is_valid_arg(arg) for arg in args):
-            return False, "path arguments must be variables or quoted strings"
-        for arg in args:
-            if not _is_variable(arg) and _arg_value(arg) not in entities:
-                return False, f"path argument is not an accepted entity: {_arg_value(arg)}"
-        if all(_is_quoted_string(arg) for arg in args) and not dependency_path(facts, _arg_value(args[0]), _arg_value(args[1])):
-            return False, "path query does not match accepted facts"
-        return True, "passed"
-    if predicate in policy_query_predicates:
-        if len(args) != 2:
-            return False, "policy query must have entity and reason arguments"
-        if not all(_is_valid_arg(arg) for arg in args):
-            return False, "policy query arguments must be variables or quoted strings"
-        if not _is_variable(args[0]) and _arg_value(args[0]) not in entities:
-            return False, f"policy query entity is not accepted: {_arg_value(args[0])}"
-        return True, "passed"
-    return False, "unsupported query"
+    ok, _code, reason = classify_query(line, facts, policy_program)
+    return ok, reason
