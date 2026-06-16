@@ -1,0 +1,346 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1781585993218,
+  "projectRoot": "/Users/joykim/git/semantic-reasoning/factlog",
+  "techStack": {
+    "languages": [
+      {
+        "name": "Python",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "pyproject.toml",
+          "requirements.txt"
+        ]
+      }
+    ],
+    "frameworks": [],
+    "packageManager": "pip",
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": "pytest",
+    "lintCommand": "ruff check",
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "examples",
+      "tests"
+    ],
+    "gitBranches": null
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "examples": {
+      "path": "examples",
+      "purpose": "Example code",
+      "fileCount": 0,
+      "lastAccessed": 1781585993211,
+      "keyFiles": []
+    },
+    "factlog": {
+      "path": "factlog",
+      "purpose": null,
+      "fileCount": 3,
+      "lastAccessed": 1781585993212,
+      "keyFiles": [
+        "__init__.py",
+        "__main__.py",
+        "cli.py"
+      ]
+    },
+    "factlog.egg-info": {
+      "path": "factlog.egg-info",
+      "purpose": null,
+      "fileCount": 6,
+      "lastAccessed": 1781585993212,
+      "keyFiles": [
+        "PKG-INFO",
+        "SOURCES.txt",
+        "dependency_links.txt",
+        "entry_points.txt",
+        "requires.txt"
+      ]
+    },
+    "hooks": {
+      "path": "hooks",
+      "purpose": null,
+      "fileCount": 3,
+      "lastAccessed": 1781585993213,
+      "keyFiles": [
+        "gate_check.sh",
+        "gate_reminder.sh",
+        "hooks.json"
+      ]
+    },
+    "skills": {
+      "path": "skills",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1781585993213,
+      "keyFiles": []
+    },
+    "tests": {
+      "path": "tests",
+      "purpose": "Test files",
+      "fileCount": 5,
+      "lastAccessed": 1781585993213,
+      "keyFiles": [
+        "README.md",
+        "golden.sh",
+        "setup.sh",
+        "smoke.sh",
+        "test_gate_check.sh"
+      ]
+    },
+    "tools": {
+      "path": "tools",
+      "purpose": null,
+      "fileCount": 9,
+      "lastAccessed": 1781585993213,
+      "keyFiles": [
+        "README.md",
+        "common.py",
+        "compile_facts.py",
+        "generate_logic_policy.py",
+        "merge_candidates.py"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "tools/ask_router.py",
+      "accessCount": 67,
+      "lastAccessed": 1781614321917,
+      "type": "file"
+    },
+    {
+      "path": "tools/merge_candidates.py",
+      "accessCount": 41,
+      "lastAccessed": 1781616192870,
+      "type": "file"
+    },
+    {
+      "path": "tools/common.py",
+      "accessCount": 37,
+      "lastAccessed": 1781616047365,
+      "type": "file"
+    },
+    {
+      "path": "skills/factlog/SKILL.md",
+      "accessCount": 25,
+      "lastAccessed": 1781616247385,
+      "type": "file"
+    },
+    {
+      "path": "tests/test_ask_router.sh",
+      "accessCount": 21,
+      "lastAccessed": 1781614201581,
+      "type": "file"
+    },
+    {
+      "path": "factlog/cli.py",
+      "accessCount": 19,
+      "lastAccessed": 1781594091447,
+      "type": "file"
+    },
+    {
+      "path": "README.md",
+      "accessCount": 13,
+      "lastAccessed": 1781598875950,
+      "type": "file"
+    },
+    {
+      "path": "pyproject.toml",
+      "accessCount": 9,
+      "lastAccessed": 1781591813917,
+      "type": "file"
+    },
+    {
+      "path": "tools/finalize.py",
+      "accessCount": 7,
+      "lastAccessed": 1781609812319,
+      "type": "file"
+    },
+    {
+      "path": "tools/run_logic_check.py",
+      "accessCount": 6,
+      "lastAccessed": 1781613838534,
+      "type": "file"
+    },
+    {
+      "path": "tools/validate.py",
+      "accessCount": 5,
+      "lastAccessed": 1781609583133,
+      "type": "file"
+    },
+    {
+      "path": "tests/test_nontext_sources.sh",
+      "accessCount": 4,
+      "lastAccessed": 1781591250134,
+      "type": "file"
+    },
+    {
+      "path": "skills/factlog/references/text-to-datalog.md",
+      "accessCount": 4,
+      "lastAccessed": 1781613715203,
+      "type": "file"
+    },
+    {
+      "path": "tests/test_corroboration.sh",
+      "accessCount": 4,
+      "lastAccessed": 1781615661171,
+      "type": "file"
+    },
+    {
+      "path": "skills/factlog/references/text-to-fact.md",
+      "accessCount": 3,
+      "lastAccessed": 1781588858784,
+      "type": "file"
+    },
+    {
+      "path": "hooks/gate_check.sh",
+      "accessCount": 3,
+      "lastAccessed": 1781594110983,
+      "type": "file"
+    },
+    {
+      "path": "tests/test_finalize.sh",
+      "accessCount": 3,
+      "lastAccessed": 1781609085927,
+      "type": "file"
+    },
+    {
+      "path": "tools/compile_facts.py",
+      "accessCount": 3,
+      "lastAccessed": 1781609822738,
+      "type": "file"
+    },
+    {
+      "path": "tests/test_conflicts.sh",
+      "accessCount": 3,
+      "lastAccessed": 1781610121347,
+      "type": "file"
+    },
+    {
+      "path": "tools/corroboration.py",
+      "accessCount": 3,
+      "lastAccessed": 1781615793112,
+      "type": "file"
+    },
+    {
+      "path": "LICENSE",
+      "accessCount": 2,
+      "lastAccessed": 1781588124629,
+      "type": "file"
+    },
+    {
+      "path": ".claude-plugin/plugin.json",
+      "accessCount": 2,
+      "lastAccessed": 1781588131568,
+      "type": "file"
+    },
+    {
+      "path": "tools/README.md",
+      "accessCount": 2,
+      "lastAccessed": 1781589267943,
+      "type": "file"
+    },
+    {
+      "path": "tests/test_ingest.sh",
+      "accessCount": 2,
+      "lastAccessed": 1781591208494,
+      "type": "file"
+    },
+    {
+      "path": "tests/test_gate_check.sh",
+      "accessCount": 2,
+      "lastAccessed": 1781594117376,
+      "type": "file"
+    },
+    {
+      "path": "tools/generate_logic_policy.py",
+      "accessCount": 2,
+      "lastAccessed": 1781608829703,
+      "type": "file"
+    },
+    {
+      "path": "tools/check_conflicts.py",
+      "accessCount": 2,
+      "lastAccessed": 1781615793606,
+      "type": "file"
+    },
+    {
+      "path": "requirements.txt",
+      "accessCount": 1,
+      "lastAccessed": 1781586104556,
+      "type": "file"
+    },
+    {
+      "path": ".claude-plugin/marketplace.json",
+      "accessCount": 1,
+      "lastAccessed": 1781586113506,
+      "type": "file"
+    },
+    {
+      "path": "examples/sample-kb/policy/logic-policy.dl",
+      "accessCount": 1,
+      "lastAccessed": 1781586498370,
+      "type": "file"
+    },
+    {
+      "path": "examples/sample-kb/facts/query.dl",
+      "accessCount": 1,
+      "lastAccessed": 1781586499339,
+      "type": "file"
+    },
+    {
+      "path": "examples/sample-kb/facts/logic_report.txt",
+      "accessCount": 1,
+      "lastAccessed": 1781586499834,
+      "type": "file"
+    },
+    {
+      "path": "NOTICE",
+      "accessCount": 1,
+      "lastAccessed": 1781588125846,
+      "type": "file"
+    },
+    {
+      "path": "tests/smoke.sh",
+      "accessCount": 1,
+      "lastAccessed": 1781588859141,
+      "type": "file"
+    },
+    {
+      "path": "internal-rule.md",
+      "accessCount": 1,
+      "lastAccessed": 1781594335106,
+      "type": "file"
+    },
+    {
+      "path": "examples/sample-kb/decisions/open-questions.md",
+      "accessCount": 1,
+      "lastAccessed": 1781598610709,
+      "type": "file"
+    },
+    {
+      "path": "tests/test_validate_sources.sh",
+      "accessCount": 1,
+      "lastAccessed": 1781600438401,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}

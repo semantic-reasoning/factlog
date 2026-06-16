@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "entries": {
+    "445ed27a3872b681d98190bae61ccb84954e1bc4e140df5370be958dee776b3a": {
+      "last_emitted_at_ms": 1781616047183,
+      "message": "Verify changes work after editing. Test functionality before marking complete."
+    },
+    "466399dafa2d20f60587180bad0a07358eb7f2bce724df0ff682f038ad33f5ad": {
+      "last_emitted_at_ms": 1781615999695,
+      "message": "Read multiple files in parallel when possible for faster analysis."
+    },
+    "79a93d4a2f8f50b95f852280616242fee1855dc99a3c75211917f55e72e95fae": {
+      "last_emitted_at_ms": 1781615995090,
+      "message": "Use parallel execution for independent tasks. Use run_in_background for long operations (npm install, builds, tests)."
+    },
+    "347d02452fc91b60368eb0bc6d2325c4d4ff6a973bff8f314a9b544501ba423f": {
+      "last_emitted_at_ms": 1781615774448,
+      "message": "Spawning agent: oh-my-claudecode:code-reviewer (inherit) | Task: Review coverage critic #36"
+    },
+    "bf2eb5d683463987fed39dacd9d8852fb170aa5c4a99cb41a7a6f045ba4edfd3": {
+      "last_emitted_at_ms": 1781614250255,
+      "message": "Spawning agent: oh-my-claudecode:code-reviewer (inherit) | Task: Review #41 matcher boundaries"
+    },
+    "1f18de42c40aa125f72745fceb77cd73345bf1ff88b84e92357e1578321779ec": {
+      "last_emitted_at_ms": 1781613793713,
+      "message": "Spawning agent: oh-my-claudecode:code-reviewer (inherit) | Task: Review #35 count query"
+    },
+    "9a237353745dfceb7fe9866c100e2802a856f53e5312545564e705a67ae67771": {
+      "last_emitted_at_ms": 1781613382681,
+      "message": "Spawning agent: oh-my-claudecode:code-reviewer (inherit) | Task: Review #34 fact signals"
+    },
+    "4ddd9e862a3c7c9191359c31cfcb5e29a06e1cc8123791caea45f31c5342ca65": {
+      "last_emitted_at_ms": 1781612692901,
+      "message": "Spawning agent: oh-my-claudecode:code-reviewer (inherit) | Task: Review #33 corroboration"
+    }
+  },
+  "updated_at": "2026-06-16T13:20:47.183Z"
+}

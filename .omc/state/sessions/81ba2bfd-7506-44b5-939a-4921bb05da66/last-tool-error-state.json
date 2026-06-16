@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"cd /tmp && rm -rf covedge && KB=/tmp/covedge/wiki\\npython3 -m factlog init --target \\\"$KB\\\" >/dev/null 2>&1 || { echo \\\"init failed\\\"; exit 1; }\\nHEADER=\\\"subject,relation,object,source,st...",
+  "error": "Exit code 1\ninit failed",
+  "timestamp": "2026-06-16T13:17:05.734Z",
+  "retry_count": 1
+}
