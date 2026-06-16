@@ -88,7 +88,31 @@ if printf '%s' "$pneg" | grep -qF "VERIFIED — engine" && printf '%s' "$pneg" |
 check_field "marker-collision relation name routes wiki" validate 'relation("Acme API", "does not match accepted facts", "X")?' route wiki
 check_field "marker-collision not flagged negative" validate 'relation("Acme API", "does not match accepted facts", "X")?' negative False
 
-# --- read-only invariant ---
+# --- Path B: wiki exploration (sources/ + runs/sources/ only; pages/ excluded) ---
+printf '# Acme\n\nAcme API uses FastAPI for routing.\n' > "$KB/sources/acme.md"
+mkdir -p "$KB/runs/sources"
+printf '<!-- ingested -->\n\nThe WidgetX platform integrates ToolA.\n' > "$KB/runs/sources/widgetx.md"
+# A pages/ file encoding an UNACCEPTED candidate triple — must NEVER surface in B.
+printf '<!-- generated-by-factlog -->\n# Acme API\n- may_use -> [[Datadog]] (sources/x.md, confidence=0.40)\n' > "$KB/pages/acme-api.md"
+
+if router search "what uses FastAPI" | "$PYTHON" -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if any(r['dir']=='sources' for r in d['results']) else 1)"; then ok "search finds excerpts in sources/"; else bad "search missed sources/"; fi
+if router search "WidgetX ToolA" | "$PYTHON" -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if any(r['dir']=='runs/sources' for r in d['results']) else 1)"; then ok "search finds excerpts in runs/sources/"; else bad "search missed runs/sources/"; fi
+# pages/ candidate content must never appear in search citations
+if router search "Datadog may_use" | grep -qE 'pages/|may_use|confidence=0\.40'; then bad "pages/ candidate content leaked into search results"; else ok "pages/ excluded from search (no candidate leak)"; fi
+
+wiki_out="$(router wiki "what uses FastAPI" --reason "unknown entity")"
+if printf '%s' "$wiki_out" | grep -qF "UNVERIFIED — wiki exploration"; then ok "wiki answer carries UNVERIFIED marker"; else bad "wiki answer missing UNVERIFIED marker"; fi
+if printf '%s' "$wiki_out" | grep -qF "sources/acme.md:"; then ok "wiki answer cites a source path:line"; else bad "wiki answer missing citation"; fi
+if printf '%s' "$wiki_out" | grep -qF "accepted.dl"; then bad "wiki answer cites accepted.dl (must not)"; else ok "wiki answer never cites accepted.dl"; fi
+# pages/ candidate content must never appear in a rendered wiki answer (ignore the echoed question line)
+if router wiki "does Acme use Datadog" | grep -vE '^question:' | grep -qE 'pages/|may_use|confidence=0\.40'; then bad "pages/ candidate content leaked into wiki answer"; else ok "wiki answer free of pages/ candidate content"; fi
+
+# --- note sink: a non-engine-input file, never facts/query.dl ---
+router note "an unanswered question for later" >/dev/null
+if [ -f "$KB/decisions/ask-open-questions.md" ]; then ok "note writes the open-questions sink"; else bad "note did not create the sink file"; fi
+if grep -qF "an unanswered question for later" "$KB/decisions/ask-open-questions.md"; then ok "note records the question verbatim"; else bad "note did not record the question"; fi
+
+# --- read-only invariant (engine inputs untouched by any subcommand) ---
 if [ -f "$KB/facts/query.dl" ]; then bad "ask_router wrote facts/query.dl (must be read-only)"; else ok "facts/query.dl never written"; fi
 if [ "$(cat "$KB/facts/accepted.dl")" = "$ACCEPTED_BEFORE" ]; then ok "facts/accepted.dl unchanged"; else bad "facts/accepted.dl was mutated"; fi
 
