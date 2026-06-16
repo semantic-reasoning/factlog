@@ -243,15 +243,35 @@ def _wiki_corpus() -> list[tuple[str, str]]:
     return corpus
 
 
-def _keyword_patterns(question: str) -> list[re.Pattern[str]]:
-    """Word-boundary matchers for the question's keywords (len>2, lowercased).
+def _is_cjk(word: str) -> bool:
+    """True if *word* contains a Hangul / CJK / kana character."""
+    return any(
+        "가" <= ch <= "힣"  # Hangul syllables
+        or "一" <= ch <= "鿿"  # CJK unified ideographs
+        or "぀" <= ch <= "ヿ"  # Hiragana + Katakana
+        for ch in word
+    )
 
-    Word boundaries avoid substring false positives (e.g. 'api' in 'therapist').
+
+def _keyword_patterns(question: str) -> list[re.Pattern[str]]:
+    """Keyword matchers for the question, bilingual:
+
+    - ASCII words (len>2): word-boundary match — avoids substring false positives
+      (e.g. 'api' in 'therapist').
+    - CJK words (len>=2): substring match — CJK content words are commonly two
+      characters, and substring tolerates attached particles/조사 (e.g. '근거'
+      matches '근거는'); false-positive risk is low for CJK.
     """
     seen: set[str] = set()
     patterns: list[re.Pattern[str]] = []
     for word in re.findall(r"\w+", question.lower(), flags=re.UNICODE):
-        if len(word) > 2 and word not in seen:
+        if word in seen:
+            continue
+        if _is_cjk(word):
+            if len(word) >= 2:
+                seen.add(word)
+                patterns.append(re.compile(re.escape(word)))
+        elif len(word) > 2:
             seen.add(word)
             patterns.append(re.compile(rf"\b{re.escape(word)}\b"))
     return patterns
