@@ -216,6 +216,15 @@ rm -f "$KB/facts/candidates.csv" "$KB/sources/a.md" "$KB/sources/b.md"
 # no candidates.csv -> no annotation, still renders
 if router render 'relation("Acme API", "uses", V)?' | grep -qF "VERIFIED — engine"; then ok "engine answer renders without candidates.csv (no annotation)"; else bad "engine render broke without candidates.csv"; fi
 
+# --- #35: count aggregation query (engine-verified) ---
+check_field "count routes engine" validate 'count("Acme API", "uses")?' route engine
+check_field "count valid -> code ok" validate 'count("Acme API", "uses")?' code ok
+if router render 'count("Acme API", "uses")?' | grep -qE '^  - 1$'; then ok "count returns the verified aggregate (1)"; else bad "count value wrong"; fi
+check_field "count unknown entity -> wiki" validate 'count("Nope", "uses")?' route wiki
+# valid vocabulary, zero objects -> verified zero (engine), NOT wiki/fact_absent
+check_field "count of zero stays engine" validate 'count("FastAPI", "uses")?' route engine
+if router render 'count("FastAPI", "uses")?' | grep -qE '^  - 0$'; then ok "count returns verified zero (not a fallback)"; else bad "count zero not rendered as 0"; fi
+
 # --- read-only invariant (engine inputs untouched by any subcommand) ---
 if [ -f "$KB/facts/query.dl" ]; then bad "ask_router wrote facts/query.dl (must be read-only)"; else ok "facts/query.dl never written"; fi
 if [ "$(cat "$KB/facts/accepted.dl")" = "$ACCEPTED_BEFORE" ]; then ok "facts/accepted.dl unchanged"; else bad "facts/accepted.dl was mutated"; fi
