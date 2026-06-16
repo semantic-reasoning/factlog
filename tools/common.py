@@ -203,17 +203,13 @@ def load_questions() -> list[dict[str, str]]:
     return rows
 
 
-def single_valued_relations() -> set[str]:
-    """Relation names declared single-valued (functional) in policy/single-valued.md.
+def _relation_names_from_policy(filename: str) -> set[str]:
+    """Parse a policy file that lists relation names, one per line.
 
-    Such a relation may hold at most one object per subject; two distinct objects
-    are a contradiction (see tools/check_conflicts.py). The file is optional —
-    one relation name per line (bullets and '#' comments allowed). The relation
-    name is the first `backtick`-quoted token if present, else the first
-    whitespace token; quote a name that contains spaces. Absent file → no
-    single-valued relations → no conflicts.
-    """
-    path = POLICY_DIR / "single-valued.md"
+    Bullets and '#' comments are allowed; the relation name is the first
+    `backtick`-quoted token if present, else the first whitespace token (quote a
+    name that contains spaces). Absent file → empty set."""
+    path = POLICY_DIR / filename
     if not path.is_file():
         return set()
     names: set[str] = set()
@@ -226,6 +222,30 @@ def single_valued_relations() -> set[str]:
         if name:
             names.add(name)
     return names
+
+
+def single_valued_relations() -> set[str]:
+    """Relation names declared single-valued (functional) in policy/single-valued.md.
+
+    Such a relation may hold at most one object per subject; two distinct objects
+    are a contradiction (see tools/check_conflicts.py). Absent file → no
+    single-valued relations → no conflicts.
+    """
+    return _relation_names_from_policy("single-valued.md")
+
+
+def attribute_relations() -> set[str]:
+    """Relation names whose object is a LITERAL value, not a first-class entity
+    (policy/attribute-relations.md).
+
+    Objects of these relations (dates, numbers, ordinals, ...) are excluded from
+    entity_set so they do not pollute the entity vocabulary (entity listings,
+    path nodes, count subjects). They remain valid relation-query objects — see
+    value_set and classify_query — so a fact about a literal is still verifiable.
+    Same file format as single-valued.md; absent file → no attribute relations
+    → entity_set == value_set (fully backward compatible).
+    """
+    return _relation_names_from_policy("attribute-relations.md")
 
 
 def corroboration_counts(facts: list[dict[str, str]]) -> dict[tuple[str, str, str], int]:
@@ -284,9 +304,29 @@ def engine_input_rows(facts: list[dict[str, str]]) -> list[dict[str, str]]:
     return facts
 
 
-def entity_set(facts: list[dict[str, str]] | None = None) -> set[str]:
+def value_set(facts: list[dict[str, str]] | None = None) -> set[str]:
+    """Every accepted subject/object — the full validatable vocabulary, INCLUDING
+    literal values (dates, numbers, ...). Use this to validate a relation query's
+    object so a fact about a literal stays verifiable."""
     selected = engine_input_rows(facts if facts is not None else load_accepted_facts())
     return {value for row in selected for value in [row["subject"], row["object"]] if value}
+
+
+def entity_set(facts: list[dict[str, str]] | None = None) -> set[str]:
+    """First-class entities only: every subject, plus objects whose relation is
+    NOT declared an attribute relation. Objects of attribute relations are
+    literal values (see attribute_relations) and are excluded so they don't show
+    up as entities (entity listings, path nodes, count subjects). With no
+    policy/attribute-relations.md this equals value_set (backward compatible)."""
+    selected = engine_input_rows(facts if facts is not None else load_accepted_facts())
+    literal_rels = attribute_relations()
+    entities: set[str] = set()
+    for row in selected:
+        if row["subject"]:
+            entities.add(row["subject"])
+        if row["object"] and row["relation"] not in literal_rels:
+            entities.add(row["object"])
+    return entities
 
 
 def allowed_relations(facts: list[dict[str, str]] | None = None) -> set[str]:
@@ -591,6 +631,11 @@ def classify_query(
 
     args = _query_args(query)
     entities = entity_set(facts)
+    # Relation OBJECTS may be literal values (attribute relations), which are not
+    # in entity_set; validate them against the broader value_set so a fact about
+    # a literal stays queryable. Subjects/path nodes/count subjects must be true
+    # entities, so those keep using entity_set.
+    values = value_set(facts)
     relations = allowed_relations(facts)
     if predicate == "review_required":
         if len(args) != 1 or len(_quoted_constants(query)) != 1:
@@ -606,7 +651,7 @@ def classify_query(
             return False, QUERY_ENTITY_NOT_ACCEPTED, f"relation subject is not an accepted entity: {_arg_value(subject)}"
         if not _is_variable(relation) and _arg_value(relation) not in relations:
             return False, QUERY_RELATION_NOT_ACCEPTED, f"relation name is not accepted: {_arg_value(relation)}"
-        if not _is_variable(object_) and _arg_value(object_) not in entities:
+        if not _is_variable(object_) and _arg_value(object_) not in values:
             return False, QUERY_ENTITY_NOT_ACCEPTED, f"relation object is not an accepted entity: {_arg_value(object_)}"
         if _relation_match_count(query, facts) == 0:
             return False, QUERY_FACT_ABSENT, "relation query does not match accepted facts"

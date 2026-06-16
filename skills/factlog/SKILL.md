@@ -142,6 +142,17 @@ re-`merge` preserves rows you marked `superseded` in `candidates.csv` even when
 a run re-asserts the retired fact. This keeps the KB free of the silently-
 accumulated contradictions a plain notes wiki cannot prevent.
 
+**Entity vs literal typing.** Relations you list in `policy/attribute-relations.md`
+(same one-name-per-line format as `single-valued.md`) are treated as
+*literal-valued*: their object is a value (a date, number, ordinal, ...), not a
+first-class entity. Such objects are kept OUT of the entity set, so they do not
+appear as entities, path nodes, or `count` subjects, and the query translator
+won't mistake a date for an entity. They remain fully verifiable as relation
+objects — `relation("을서비스", "정식_운영", "2030.1")?` still resolves. The file is
+optional; with no declarations the entity set is unchanged (every object is an
+entity). Run `tools/entity_audit.py` to find candidates (objects that look like
+literals under a relation you haven't declared).
+
 Use `/factlog add` for quick capture; use the explicit `sync → query → check →
 repair` sequence when you need the full question→query workflow.
 
