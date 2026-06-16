@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import sys
 from pathlib import Path
@@ -217,7 +216,7 @@ def write_trace(rules: list[dict[str, Any]], output: str) -> None:
     trace = [
         "# Natural Language To Policy Trace",
         "",
-        f"- provider: fixture",
+        "- provider: fixture",
         f"- rules generated: {len(rules)}",
         f"- output: {output}",
         "",
