@@ -8,7 +8,6 @@ import re
 import sys
 from collections import defaultdict, deque
 from pathlib import Path
-from typing import Any
 
 try:
     import pyrewire

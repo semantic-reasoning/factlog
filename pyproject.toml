@@ -22,3 +22,8 @@ factlog = "factlog.cli:main"
 
 [tool.setuptools]
 packages = ["factlog"]
+
+[tool.ruff]
+target-version = "py311"
+# Lint the package and the bundled engine scripts; skip generated/cache dirs.
+extend-exclude = ["examples", "**/__pycache__"]

@@ -270,7 +270,7 @@ def _install_requirements(requirements) -> int:
             "\n"
             "    python3 -m venv ~/.factlog-venv\n"
             "    source ~/.factlog-venv/bin/activate\n"
-            f"    python3 -m factlog setup --target <kb>\n",
+            "    python3 -m factlog setup --target <kb>\n",
             file=sys.stderr,
         )
     else:
