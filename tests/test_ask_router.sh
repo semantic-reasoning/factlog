@@ -148,10 +148,10 @@ router note "   " >/dev/null
 if grep -qE '^- *$' "$KB/decisions/ask-open-questions.md" 2>/dev/null; then bad "blank note recorded"; else ok "blank note not recorded"; fi
 
 # --- bilingual keywords: 2-char Korean terms search; particle/josa tolerance ---
-printf '# 갑봇\n\n검색 관련 문서 근거는 충분하다.\n' > "$KB/sources/ko.md"
-if router search "문서 근거" | grep -qF 'sources/ko.md'; then ok "2-char Korean keywords search (문서/근거) match"; else bad "2-char Korean keywords found nothing"; fi
-# substring match tolerates the attached particle: '근거' matches '근거는'
-if router search "근거" | grep -qF '근거는'; then ok "CJK substring tolerates a particle (근거 -> 근거는)"; else bad "CJK keyword did not match across a particle"; fi
+printf '# 갑봇\n\n검색 관련 문서 자료는 충분하다.\n' > "$KB/sources/ko.md"
+if router search "문서 자료" | grep -qF 'sources/ko.md'; then ok "2-char Korean keywords search (문서/자료) match"; else bad "2-char Korean keywords found nothing"; fi
+# substring match tolerates the attached particle: '자료' matches '자료는'
+if router search "자료" | grep -qF '자료는'; then ok "CJK substring tolerates a particle (자료 -> 자료는)"; else bad "CJK keyword did not match across a particle"; fi
 rm -f "$KB/sources/ko.md"
 
 # --- Phase 2: path (positive render / variable) + policy + decisions ---
@@ -179,15 +179,15 @@ if printf '%s' "$dout" | grep -qF 'decisions (supplementary)'; then ok "decision
 rm -f "$KB/decisions/open-questions.md"
 
 # --- #31: relevance ranking + optional embedding rerank seam ---
-printf '# hi\n\n검색 문서 근거 항목 모두 포함.\n' > "$KB/sources/rank-hi.md"
+printf '# hi\n\n검색 문서 자료 항목 모두 포함.\n' > "$KB/sources/rank-hi.md"
 printf '# lo\n\n검색 만 언급.\n' > "$KB/sources/rank-lo.md"
-top="$(router search "검색 문서 근거 항목" | "$PYTHON" -c "import json,sys; d=json.load(sys.stdin); print(d['results'][0]['file'] if d['results'] else '')")"
+top="$(router search "검색 문서 자료 항목" | "$PYTHON" -c "import json,sys; d=json.load(sys.stdin); print(d['results'][0]['file'] if d['results'] else '')")"
 [ "$top" = "sources/rank-hi.md" ] && ok "relevance ranking surfaces highest-coverage excerpt first" || bad "ranking did not rank most-relevant first (got $top)"
 # optional embedding backend (graceful degrade is exercised by every other search; here test the ACTIVE path)
 # stub scores ascending by position, so the lexical-best (index 0) gets the
 # LOWEST score and is pushed to the bottom — an unambiguous reorder (>=2 results).
 EMB="$(mktemp -d)"; printf 'def rank(q, texts):\n    return [float(i) for i in range(len(texts))]\n' > "$EMB/embed_stub.py"
-act0="$(FACTLOG_EMBED_MODULE=embed_stub PYTHONPATH="$PLUGIN_ROOT:$EMB" "$PYTHON" "$ROUTER" search "검색 문서 근거 항목" --target "$KB" | "$PYTHON" -c "import json,sys; d=json.load(sys.stdin); print(d['results'][0]['file'] if d['results'] else '')")"
+act0="$(FACTLOG_EMBED_MODULE=embed_stub PYTHONPATH="$PLUGIN_ROOT:$EMB" "$PYTHON" "$ROUTER" search "검색 문서 자료 항목" --target "$KB" | "$PYTHON" -c "import json,sys; d=json.load(sys.stdin); print(d['results'][0]['file'] if d['results'] else '')")"
 if [ -n "$act0" ] && [ "$act0" != "$top" ]; then ok "optional embedding backend reorders results (seam invoked, graceful when absent)"; else bad "embedding seam did not reorder (lex=$top act=$act0)"; fi
 rm -f "$KB/sources/rank-hi.md" "$KB/sources/rank-lo.md"
 

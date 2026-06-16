@@ -45,7 +45,7 @@ printf '%s' "$("$PYTHON" "$CORR" --wiki "$KB" 2>&1)" | grep -qF "1 source(s): X,
 printf '# single-valued\n- 주_속성\n' > "$KB/policy/single-valued.md"
 csv \
   '을서비스,주_속성,값가,sources/a.md,confirmed,0.9,' \
-  '을서비스,주_속성,Claude,sources/b.md,confirmed,0.9,'
+  '을서비스,주_속성,값나,sources/b.md,confirmed,0.9,'
 co="$("$PYTHON" "$CORR" --wiki "$KB" 2>&1)"
 printf '%s' "$co" | grep -qF "competing values" && ok "single-valued competing values reported" || bad "competing values not reported"
 printf '%s' "$co" | grep -qF "값가 (1 src)" && ok "competing value shows per-source support" || bad "per-source support missing"

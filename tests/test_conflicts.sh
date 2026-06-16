@@ -41,26 +41,26 @@ printf '# x\n' > "$KB/sources/x.md"
 if run_conflicts; then ok "multi-valued relation with 2 objects is not flagged"; else bad "multi-valued wrongly flagged"; fi
 
 # single-valued relation with 2 distinct objects -> CONFLICT
-csv '을서비스,주_속성,값가,sources/x.md,confirmed,0.9,' '을서비스,주_속성,Claude,sources/x.md,confirmed,0.9,'
+csv '을서비스,주_속성,값가,sources/x.md,confirmed,0.9,' '을서비스,주_속성,값나,sources/x.md,confirmed,0.9,'
 if run_conflicts; then bad "single-valued conflict NOT detected"; else ok "single-valued conflict detected (exit non-zero)"; fi
 cout="$("$PYTHON" "$CONFLICTS" --wiki "$KB" 2>&1 || true)"
 if printf '%s' "$cout" | grep -qF "CONFLICT"; then ok "conflict reported with CONFLICT line"; else bad "no CONFLICT line"; fi
 
 # resolve by superseding the outdated row -> conflict clears (non-destructively)
-csv '을서비스,주_속성,값가,sources/x.md,superseded,0.9,old' '을서비스,주_속성,Claude,sources/x.md,confirmed,0.9,current'
+csv '을서비스,주_속성,값가,sources/x.md,superseded,0.9,old' '을서비스,주_속성,값나,sources/x.md,confirmed,0.9,current'
 if run_conflicts; then ok "superseding the outdated row resolves the conflict"; else bad "superseded row still conflicts"; fi
 
 # superseded survives merge and is excluded from accepted.dl
-printf '[{"subject":"을서비스","relation":"주_속성","object":"값가","source":"sources/x.md","status":"superseded","confidence":0.9,"note":"old"},{"subject":"을서비스","relation":"주_속성","object":"Claude","source":"sources/x.md","status":"confirmed","confidence":0.9,"note":"current"}]' > "$KB/runs/r.json"
+printf '[{"subject":"을서비스","relation":"주_속성","object":"값가","source":"sources/x.md","status":"superseded","confidence":0.9,"note":"old"},{"subject":"을서비스","relation":"주_속성","object":"값나","source":"sources/x.md","status":"confirmed","confidence":0.9,"note":"current"}]' > "$KB/runs/r.json"
 "$PYTHON" "$PLUGIN_ROOT/tools/merge_candidates.py" --wiki "$KB" >/dev/null 2>&1 || true
 if grep -q ',superseded,' "$KB/facts/candidates.csv"; then ok "merge preserves superseded status"; else bad "merge dropped/renamed superseded status"; fi
 FACTLOG_ROOT="$KB" "$PYTHON" "$PLUGIN_ROOT/tools/compile_facts.py" >/dev/null 2>&1
 if grep -q '"값가"' "$KB/facts/accepted.dl"; then bad "superseded fact leaked into accepted.dl"; else ok "superseded fact excluded from accepted.dl"; fi
-if grep -q '"Claude"' "$KB/facts/accepted.dl"; then ok "current fact compiled to accepted.dl"; else bad "current fact missing from accepted.dl"; fi
+if grep -q '"값나"' "$KB/facts/accepted.dl"; then ok "current fact compiled to accepted.dl"; else bad "current fact missing from accepted.dl"; fi
 
 # H1: a human-marked superseded row is PRESERVED across a re-merge even when the
 # originating run JSON re-asserts it as confirmed (resolution is durable).
-csv '을서비스,주_속성,값가,sources/x.md,superseded,0.9,old' '을서비스,주_속성,Claude,sources/x.md,confirmed,0.9,current'
+csv '을서비스,주_속성,값가,sources/x.md,superseded,0.9,old' '을서비스,주_속성,값나,sources/x.md,confirmed,0.9,current'
 printf '[{"subject":"을서비스","relation":"주_속성","object":"값가","source":"sources/x.md","status":"confirmed","confidence":0.9,"note":"re-asserted"}]' > "$KB/runs/r.json"
 "$PYTHON" "$PLUGIN_ROOT/tools/merge_candidates.py" --wiki "$KB" >/dev/null 2>&1 || true
 if grep -q '을서비스,주_속성,값가,.*,superseded,' "$KB/facts/candidates.csv"; then ok "re-merge preserves human-marked superseded (durable resolution)"; else bad "re-merge reverted the superseded row"; fi
