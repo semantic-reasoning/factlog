@@ -38,7 +38,9 @@ to stdout. --target overrides FACTLOG_ROOT (authoritative).
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
+import math
 import os
 import re
 import sys
@@ -303,18 +305,21 @@ def _semantic_rerank(question: str, results: list[dict[str, object]]) -> list[di
     deterministic/offline CI). If the env var FACTLOG_EMBED_MODULE names an
     importable module exposing ``rank(question, texts) -> list[float]`` (higher =
     more similar), results are reordered by it. Any absence/failure → unchanged
-    (graceful degrade)."""
+    (graceful degrade). The backend reorders only the already-capped top lexical
+    candidates; it cannot widen recall beyond lexical matches. The module runs
+    with full process privileges (it is opt-in by the KB operator)."""
     module_name = os.environ.get("FACTLOG_EMBED_MODULE")
     if not module_name or not results:
         return results
     try:
-        import importlib
-
         backend = importlib.import_module(module_name)
         scores = backend.rank(question, [str(r["excerpt"]) for r in results])
         if not isinstance(scores, list) or len(scores) != len(results):
             return results
-        order = sorted(range(len(results)), key=lambda i: float(scores[i]), reverse=True)
+        floats = [float(score) for score in scores]
+        if not all(math.isfinite(value) for value in floats):
+            return results  # reject NaN/inf → keep lexical order
+        order = sorted(range(len(results)), key=lambda i: floats[i], reverse=True)
         return [results[i] for i in order]
     except Exception:
         return results  # graceful degrade to lexical ranking
