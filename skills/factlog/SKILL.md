@@ -376,6 +376,75 @@ the repair session.
 
 ---
 
+## `/factlog ask` — answer one question (engine facts vs wiki exploration)
+
+**Purpose:** Answer a single natural-language question by **deterministically**
+routing it to either the facts/rule **engine** (verified) or **wiki
+exploration** (unverified). You draft a candidate query; a bundled script
+decides the route and renders the answer. **You never decide whether an answer
+is verified** — the script does, from a stable classification code.
+
+`/factlog ask` is **read-only** with respect to engine inputs: it never writes
+`facts/query.dl` or `facts/accepted.dl` (no PreToolUse-gate interaction).
+
+### Step 1 — Draft a candidate query (LLM, in-session)
+
+Render `${CLAUDE_PLUGIN_ROOT}/skills/factlog/references/text-to-datalog.md` for
+the question (schema context from `facts/accepted.dl` + `policy/logic-policy.dl`)
+and produce ONE candidate Datalog query line — exactly as in `/factlog query`,
+including the `review_required("<verbatim question>")?` fallback.
+
+### Step 2 — Classify deterministically
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/tools/ask_router.py" validate "<draft>" --target "$FACTLOG_ROOT"
+```
+
+This prints JSON `{ok, code, reason, route, negative, predicate}`. **Branch on
+`route`/`code`, never on `reason` text:**
+
+- `route == "engine"` → Step 3a (the engine answer; `negative=true` is a
+  *verified negative*, a real answer — never treat it as "no answer").
+- `route == "wiki"` → Step 3b.
+
+### Step 2′ — Multi-draft probe (reduce missed-engine)
+
+A single draft can misname a canonical entity/relation and wrongly fall to wiki.
+So retry **up to 3 drafts**, feeding the validator's `reason` (it names the
+offending token) back into the next draft to self-correct vocabulary. Stop early
+and go to wiki only when **every** attempt fails with a shape/vocabulary `code`
+(`unknown_predicate`, `entity_not_accepted`, `relation_not_accepted`,
+`bad_arity`, `malformed`, `unsupported`). A `fact_absent` code short-circuits
+immediately to a **verified negative** (Step 3a) — the vocabulary is already
+correct, so retrying is pointless.
+
+### Step 3a — Engine answer (VERIFIED)
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/tools/ask_router.py" render "<draft>" --target "$FACTLOG_ROOT"
+```
+
+Show the `VERIFIED — engine` block verbatim (positive rows, or `rows: 0` /
+"no such fact (verified negative)"). This is engine-backed evidence.
+
+### Step 3b — Wiki exploration (UNVERIFIED)
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/tools/ask_router.py" wiki "<question>" --reason "<why>" --target "$FACTLOG_ROOT"
+```
+
+Show the `UNVERIFIED — wiki exploration` block verbatim (cited `sources/` /
+`runs/sources/` excerpts; `decisions/` is supplementary). It cites only source
+text, never `facts/accepted.dl` — its provenance marks it unverified. Do NOT
+present wiki excerpts as confirmed facts. Optionally record the unanswered
+question for later review (a non-engine-input sink, never `facts/query.dl`):
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/tools/ask_router.py" note "<question>" --target "$FACTLOG_ROOT"
+```
+
+---
+
 ## Extraction & translation criteria (references)
 
 All four reference documents are authoritative constraints — read them before
