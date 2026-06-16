@@ -64,11 +64,13 @@ os.environ["FACTLOG_ROOT"] = _resolve_target_prepass()
 
 from common import (  # noqa: E402
     LOGIC_POLICY_DL,
+    QUERY_FACT_ABSENT,
+    QUERY_OK,
     _arg_value,
     _is_variable,
     _query_args,
+    classify_query,
     load_accepted_facts,
-    validate_candidate_query,
 )
 
 
@@ -79,18 +81,6 @@ def _policy_program_optional() -> str:
     `policy/logic-policy.dl`; a missing policy simply means no policy predicates.
     """
     return LOGIC_POLICY_DL.read_text(encoding="utf-8") if LOGIC_POLICY_DL.is_file() else ""
-
-# The EXACT validator reasons that denote a fact-absence (a verified negative):
-# accepted vocabulary, but the specific fact/path is simply not present. Matched
-# exactly — never as a substring — so an unaccepted entity/relation name that
-# happens to contain this phrase cannot masquerade as a verified negative.
-_FACT_ABSENCE_REASONS = frozenset(
-    {
-        "relation query does not match accepted facts",
-        "path query does not match accepted facts",
-    }
-)
-
 
 def _predicate_of(draft: str) -> str:
     """Parse the predicate name the way the validator does (regex), so the router
@@ -105,25 +95,25 @@ def classify(draft: str, facts: list[dict[str, str]]) -> dict[str, object]:
     Returns {ok, reason, route, negative, predicate}. Pure: no I/O beyond the
     validator, which only reads the accepted facts already loaded by the caller.
     """
-    ok, reason = validate_candidate_query(draft, facts, policy_program=_policy_program_optional())
+    ok, code, reason = classify_query(draft, facts, policy_program=_policy_program_optional())
     predicate = _predicate_of(draft)
 
-    if ok:
-        if predicate == "review_required":
-            route, negative = "wiki", False
-        else:
-            route, negative = "engine", False
-    elif reason in _FACT_ABSENCE_REASONS:
-        # Vocabulary is accepted; the specific fact/path is simply absent.
-        # This is a verified negative — an engine answer, not a wiki fallback.
+    # Route on the stable classification CODE, never on the reason text — so an
+    # entity/relation constant can never masquerade as a routing signal.
+    if code == QUERY_OK:
+        route, negative = "engine", False
+    elif code == QUERY_FACT_ABSENT:
+        # Accepted vocabulary, fact/path absent: a verified negative — an engine
+        # answer, never demoted to wiki.
         route, negative = "engine", True
     else:
-        # Shape/vocabulary failure: the question cannot be expressed over
-        # accepted facts.
+        # review_required or any shape/vocabulary failure: cannot be expressed
+        # over accepted facts.
         route, negative = "wiki", False
 
     return {
         "ok": ok,
+        "code": code,
         "reason": reason,
         "route": route,
         "negative": negative,
