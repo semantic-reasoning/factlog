@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """Remove stale source references from wiki pages after human review."""
 
 from __future__ import annotations

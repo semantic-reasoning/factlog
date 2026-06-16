@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
 # factlog deterministic gate — SCAFFOLD (non-blocking).
 #
 # Fires after Write/Edit. If an engine input was just edited by the model, it

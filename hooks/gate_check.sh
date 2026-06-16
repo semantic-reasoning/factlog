@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
 # factlog PreToolUse gate — deny writes to engine inputs when logic_report.txt
 # is absent or stale, EXCEPT for the first (bootstrap) creation of an input.
 #
