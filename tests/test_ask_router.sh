@@ -147,6 +147,13 @@ rm -f "$KB/sources/dup.md"
 router note "   " >/dev/null
 if grep -qE '^- *$' "$KB/decisions/ask-open-questions.md" 2>/dev/null; then bad "blank note recorded"; else ok "blank note not recorded"; fi
 
+# --- bilingual keywords: 2-char Korean terms search; particle/josa tolerance ---
+printf '# 갑봇\n\n검색 관련 문서 근거는 충분하다.\n' > "$KB/sources/ko.md"
+if router search "문서 근거" | grep -qF 'sources/ko.md'; then ok "2-char Korean keywords search (문서/근거) match"; else bad "2-char Korean keywords found nothing"; fi
+# substring match tolerates the attached particle: '근거' matches '근거는'
+if router search "근거" | grep -qF '근거는'; then ok "CJK substring tolerates a particle (근거 -> 근거는)"; else bad "CJK keyword did not match across a particle"; fi
+rm -f "$KB/sources/ko.md"
+
 # --- Phase 2: path (positive render / variable) + policy + decisions ---
 ppos="$(router render 'path("Acme API", "FastAPI")?')"
 if printf '%s' "$ppos" | grep -qF "VERIFIED — engine" && printf '%s' "$ppos" | grep -qF "Acme API, FastAPI"; then ok "path positive renders the dependency path as an engine answer"; else bad "path positive not rendered"; fi
