@@ -41,22 +41,22 @@ printf '%s\n%s\n%s\n%s\n' "$H" \
   '갑봇,통합_대상,병서비스,sources/a.md,accepted,0.9,' \
   '을서비스,정식_운영,2030.1,sources/a.md,accepted,0.9,' > "$KB/facts/candidates.csv"
 printf 'x\n' > "$KB/sources/a.md"
-# add a substring-contained pair for fragmentation
-printf '%s\n' '플랫폼가,예시,플랫폼가,sources/a.md,accepted,0.9,' >> "$KB/facts/candidates.csv"
+# add a substring-contained pair for fragmentation (플랫폼가 ⊂ 병지역 플랫폼가)
+printf '%s\n' '병지역 플랫폼가,예시,플랫폼가,sources/a.md,accepted,0.9,' >> "$KB/facts/candidates.csv"
 
 run
 [ "$rc" -eq 0 ] && ok "populated audit exits 0" || bad "exit $rc"
 printf '%s' "$out" | grep -qE "\[ *2\] 갑봇" && ok "entity list reports fact count" || bad "entity fact count missing"
-printf '%s' "$out" | grep -qF "'플랫폼가' ⟷ '플랫폼가'" && ok "substring fragmentation candidate surfaced" || bad "fragmentation candidate missing"
+printf '%s' "$out" | grep -qF "'병지역 플랫폼가' ⟷ '플랫폼가'" && ok "substring fragmentation candidate surfaced" || bad "fragmentation candidate missing"
 printf '%s' "$out" | grep -qF "relation '정식_운영' has literal-looking object(s): 2030.1" && ok "literal suspect under undeclared relation surfaced" || bad "literal suspect missing"
 
-# the motivating non-date literal forms (ordinal '제1호안', year '2026년', amount '100억')
+# the motivating non-date literal forms (ordinal '1호 항목', year '2026년', amount '100억')
 printf '%s\n%s\n%s\n' \
-  '갑봇,공약_순위,제1호안,sources/a.md,accepted,0.9,' \
+  '갑봇,공약_순위,1호 항목,sources/a.md,accepted,0.9,' \
   '을서비스,운영_연도,2026년,sources/a.md,accepted,0.9,' \
   '예산,규모,100억,sources/a.md,accepted,0.9,' >> "$KB/facts/candidates.csv"
 run
-for v in "제1호안" "2026년" "100억"; do
+for v in "1호 항목" "2026년" "100억"; do
   printf '%s' "$out" | grep -qE "literal-looking object\(s\):.*$v" && ok "literal form '$v' detected as suspect" || bad "literal form '$v' missed"
 done
 printf '%s' "$out" | grep -qF "consider adding '정식_운영' to policy/attribute-relations.md" && ok "suggests declaring the relation" || bad "declare suggestion missing"

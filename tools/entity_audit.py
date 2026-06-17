@@ -60,7 +60,7 @@ from common import (  # noqa: E402
 
 # Heuristic: looks like a literal VALUE rather than a first-class entity. Covers
 # dates (2030.1 / 2024-07-01), plain/comma/decimal numbers (2026, 1,000, 3.14),
-# and number+unit forms incl. an optional trailing word (1호, 제1호안, 2026년,
+# and number+unit forms incl. an optional trailing word (1호, 1호 항목, 2026년,
 # 100억, 제3호). Advisory only — a human confirms before declaring the relation;
 # a few false positives (e.g. a named concept like '4차 산업혁명') are acceptable
 # in exchange for not missing the motivating value forms.
