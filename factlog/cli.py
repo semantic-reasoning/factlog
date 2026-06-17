@@ -459,9 +459,51 @@ def _conv_hwpx(src, dst) -> bool:
     return True
 
 
+class _MissingTool(Exception):
+    """Raised by a built-in converter when a required external tool is absent.
+
+    Treated like a missing PATH converter: a soft skip under --scan, a failure
+    when the file was named explicitly. Carries an install hint as its message.
+    """
+
+
+def _conv_hwp(src, dst) -> bool:
+    """Convert a legacy Hancom .hwp (HWP 5.x, an OLE binary) to markdown.
+
+    LibreOffice's HWP import filter only handles old HWP (<=3.x), so the
+    soffice->PDF route fails on modern HWP 5.x files. Instead use pyhwp's
+    `hwp5html` to extract structure-preserving HTML, then pandoc to markdown
+    (tables survive). Raises _MissingTool if hwp5html or pandoc is unavailable.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+    from pathlib import Path
+
+    if not shutil.which("hwp5html"):
+        raise _MissingTool("install pyhwp for .hwp support (`pip install pyhwp`); provides hwp5html")
+    if not shutil.which("pandoc"):
+        raise _MissingTool("install pandoc for the HTML->markdown step (e.g. `brew install pandoc`)")
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "html"
+        h = subprocess.run(
+            ["hwp5html", "--output", str(out), str(src)],
+            capture_output=True, text=True, timeout=180,
+        )
+        index = out / "index.xhtml"
+        if h.returncode != 0 or not index.is_file():
+            return False
+        p = subprocess.run(
+            ["pandoc", str(index), "-t", "gfm", "--wrap=none", "-o", str(dst)],
+            capture_output=True, text=True, timeout=180,
+        )
+    return p.returncode == 0 and dst.is_file() and dst.stat().st_size > 0
+
+
 # Converters that run in-process (a Python callable writing dst) rather than by
-# shelling out to a PATH tool; they skip the shutil.which availability check.
-_BUILTIN_CONVERTERS: frozenset[str] = frozenset({"factlog-hwpx"})
+# shelling out to a single PATH tool; they skip the shutil.which availability
+# check (a built-in may itself orchestrate external tools and report _MissingTool).
+_BUILTIN_CONVERTERS: frozenset[str] = frozenset({"factlog-hwpx", "factlog-hwp"})
 
 # Per-extension converter chains, tried in order until one's tool is available
 # (on PATH, or always for a built-in). Each entry: (tool_name, output_suffix,
@@ -476,13 +518,13 @@ _INGEST_CONVERTERS: dict[str, list[tuple]] = {
     ".rtf": [("textutil", ".txt", _conv_textutil)],
     ".pdf": [("pdftotext", ".txt", _conv_pdftotext)],
     ".hwpx": [("factlog-hwpx", ".md", _conv_hwpx)],
+    ".hwp": [("factlog-hwp", ".md", _conv_hwp)],
 }
 
 # Formats recognised as needing conversion but with no bundled converter.
 _INGEST_HINTS: dict[str, str] = {
     ".pptx": "no built-in converter; export slides to text/markdown manually",
     ".xlsx": "no built-in converter; export sheets to .csv and place those in sources/",
-    ".hwp": "no common converter; export to .docx or .pdf first, then ingest that",
     ".png": "images need OCR (out of scope); transcribe to text manually",
     ".jpg": "images need OCR (out of scope); transcribe to text manually",
     ".jpeg": "images need OCR (out of scope); transcribe to text manually",
@@ -611,7 +653,14 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         if tool in _BUILTIN_CONVERTERS:
             try:
                 ok = bool(build(src, dst))
-                detail = "could not extract text (empty, corrupt, or unsupported hwpx)"
+                detail = "could not extract text (empty, corrupt, or unsupported file)"
+            except _MissingTool as exc:
+                # required external tool absent: like a missing PATH converter —
+                # soft-skip under --scan, count as failure when named explicitly.
+                print(f"factlog ingest: skip {src.name} ({suffix}): {exc}", file=sys.stderr)
+                skipped += 1 if args.scan else 0
+                failures += 0 if args.scan else 1
+                continue
             except Exception as exc:  # defensive: a built-in must never crash the run
                 ok = False
                 detail = str(exc)

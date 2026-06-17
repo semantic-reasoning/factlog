@@ -43,7 +43,8 @@ no facts on its own.
 | Other UTF-8 text (`.rst`, `.org`, `.csv`, source code) | Supported as plain text | No special parsing; treated as raw text. |
 | `.docx`, binary `.pdf`, `.odt`, `.epub`, `.html`, `.rtf` | **Auto-converted** | `factlog ingest` converts these to text via pandoc / textutil / pdftotext. |
 | `.hwpx` (Hancom OWPML) | **Auto-converted** | Built-in extractor (no external tool) — reads the zip's `Contents/section*.xml` text. |
-| `.pptx`, `.xlsx`, `.hwp`, images | **Not converted** | No bundled converter — reported with a hint; convert by hand (e.g. export `.hwp` to `.hwpx`/`.docx`/`.pdf`). |
+| `.hwp` (legacy Hancom, HWP 5.x) | **Auto-converted** | Via `hwp5html` (pyhwp) → pandoc → markdown, tables preserved. Needs `pip install pyhwp` + pandoc; if absent, reported with a hint. |
+| `.pptx`, `.xlsx`, images | **Not converted** | No bundled converter — reported with a hint; convert by hand. |
 
 `factlog ingest` writes the converted text into the KB's **`runs/sources/`**
 directory (alongside the other generated run artifacts) — **never into
