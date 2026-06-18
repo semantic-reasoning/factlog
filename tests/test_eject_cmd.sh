@@ -120,6 +120,58 @@ printf 'subject,relation,object,source\n%s\n%s\n' \
 "$PYTHON" -m factlog eject x.md --target "$KB" >/dev/null 2>&1 || true
 grep -q "sources/y.md" "$KB/facts/candidates.csv" && ok "rows preserved when header lacks a status column (no truncation)" || bad "candidates.csv truncated on missing status column"
 
+# =============================================================================
+# Fact mode: eject a single fact, leaving the source in place (#74)
+# =============================================================================
+
+# Seed a text source with two facts + a runs/*.json asserting both.
+seed_facts() {  # $1 = KB path
+  local kb="$1"
+  "$PYTHON" -m factlog init --target "$kb" >/dev/null
+  printf 'plain\n' > "$kb/sources/a.md"
+  printf '%s\n%s\n%s\n' "$H" \
+    'X,wrongrel,Y,sources/a.md,confirmed,0.9,' \
+    'X,goodrel,Z,sources/a.md,confirmed,0.9,' > "$kb/facts/candidates.csv"
+  printf '[{"subject":"X","relation":"wrongrel","object":"Y","source":"sources/a.md","status":"confirmed","confidence":0.9,"note":""},{"subject":"X","relation":"goodrel","object":"Z","source":"sources/a.md","status":"confirmed","confidence":0.9,"note":""}]\n' \
+    > "$kb/runs/r.json"
+}
+
+# --- default (supersede): retire one fact, keep source + runs + other fact -----
+KB="$(mktemp -d)/wiki"; seed_facts "$KB"
+"$PYTHON" -m factlog eject --fact X wrongrel Y --target "$KB" >/dev/null 2>&1
+grep -q "X,wrongrel,Y,sources/a.md,superseded," "$KB/facts/candidates.csv" && ok "fact mode: matched triple superseded" || bad "fact not superseded"
+grep -q "X,goodrel,Z,sources/a.md,confirmed," "$KB/facts/candidates.csv" && ok "fact mode: other fact untouched" || bad "other fact altered"
+[ -f "$KB/sources/a.md" ] && ok "fact mode: source kept" || bad "source deleted in fact mode"
+grep -q "wrongrel" "$KB/runs/r.json" && ok "fact mode default: runs/*.json kept (durable supersede)" || bad "runs stripped on default supersede"
+grep -q '"X", "goodrel", "Z"' "$KB/facts/accepted.dl" && ! grep -q '"X", "wrongrel", "Y"' "$KB/facts/accepted.dl" \
+  && ok "fact mode: accepted.dl drops only the retired fact" || bad "accepted.dl wrong after fact eject"
+
+# --- supersede is durable across a re-merge -----------------------------------
+"$PYTHON" tools/merge_candidates.py --wiki "$KB" >/dev/null 2>&1
+grep -q "X,wrongrel,Y,sources/a.md,superseded," "$KB/facts/candidates.csv" && ok "fact mode: supersede survives re-merge" || bad "supersede lost after re-merge"
+
+# --- --purge: delete the row and strip runs -----------------------------------
+KB="$(mktemp -d)/wiki"; seed_facts "$KB"
+"$PYTHON" -m factlog eject --fact X wrongrel Y --target "$KB" --purge >/dev/null 2>&1
+grep -q "wrongrel" "$KB/facts/candidates.csv" && bad "--purge left the fact row" || ok "fact mode --purge: row deleted"
+grep -q "wrongrel" "$KB/runs/r.json" && bad "--purge left runs row" || ok "fact mode --purge: runs row stripped"
+grep -q "goodrel" "$KB/runs/r.json" && ok "fact mode --purge: unrelated runs row kept" || bad "unrelated runs row lost"
+
+# --- --dry-run changes nothing ------------------------------------------------
+KB="$(mktemp -d)/wiki"; seed_facts "$KB"
+before="$(cat "$KB/facts/candidates.csv")"
+"$PYTHON" -m factlog eject --fact X wrongrel Y --target "$KB" --dry-run >/dev/null 2>&1
+[ "$(cat "$KB/facts/candidates.csv")" = "$before" ] && ok "fact mode --dry-run: no change" || bad "--dry-run mutated state"
+
+# --- validation: mode mixing, --delete-original, neither, no-match -------------
+KB="$(mktemp -d)/wiki"; seed_facts "$KB"
+set +e
+"$PYTHON" -m factlog eject a.md --fact X wrongrel Y --target "$KB" >/dev/null 2>&1; [ $? -eq 2 ] && ok "rejects source + --fact together" || bad "mode mixing not rejected"
+"$PYTHON" -m factlog eject --fact X wrongrel Y --delete-original --target "$KB" >/dev/null 2>&1; [ $? -eq 2 ] && ok "rejects --delete-original in fact mode" || bad "--delete-original not rejected in fact mode"
+"$PYTHON" -m factlog eject --target "$KB" >/dev/null 2>&1; [ $? -eq 2 ] && ok "rejects neither source nor --fact" || bad "empty invocation not rejected"
+"$PYTHON" -m factlog eject --fact No Such Triple --target "$KB" >/dev/null 2>&1; [ $? -eq 1 ] && ok "fact mode: unknown triple errors (rc 1)" || bad "no-match triple did not error"
+set -e
+
 # --- non-KB path errors -------------------------------------------------------
 set +e; "$PYTHON" -m factlog eject anything --target "$(mktemp -d)" >/dev/null 2>&1; rc=$?; set -e
 [ "$rc" -ne 0 ] && ok "eject on a non-KB path errors" || bad "non-KB path should error"

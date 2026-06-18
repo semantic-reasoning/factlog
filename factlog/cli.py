@@ -945,23 +945,32 @@ def cmd_ingest(args: argparse.Namespace) -> int:
 
 
 def cmd_eject(args: argparse.Namespace) -> int:
-    """Inverse of `ingest`: remove a source from the KB.
+    """Inverse of `ingest`: remove a source — or a single fact — from the KB.
 
-    For each named source, eject:
+    Two mutually exclusive modes:
+
+    Source mode (`eject <source>...`) — for each named source:
       - deletes its runs/sources/ conversion (the ingest output);
       - strips the source's extracted rows from every runs/*.json (removing a
         now-empty run file) so a later merge stays consistent;
       - retires the source's rows in facts/candidates.csv — marked `superseded`
         by default (kept for audit), or removed entirely with --purge;
       - optionally deletes the user's original under sources/ with
-        --delete-original (off by default: ingest never created it);
-      - recompiles facts/accepted.dl so the engine input drops the removed facts.
-
+        --delete-original (off by default: ingest never created it).
     A source is named by its filename, stem, or KB-relative path. Naming the
     binary original (e.g. report.pptx) also matches its runs/sources/<stem>
     conversion; a bare stem matches every source with that stem. eject also
-    catches a source cited only in candidates.csv (an already-orphaned ref). With
-    --dry-run nothing changes; the planned actions are printed.
+    catches a source cited only in candidates.csv (an already-orphaned ref).
+
+    Fact mode (`eject --fact SUBJECT RELATION OBJECT`, repeatable) — retires
+    candidate rows matching the given (subject, relation, object) triple(s)
+    across all sources, leaving the source files in place. The default
+    `superseded` keeps runs/*.json untouched so the retirement survives a later
+    sync (merge_candidates preserves it); --purge deletes the rows and strips
+    runs/*.json. --delete-original is rejected in fact mode.
+
+    Both modes recompile facts/accepted.dl so the engine input drops the retired
+    facts. With --dry-run nothing changes; the planned actions are printed.
     """
     import csv
     import json
@@ -1009,75 +1018,129 @@ def cmd_eject(args: argparse.Namespace) -> int:
 
     all_refs = set(disk_refs) | cited_refs
 
-    # Tie each runs/sources/ conversion to the original it was made from, read
-    # from the ingest provenance header ("... | source: <name> | ..."). Two
-    # originals can share a stem (report.pptx + report.docx both -> report.md),
-    # so a stem guess would let `eject report.docx` wrongly pull report.pptx's
-    # conversion; the recorded origin name disambiguates. Falls back to a stem
-    # match only when no header is present (a hand-made conversion).
-    conv_origin: dict[str, str] = {}
-    for ref, p in disk_refs.items():
-        if not ref.startswith("runs/sources/"):
-            continue
-        try:
-            head = p.read_text(encoding="utf-8", errors="replace").split("\n", 1)[0]
-        except OSError:
-            head = ""
-        m = re.search(r"source:\s*(.+?)\s*(?:\||-->|$)", head)
-        if m:
-            conv_origin[ref] = nfc(m.group(1).strip())
+    fact_specs: list[list[str]] = list(args.fact or [])
+    fact_mode = bool(fact_specs)
 
-    def matches(ref: str, name: str) -> bool:
-        name = nfc(name)
-        rp, np_ = Path(ref), Path(name)
-        if ref == name:  # exact KB-relative ref
-            return True
-        is_conv = ref.startswith("runs/sources/")
-        if "/" in name:
-            # A path was given: the exact original is handled above; for a binary
-            # original also match the conversion it produced (by recorded origin).
-            # Same-basename files in other directories are NOT matched.
-            return is_conv and conv_origin.get(ref) == np_.name
-        if np_.suffix:  # a bare filename with an extension
-            if not is_conv:
-                return rp.name == np_.name  # an original with that filename
-            origin = conv_origin.get(ref)  # the conversion made from this original
-            return origin == np_.name if origin else rp.stem == np_.stem
-        return rp.stem == np_.stem  # bare stem: every source with that stem
+    # Exactly one mode: a source list OR --fact triples (never both, never neither).
+    if fact_mode and args.sources:
+        print("factlog eject: give either source(s) or --fact, not both", file=sys.stderr)
+        return 2
+    if not fact_mode and not args.sources:
+        print("factlog eject: nothing to eject (give a source, or --fact S R O)", file=sys.stderr)
+        return 2
+    if fact_mode and args.delete_original:
+        print("factlog eject: --delete-original is only valid when ejecting a source", file=sys.stderr)
+        return 2
 
-    matched: set[str] = set()
-    for name in args.sources:
-        hits = {ref for ref in all_refs if matches(ref, name)}
-        if hits:
-            matched |= hits
-        else:
-            print(f"factlog eject: no source matches '{name}'", file=sys.stderr)
-    if not matched:
-        print("factlog eject: nothing to eject", file=sys.stderr)
-        return 1
+    # `match_row` decides which candidate rows AND runs/*.json items are retired;
+    # `conv_to_delete` / `orig_on_disk` / `strip_runs` carry the source-mode-only
+    # file actions (empty/false in fact mode, which never touches source files).
+    if fact_mode:
+        targets = {(nfc(s), nfc(rel), nfc(o)) for s, rel, o in fact_specs}
 
-    matched_sorted = sorted(matched)
-    print(f"factlog eject (KB: {target}): {len(matched_sorted)} matched source ref(s):")
-    for ref in matched_sorted:
-        print(f"  - {ref}  [{'on disk' if ref in disk_refs else 'cited only (no file)'}]")
+        def match_row(d: dict) -> bool:
+            return (
+                nfc(str(d.get("subject", ""))),
+                nfc(str(d.get("relation", ""))),
+                nfc(str(d.get("object", ""))),
+            ) in targets
 
-    conv_to_delete = [r for r in matched_sorted if r.startswith("runs/sources/") and r in disk_refs]
-    orig_on_disk = [r for r in matched_sorted if not r.startswith("runs/sources/") and r in disk_refs]
-    affected = [r for r in rows if nfc((r.get("source") or "").partition("#")[0]) in matched]
+        affected = [r for r in rows if match_row(r)]
+        if not affected:
+            print("factlog eject: no candidate fact matches the given triple(s):", file=sys.stderr)
+            for s, rel, o in sorted(targets):
+                print(f"  - ({s}, {rel}, {o})", file=sys.stderr)
+            return 1
+        print(
+            f"factlog eject (KB: {target}): fact mode — {len(affected)} candidate row(s) to "
+            f"{'purge' if args.purge else 'supersede'}:"
+        )
+        for r in affected:
+            print(
+                f"  - ({nfc(r.get('subject', ''))}, {nfc(r.get('relation', ''))}, "
+                f"{nfc(r.get('object', ''))})  [source: {r.get('source', '')}]"
+            )
+        conv_to_delete: list[str] = []
+        orig_on_disk: list[str] = []
+        # Keep runs/*.json on a supersede: the source stays, so the run keeps
+        # re-asserting the fact and merge_candidates' superseded-preservation
+        # holds the retirement durably across the next sync. Only --purge, which
+        # means "remove it", strips the run row too.
+        strip_runs = args.purge
+    else:
+        # Tie each runs/sources/ conversion to the original it was made from, read
+        # from the ingest provenance header ("... | source: <name> | ..."). Two
+        # originals can share a stem (report.pptx + report.docx both -> report.md),
+        # so a stem guess would let `eject report.docx` wrongly pull report.pptx's
+        # conversion; the recorded origin name disambiguates. Falls back to a stem
+        # match only when no header is present (a hand-made conversion).
+        conv_origin: dict[str, str] = {}
+        for ref, p in disk_refs.items():
+            if not ref.startswith("runs/sources/"):
+                continue
+            try:
+                head = p.read_text(encoding="utf-8", errors="replace").split("\n", 1)[0]
+            except OSError:
+                head = ""
+            m = re.search(r"source:\s*(.+?)\s*(?:\||-->|$)", head)
+            if m:
+                conv_origin[ref] = nfc(m.group(1).strip())
 
-    action = "purge" if args.purge else "supersede"
-    print(f"  candidates.csv: {len(affected)} row(s) to {action}")
-    print(f"  runs/sources conversion(s) to delete: {len(conv_to_delete)}")
-    if args.delete_original:
-        print(f"  original(s) to delete (--delete-original): {len(orig_on_disk)}")
-    elif orig_on_disk:
-        print(f"  original(s) kept: {len(orig_on_disk)} (pass --delete-original to remove)")
+        def matches(ref: str, name: str) -> bool:
+            name = nfc(name)
+            rp, np_ = Path(ref), Path(name)
+            if ref == name:  # exact KB-relative ref
+                return True
+            is_conv = ref.startswith("runs/sources/")
+            if "/" in name:
+                # A path was given: the exact original is handled above; for a
+                # binary original also match the conversion it produced (by
+                # recorded origin). Same-basename files elsewhere are NOT matched.
+                return is_conv and conv_origin.get(ref) == np_.name
+            if np_.suffix:  # a bare filename with an extension
+                if not is_conv:
+                    return rp.name == np_.name  # an original with that filename
+                origin = conv_origin.get(ref)  # the conversion made from this original
+                return origin == np_.name if origin else rp.stem == np_.stem
+            return rp.stem == np_.stem  # bare stem: every source with that stem
+
+        matched: set[str] = set()
+        for name in args.sources:
+            hits = {ref for ref in all_refs if matches(ref, name)}
+            if hits:
+                matched |= hits
+            else:
+                print(f"factlog eject: no source matches '{name}'", file=sys.stderr)
+        if not matched:
+            print("factlog eject: nothing to eject", file=sys.stderr)
+            return 1
+
+        def match_row(d: dict) -> bool:
+            return nfc(str(d.get("source", "")).partition("#")[0]) in matched
+
+        matched_sorted = sorted(matched)
+        print(f"factlog eject (KB: {target}): {len(matched_sorted)} matched source ref(s):")
+        for ref in matched_sorted:
+            print(f"  - {ref}  [{'on disk' if ref in disk_refs else 'cited only (no file)'}]")
+
+        conv_to_delete = [r for r in matched_sorted if r.startswith("runs/sources/") and r in disk_refs]
+        orig_on_disk = [r for r in matched_sorted if not r.startswith("runs/sources/") and r in disk_refs]
+        affected = [r for r in rows if match_row(r)]
+        strip_runs = True
+
+        action = "purge" if args.purge else "supersede"
+        print(f"  candidates.csv: {len(affected)} row(s) to {action}")
+        print(f"  runs/sources conversion(s) to delete: {len(conv_to_delete)}")
+        if args.delete_original:
+            print(f"  original(s) to delete (--delete-original): {len(orig_on_disk)}")
+        elif orig_on_disk:
+            print(f"  original(s) kept: {len(orig_on_disk)} (pass --delete-original to remove)")
 
     if args.dry_run:
         print("factlog eject: --dry-run, no changes made")
         return 0
 
-    # 1. delete the ingest conversion(s)
+    # 1. delete the ingest conversion(s) (source mode only)
     deleted_conv = 0
     for ref in conv_to_delete:
         try:
@@ -1086,26 +1149,22 @@ def cmd_eject(args: argparse.Namespace) -> int:
         except OSError as exc:
             print(f"factlog eject: could not delete {ref}: {exc}", file=sys.stderr)
 
-    # 2. strip the source's rows from runs/*.json (drop now-empty run files)
+    # 2. strip the retired rows from runs/*.json (drop now-empty run files)
     stripped_rows = 0
     removed_files = 0
     runs_dir = target / "runs"
-    if runs_dir.is_dir():
+    if strip_runs and runs_dir.is_dir():
         for jp in sorted(runs_dir.glob("*.json")):
             try:
                 data = json.loads(jp.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError) as exc:
                 # surface it: a corrupt run file left behind could still hold the
-                # ejected source's rows and resurrect them on a later merge.
+                # retired rows and resurrect them on a later merge.
                 print(f"factlog eject: skipping unreadable {jp.name}: {exc}", file=sys.stderr)
                 continue
             if not isinstance(data, list):
                 continue  # non-candidate run JSON (e.g. a policy-gen object): leave it
-            kept = [
-                item for item in data
-                if not (isinstance(item, dict)
-                        and nfc(str(item.get("source", "")).partition("#")[0]) in matched)
-            ]
+            kept = [item for item in data if not (isinstance(item, dict) and match_row(item))]
             if len(kept) != len(data):
                 stripped_rows += len(data) - len(kept)
                 if kept:
@@ -1126,7 +1185,7 @@ def cmd_eject(args: argparse.Namespace) -> int:
             out_fields = [*out_fields, "status"]
         new_rows: list[dict[str, str]] = []
         for r in rows:
-            if nfc((r.get("source") or "").partition("#")[0]) in matched:
+            if match_row(r):
                 changed += 1
                 if args.purge:
                     continue  # drop the row entirely
@@ -1141,7 +1200,7 @@ def cmd_eject(args: argparse.Namespace) -> int:
             writer.writerows(new_rows)
         os.replace(tmp, csv_path)
 
-    # 4. optionally delete the user's original(s)
+    # 4. optionally delete the user's original(s) (source mode only)
     deleted_orig = 0
     if args.delete_original:
         for ref in orig_on_disk:
@@ -1168,17 +1227,28 @@ def cmd_eject(args: argparse.Namespace) -> int:
 
     verb = "purged" if args.purge else "superseded"
     recompiled = "accepted.dl NOT recompiled" if recompile_failed else "accepted.dl recompiled"
-    print(
-        f"factlog eject: {deleted_conv} conversion(s) deleted, {stripped_rows} run row(s) "
-        f"stripped ({removed_files} run file(s) removed), {changed} candidate row(s) {verb}, "
-        f"{deleted_orig} original(s) deleted; {recompiled}"
-    )
+    if fact_mode:
+        print(
+            f"factlog eject: {changed} candidate row(s) {verb}, {stripped_rows} run row(s) "
+            f"stripped ({removed_files} run file(s) removed); {recompiled}"
+        )
+    else:
+        print(
+            f"factlog eject: {deleted_conv} conversion(s) deleted, {stripped_rows} run row(s) "
+            f"stripped ({removed_files} run file(s) removed), {changed} candidate row(s) {verb}, "
+            f"{deleted_orig} original(s) deleted; {recompiled}"
+        )
     if changed:
         print(
             "factlog eject: note — pages/ may still reference the removed facts; "
             "run /factlog sync to regenerate them."
         )
-    if orig_on_disk and not args.delete_original:
+    if fact_mode and args.purge:
+        print(
+            "factlog eject: note — the source remains; a later /factlog sync may re-extract "
+            "this fact. Use the default (supersede) to keep it retired durably."
+        )
+    if not fact_mode and orig_on_disk and not args.delete_original:
         print(
             "factlog eject: note — kept original(s) will be re-converted on the next "
             "`factlog ingest --scan` / `/factlog sync`; pass --delete-original to remove them."
@@ -1234,12 +1304,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     eject = sub.add_parser(
         "eject",
-        help="inverse of ingest: remove a source — delete its conversion and retire its facts",
+        help="inverse of ingest: remove a source (conversion + its facts), or just a fact",
     )
     eject.add_argument(
         "sources",
-        nargs="+",
+        nargs="*",
         help="source(s) to remove, named by filename, stem, or KB-relative path",
+    )
+    eject.add_argument(
+        "--fact",
+        action="append",
+        nargs=3,
+        metavar=("SUBJECT", "RELATION", "OBJECT"),
+        help="retire one fact by its triple, leaving the source in place (repeatable)",
     )
     eject.add_argument(
         "--target",
@@ -1249,7 +1326,7 @@ def build_parser() -> argparse.ArgumentParser:
     eject.add_argument(
         "--purge",
         action="store_true",
-        help="delete the source's candidate rows instead of marking them superseded",
+        help="delete the matched candidate rows instead of marking them superseded",
     )
     eject.add_argument(
         "--delete-original",
