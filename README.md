@@ -89,6 +89,26 @@ factlog eject report.pdf --delete-original  # also delete the user's original un
 factlog eject report.pdf --dry-run       # show the planned changes, modify nothing
 ```
 
+#### Removing a single fact (`--fact`)
+
+When a source is fine but one extracted fact is wrong, retire just that fact —
+the source's conversion and original stay in place:
+
+```bash
+factlog eject --fact "을서비스" "정식_운영" "2030.1"      # retire one fact (mark superseded)
+factlog eject --fact "갑봇" "통합" "을서비스" --fact "값가" "대체" "값나"   # several at once
+factlog eject --fact "을서비스" "정식_운영" "2030.1" --purge   # delete the candidate row instead
+```
+
+A fact is matched by its `(subject, relation, object)` triple across **all**
+sources. The default `superseded` keeps `runs/*.json` untouched, so the
+retirement is durable — a later `/factlog sync` re-asserts the fact from its
+source but `merge_candidates` keeps it superseded. `--purge` instead deletes the
+row and strips it from `runs/*.json`; if the source still asserts it, a re-sync
+re-extracts it, so use the default to retire a fact for good. Fact mode and
+source mode are mutually exclusive, and `--delete-original` is not valid with
+`--fact`.
+
 By default the retired facts are marked `superseded` (kept in
 `facts/candidates.csv` for audit) and the original under `sources/` is **kept** —
 so it would be re-converted on the next `/factlog sync`; pass `--delete-original`
