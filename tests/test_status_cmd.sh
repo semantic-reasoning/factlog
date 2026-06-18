@@ -95,6 +95,28 @@ out="$("$PYTHON" -m factlog status --target "$PKB" 2>&1)"
 printf '%s' "$out" | grep -qE "sources: +3 file\(s\), 2 with facts \(1 via conversion\), 1 with none" \
   && ok "unconverted binary still counted 'with none'" || bad "unconverted binary miscounted: $(printf '%s' "$out" | grep sources:)"
 
+# a stray BINARY under runs/sources/ (cited) must NOT mask the original's gap
+AKB="$(mktemp -d)/wiki"
+"$PYTHON" -m factlog init --target "$AKB" >/dev/null
+printf '\x00\x01bin\x00' > "$AKB/sources/report.pdf"
+printf '\x00\x01bin\x00' > "$AKB/runs/sources/report.bin"   # binary, not a usable conversion
+printf '%s\n%s\n' "$H" 'A,rel,B,runs/sources/report.bin,confirmed,0.9,' > "$AKB/facts/candidates.csv"
+out="$("$PYTHON" -m factlog status --target "$AKB" 2>&1)"
+printf '%s' "$out" | grep -qE "sources: +2 file\(s\), 1 with facts, 1 with none" \
+  && ok "stray binary in runs/sources does not mask the original's gap (text-only pairing)" || bad "anomaly masked gap: $(printf '%s' "$out" | grep sources:)"
+
+# hidden files are skipped; sync-ignored sources are tallied separately
+HKB="$(mktemp -d)/wiki"
+"$PYTHON" -m factlog init --target "$HKB" >/dev/null
+printf 'x\n' > "$HKB/sources/keep.md"
+printf 'x\n' > "$HKB/sources/wip.md"
+printf 'x\n' > "$HKB/sources/.DS_Store_note.md"   # hidden-ish name (dot-prefixed)
+printf -- '- wip.md\n' >> "$HKB/policy/sync-ignore.md"
+printf '%s\n%s\n' "$H" 'A,rel,B,sources/keep.md,confirmed,0.9,' > "$HKB/facts/candidates.csv"
+out="$("$PYTHON" -m factlog status --target "$HKB" 2>&1)"
+printf '%s' "$out" | grep -qE "sources: +1 file\(s\), 1 with facts, 0 with none, 1 sync-ignored" \
+  && ok "hidden skipped + sync-ignored tallied separately (not a gap)" || bad "hidden/ignored accounting wrong: $(printf '%s' "$out" | grep sources:)"
+
 # --- not a KB -----------------------------------------------------------------
 set +e; "$PYTHON" -m factlog status --target "$(mktemp -d)" >/dev/null 2>&1; rc=$?; set -e
 [ "$rc" -ne 0 ] && ok "status on a non-KB path errors" || bad "non-KB path should error"

@@ -612,12 +612,23 @@ def cmd_status(args: argparse.Namespace) -> int:
     # conversion" when its runs/sources/<rel> text conversion carries facts
     # (facts attach to the conversion, not the binary original).
     cited = {unicodedata.normalize('NFC', r['source'].partition('#')[0]) for r in engine_rows if r.get('source')}
-    paths = c.source_files(target)
-    refs = {p: unicodedata.normalize('NFC', p.relative_to(target).as_posix()) for p in paths}
+    patterns = c.sync_ignore_patterns(target)
+    refs: dict = {}
+    n_ignored = 0
+    for p in c.source_files(target):
+        if any(part.startswith(".") for part in p.relative_to(target).parts):
+            continue  # hidden (.DS_Store, .git, ...)
+        ref = unicodedata.normalize('NFC', p.relative_to(target).as_posix())
+        if c.is_sync_ignored(ref, patterns):
+            n_ignored += 1  # excluded from sync on purpose — not a gap
+            continue
+        refs[p] = ref
+    # only a *text* conversion under runs/sources/ backs an original (a stray
+    # binary there is an anomaly, not a usable conversion — matches coverage).
     covered_keys = {
         c.source_rel_key(ref)
         for p, ref in refs.items()
-        if ref.startswith("runs/sources/") and ref in cited
+        if ref.startswith("runs/sources/") and ref in cited and c.is_text_source(p)
     }
     direct = sum(1 for ref in refs.values() if ref in cited)
     via = sum(
@@ -629,8 +640,10 @@ def cmd_status(args: argparse.Namespace) -> int:
         and c.source_rel_key(ref) in covered_keys
     )
     covered = direct + via
+    total = len(refs)
     via_note = f" ({via} via conversion)" if via else ""
-    print(f"  sources:    {len(paths)} file(s), {covered} with facts{via_note}, {len(paths) - covered} with none")
+    excl_note = f", {n_ignored} sync-ignored" if n_ignored else ""
+    print(f"  sources:    {total} file(s), {covered} with facts{via_note}, {total - covered} with none{excl_note}")
 
     # Conflicts (single-valued relations with >1 distinct object)
     if sv:
