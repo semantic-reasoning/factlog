@@ -70,7 +70,30 @@ factlog where             # show the active KB and how it was resolved
 factlog sources           # list registered sources (original, conversion, fact count)
 factlog status            # KB state: facts by status, vocabulary, conflicts, logic freshness, engine
 cd /anywhere && factlog ingest report.pdf   # → ~/wiki/runs/sources/report.txt
+factlog eject report.pdf  # inverse of ingest: remove the conversion + retire its facts
 ```
+
+### Removing a source (`factlog eject`) — the inverse of `ingest`
+
+`factlog eject <source>` undoes an ingest: it deletes the `runs/sources/`
+conversion, strips the source's extracted rows from `runs/*.json`, and retires
+the facts that cite it. Name a source by filename, stem, or KB-relative path —
+naming the binary original (e.g. `report.pdf`) also matches its
+`runs/sources/<stem>` conversion; a bare stem matches every source with that
+stem.
+
+```bash
+factlog eject report.pdf                 # delete conversion; mark citing facts superseded (kept for audit)
+factlog eject report.pdf --purge         # delete the citing candidate rows instead of superseding them
+factlog eject report.pdf --delete-original  # also delete the user's original under sources/
+factlog eject report.pdf --dry-run       # show the planned changes, modify nothing
+```
+
+By default the retired facts are marked `superseded` (kept in
+`facts/candidates.csv` for audit) and the original under `sources/` is **kept** —
+so it would be re-converted on the next `/factlog sync`; pass `--delete-original`
+to remove it too. `accepted.dl` is recompiled so the engine input drops the
+retired facts immediately.
 
 Resolution precedence: `--target`/`--wiki` flag > `$FACTLOG_ROOT` > active-KB
 config (`${XDG_CONFIG_HOME:-~/.config}/factlog/config.json`) > current directory.
