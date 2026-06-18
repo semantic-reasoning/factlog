@@ -740,6 +740,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Windows console defaults to the legacy code page (cp949); force UTF-8 so
+    # Korean output (e.g. ingest filenames) isn't mangled. No-op elsewhere.
+    if sys.platform == "win32":
+        for _stream in (sys.stdout, sys.stderr):
+            try:
+                _stream.reconfigure(encoding="utf-8")
+            except (AttributeError, ValueError, OSError):
+                pass
     parser = build_parser()
     args = parser.parse_args(argv)
     if not getattr(args, "command", None):

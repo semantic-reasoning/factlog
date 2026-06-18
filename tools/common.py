@@ -18,6 +18,33 @@ except ImportError:  # pragma: no cover - exercised only on machines without pyr
     EasySession = None
 
 
+def enable_utf8_stdio() -> None:
+    """Force stdout/stderr to UTF-8 on Windows so non-ASCII console output
+    (e.g. Korean entity/relation names) is not mangled by the legacy code page
+    (cp949). Files are always written with explicit ``encoding="utf-8"``; this
+    only fixes what gets printed to the terminal.
+
+    No-op on non-Windows platforms, where stdio is already UTF-8. Idempotent and
+    safe to call repeatedly; tolerates streams that do not support reconfigure
+    (e.g. pytest capture, redirected pipes).
+    """
+    if sys.platform != "win32":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8")
+        except (ValueError, OSError):  # pragma: no cover - stream already closed/detached
+            pass
+
+
+# Applied at import so every tool that imports common gets correct Windows
+# console output without an explicit call.
+enable_utf8_stdio()
+
+
 ROOT = Path(os.environ.get("FACTLOG_ROOT", ".")).expanduser().resolve()
 FACTS_DIR = ROOT / "facts"
 DECISIONS_DIR = ROOT / "decisions"
