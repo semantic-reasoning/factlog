@@ -388,10 +388,13 @@ it is correctly reported as a gap, not "covered":
 
 - **text gap** — a text source with 0 facts: an extraction gap; re-run
   `/factlog sync` (or investigate why nothing was extracted).
-- **binary gap** — a binary source under `sources/` with 0 facts: it needs
-  conversion first via `factlog ingest`. A binary under `runs/sources/` is
-  instead flagged as an anomaly (that directory holds ingest *output*, which
-  should already be text).
+- **binary gap** — a binary source under `sources/` with **no conversion** at
+  all: it needs conversion first via `factlog ingest`. A binary that already has
+  a `runs/sources/<stem>` conversion is **not** a gap — facts attach to the
+  conversion, so the original is reported as *covered via conversion* (it counts
+  toward "covered", with a `(N via conversion)` note in the summary). A binary
+  under `runs/sources/` is instead flagged as an anomaly (that directory holds
+  ingest *output*, which should already be text).
 - **orphan citation** — a fact cites a source path with no file on disk (a
   stale or typo'd reference); surfaced on stderr.
 
