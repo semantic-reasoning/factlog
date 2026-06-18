@@ -108,6 +108,25 @@ least one non-wildcard term is required). Quote a term that contains spaces.
 `/factlog ask` also lists each backing source path (`← <source>`) beneath a
 verified engine answer, so a fact found via a query can be traced inline.
 
+### Reviewing facts (`factlog review` / `accept` / `reject`)
+
+Extraction marks facts `candidate` or `needs_review`; only `confirmed`/`accepted`
+facts become engine input. Promote or retire them without hand-editing
+`facts/candidates.csv`:
+
+```bash
+factlog review                       # list the pending queue (candidate + needs_review)
+factlog review --status needs_review # narrow to one pending status
+factlog accept Acme uses FastAPI     # pending → accepted (compiled into accepted.dl)
+factlog accept Acme                  # accept every pending fact about a subject ('-' wildcards a position)
+factlog reject Acme uses Datadog     # pending → superseded (retired, kept for audit)
+factlog accept Acme uses FastAPI --dry-run
+```
+
+`accept`/`reject` change **only pending rows**; a `confirmed`/`accepted`/
+`superseded` match is reported and left untouched (use `factlog eject` to retire
+a non-pending fact). Both recompile `accepted.dl`.
+
 ### Excluding sources from sync (`factlog ignore`)
 
 `/factlog sync` re-extracts **every** source on each run. To keep specific
