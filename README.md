@@ -95,7 +95,7 @@ queryable:
 factlog vocab              # entities + relations (engine facts)
 factlog vocab --entities   # just entities
 factlog vocab --relations  # just relations (tagged [attribute] / [single-valued])
-factlog vocab --all        # include candidate-only names (default: engine facts)
+factlog vocab --all        # include non-engine names (candidate/needs_review/superseded)
 ```
 
 Objects of declared attribute relations are literals, not entities, so they are
