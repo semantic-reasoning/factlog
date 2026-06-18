@@ -6,10 +6,6 @@
 > 바꿔 주는 Claude Code 스킬입니다. LLM이 추출하고, 결정론적 Datalog/wirelog
 > 엔진이 검증합니다.
 
-**상태:** 안정 릴리스 (`v0.2.1`).
-
-> 이름이 비슷한 Emacs 파일 접근 로거 `tkf/factlog` 와는 무관합니다.
-
 ## 개요
 
 factlog는 마크다운 지식베이스(knowledge base)를 정직하게 유지하기 위한
