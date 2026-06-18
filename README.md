@@ -56,6 +56,13 @@ untouched and the conversion carries a provenance header (source, converter,
 date). Both `sources/` and `runs/sources/` are valid source roots that
 extraction reads.
 
+> **Upgrading:** subdirectory mirroring is newer than the original flat layout.
+> A KB ingested earlier has flat conversions (`runs/sources/report.md`) for
+> nested originals; those no longer pair, so a nested binary may reappear as a
+> coverage/`factlog sources` gap. Re-run `factlog ingest --scan --force` to move
+> conversions to their mirrored paths (then delete any stale flat conversions).
+> Top-level (non-nested) sources are unaffected.
+
 ```bash
 factlog ingest report.docx --target ~/wiki   # → ~/wiki/runs/sources/report.md (pandoc)
 factlog ingest --scan --target ~/wiki        # auto-convert every binary under sources/
