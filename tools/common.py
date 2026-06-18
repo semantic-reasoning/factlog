@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import csv
-import fnmatch
 import json
 import os
 import re
@@ -287,14 +286,51 @@ def sync_ignore_patterns(root: Path | None = None) -> list[str]:
     return patterns
 
 
+def _glob_to_regex(pattern: str) -> str:
+    """Translate a path glob to a regex where `*`/`?` stay within a path segment.
+
+    Unlike fnmatch (whose `*` crosses `/`), here:
+      - `*`  matches any run of non-`/` characters (one path segment),
+      - `?`  matches a single non-`/` character,
+      - `**` matches across segments (`**/` = zero-or-more directories),
+      - a trailing `/` is shorthand for `/**` (the whole subtree).
+    So `drafts/*.md` matches `drafts/x.md` but NOT `drafts/sub/x.md`, while
+    `drafts/**` (or `drafts/`) matches everything under `drafts/`.
+    """
+    if pattern.endswith("/"):
+        pattern += "**"
+    out: list[str] = []
+    i, n = 0, len(pattern)
+    while i < n:
+        c = pattern[i]
+        if c == "*":
+            if pattern[i:i + 2] == "**":
+                i += 2
+                if pattern[i:i + 1] == "/":
+                    out.append("(?:.*/)?")  # '**/' — zero or more directories
+                    i += 1
+                else:
+                    out.append(".*")        # '**' — anything, crossing '/'
+            else:
+                out.append("[^/]*")
+                i += 1
+        elif c == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(c))
+            i += 1
+    return "(?s:" + "".join(out) + r")\Z"
+
+
 def is_sync_ignored(ref: str, patterns: list[str]) -> bool:
     """True if a source ref matches any sync-ignore glob.
 
     *ref* is a source path relative to the KB root (sources/- or
     runs/sources/-prefixed). A pattern matches the full ref OR the ref's path
     within its source root, so `drafts/*.md` matches `sources/drafts/x.md` and
-    `sources/wip.md` matches itself. Matching is case-sensitive (fnmatchcase);
-    both sides are NFC-normalised. fnmatch '*' does not cross '/'.
+    `sources/wip.md` matches itself. Matching is case-sensitive; both sides are
+    NFC-normalised. Glob semantics: see _glob_to_regex (`*` does not cross `/`).
     """
     if not patterns:
         return False
@@ -305,7 +341,11 @@ def is_sync_ignored(ref: str, patterns: list[str]) -> bool:
         if ref.startswith(prefix):
             candidates.append(ref[len(prefix):])
             break
-    return any(fnmatch.fnmatchcase(c, pat) for pat in patterns for c in candidates)
+    return any(
+        re.match(_glob_to_regex(pat), c) is not None
+        for pat in patterns
+        for c in candidates
+    )
 
 
 def single_valued_relations() -> set[str]:

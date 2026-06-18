@@ -191,9 +191,15 @@ explanation of its purpose.
 # remove those). Manage with `factlog ignore [--remove] <pattern>`.
 #
 # One pattern per line; '#' comments and '-' bullets allowed; quote a pattern
-# with spaces in `backticks`. A pattern matches a source by its full ref
-# (sources/... or runs/sources/...) OR its path within the source root, so
-# `drafts/*.md` matches `sources/drafts/x.md`. '*' does not cross '/'.
+# with spaces (or one starting with '#') in `backticks`. A pattern matches a
+# source by its full ref (sources/... or runs/sources/...) OR its path within
+# the source root, so `drafts/*.md` matches `sources/drafts/x.md`.
+#
+# Glob: '*' and '?' stay within one path segment (do NOT cross '/'); '**'
+# crosses segments; a trailing '/' means the whole subtree. So:
+#   drafts/*.md   -> drafts/x.md      (not drafts/sub/x.md)
+#   drafts/**     -> everything under drafts/
+#   **/*.md       -> any .md at any depth
 #
 # Example (remove the leading '# ' to activate):
 # - drafts/*.md
@@ -391,6 +397,10 @@ def cmd_ignore(args: argparse.Namespace) -> int:
     current = sync_ignore_patterns(target)
     requested = [nfc(p.strip()) for p in (args.patterns or []) if p.strip()]
 
+    if args.remove and not requested:
+        print("factlog ignore --remove: give at least one pattern to remove", file=sys.stderr)
+        return 2
+
     if not requested:  # list mode
         if not current:
             print(f"factlog ignore (KB: {target}): no sync-ignore patterns")
@@ -407,7 +417,12 @@ def cmd_ignore(args: argparse.Namespace) -> int:
     policy_file.parent.mkdir(parents=True, exist_ok=True)
 
     if args.remove:
-        existing_text = policy_file.read_text(encoding="utf-8") if policy_file.is_file() else ""
+        if not policy_file.is_file():
+            print("factlog ignore: removed 0 pattern(s)")
+            for p in requested:
+                print(f"  (not present: {p})", file=sys.stderr)
+            return 0
+        existing_text = policy_file.read_text(encoding="utf-8")
         removable = set(requested)
         kept_lines: list[str] = []
         removed = 0

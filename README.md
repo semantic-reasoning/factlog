@@ -90,11 +90,20 @@ factlog ignore --remove drafts/*.md               # remove a pattern
 ```
 
 `policy/sync-ignore.md` is one glob per line (same lenient format as the other
-policy files — `#` comments, `-` bullets, backtick-quoted entries). A pattern
-matches a source by its full ref (`sources/...` / `runs/sources/...`) or by its
-path within the source root, so `drafts/*.md` matches `sources/drafts/x.md`
-(`*` does not cross `/`). `factlog sources` marks ignored sources `[ignored]`
-and coverage reports them as `excluded` rather than gaps.
+policy files — `#` comments, `-` bullets, backtick-quoted entries; quote a
+pattern that starts with `#` in backticks). A pattern matches a source by its
+full ref (`sources/...` / `runs/sources/...`) or by its path within the source
+root. Glob semantics: `*` and `?` stay within one path segment (do **not** cross
+`/`), `**` crosses segments, and a trailing `/` means the whole subtree:
+
+| Pattern | Matches |
+|---------|---------|
+| `drafts/*.md` | `sources/drafts/x.md` — but not `sources/drafts/sub/x.md` |
+| `drafts/**` (or `drafts/`) | everything under `sources/drafts/` |
+| `**/*.md` | any `.md` at any depth |
+
+`factlog sources` marks ignored sources `[ignored]` and coverage reports them as
+`excluded` rather than gaps.
 
 ### Removing a source (`factlog eject`) — the inverse of `ingest`
 

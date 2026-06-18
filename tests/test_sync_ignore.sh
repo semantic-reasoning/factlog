@@ -38,25 +38,33 @@ cat > "$KB/policy/sync-ignore.md" <<'EOF'
 - sources/wip-notes.md
 - `with space.md`
 *.tmp
+- archive/**
+- build/
 EOF
 out="$(FACTLOG_ROOT="$KB" PYTHONPATH="$PLUGIN_ROOT/tools:$PYTHONPATH" "$PYTHON" - <<'PY'
 import common
 pats = common.sync_ignore_patterns()
 print("PATTERNS", pats)
 def chk(ref): print(ref, common.is_sync_ignored(ref, pats))
-chk("sources/drafts/x.md")      # glob via in-source path
-chk("sources/keep.md")          # not matched
-chk("sources/wip-notes.md")     # full ref
-chk("sources/with space.md")    # backtick-quoted with space
-chk("runs/sources/scratch.tmp") # bare *.tmp glob (not eaten as bullet)
+chk("sources/drafts/x.md")        # glob via in-source path (single segment)
+chk("sources/drafts/sub/deep.md") # * must NOT cross '/' -> not matched
+chk("sources/keep.md")            # not matched
+chk("sources/wip-notes.md")       # full ref
+chk("sources/with space.md")      # backtick-quoted with space
+chk("runs/sources/scratch.tmp")   # bare *.tmp glob (not eaten as bullet)
+chk("sources/archive/2020/old.md")# '**' crosses segments
+chk("sources/build/out/x.md")     # trailing '/' = whole subtree
 PY
 )"
 printf '%s\n' "$out" | grep -qF "'drafts/*.md'" && printf '%s\n' "$out" | grep -qF "'*.tmp'" && ok "parser: glob '*.tmp' survives (not a bullet); comments dropped" || bad "parser wrong: $out"
-printf '%s\n' "$out" | grep -qx "sources/drafts/x.md True" && ok "match: glob via in-source path" || bad "glob in-source match failed"
+printf '%s\n' "$out" | grep -qx "sources/drafts/x.md True" && ok "match: glob via in-source path (single segment)" || bad "glob in-source match failed"
+printf '%s\n' "$out" | grep -qx "sources/drafts/sub/deep.md False" && ok "match: '*' does NOT cross '/' (depth boundary)" || bad "'*' wrongly crossed '/': $out"
 printf '%s\n' "$out" | grep -qx "sources/keep.md False" && ok "non-matching source not ignored" || bad "false positive match"
 printf '%s\n' "$out" | grep -qx "sources/wip-notes.md True" && ok "match: full ref" || bad "full-ref match failed"
 printf '%s\n' "$out" | grep -qx "sources/with space.md True" && ok "match: backtick-quoted pattern with space" || bad "quoted-pattern match failed"
 printf '%s\n' "$out" | grep -qx "runs/sources/scratch.tmp True" && ok "match: bare glob against runs/sources ref" || bad "runs/sources glob match failed"
+printf '%s\n' "$out" | grep -qx "sources/archive/2020/old.md True" && ok "match: '**' crosses segments" || bad "'**' did not cross segments"
+printf '%s\n' "$out" | grep -qx "sources/build/out/x.md True" && ok "match: trailing '/' = whole subtree" || bad "trailing-slash subtree match failed"
 
 # --- factlog ignore add / list / remove --------------------------------------
 KB="$(mktemp -d)/wiki"
@@ -71,6 +79,12 @@ active | grep -qF 'drafts/*.md' && ok "ignore: pattern added to policy file" || 
 "$PYTHON" -m factlog ignore --target "$KB" 2>&1 | grep -qF "sources/drafts/wip.md" && ok "ignore (list): shows matching on-disk source" || bad "list did not show match"
 "$PYTHON" -m factlog ignore --remove "drafts/*.md" --target "$KB" >/dev/null
 active | grep -qF 'drafts/*.md' && bad "pattern not removed" || ok "ignore --remove deletes the pattern"
+set +e; "$PYTHON" -m factlog ignore --remove --target "$KB" >/dev/null 2>&1; rc=$?; set -e
+[ "$rc" -eq 2 ] && ok "ignore --remove with no pattern errors (rc 2)" || bad "--remove without pattern should error"
+# --remove against an absent policy file must not create an empty file
+rm -f "$KB/policy/sync-ignore.md"
+"$PYTHON" -m factlog ignore --remove "anything" --target "$KB" >/dev/null 2>&1
+[ ! -f "$KB/policy/sync-ignore.md" ] && ok "ignore --remove on absent file creates nothing" || bad "empty policy file materialized"
 
 # --- ingest --scan skips an ignored binary -----------------------------------
 KB="$(mktemp -d)/wiki"
