@@ -222,6 +222,14 @@ def validate(root: Path) -> list[str]:
 
 
 def main() -> int:
+    # Windows console defaults to the legacy code page (cp949); force UTF-8 so
+    # Korean output isn't mangled. No-op elsewhere. Files are always UTF-8.
+    if sys.platform == "win32":
+        for _stream in (sys.stdout, sys.stderr):
+            try:
+                _stream.reconfigure(encoding="utf-8")
+            except (AttributeError, ValueError, OSError):
+                pass
     parser = argparse.ArgumentParser(description="Validate factlog KB outputs.")
     parser.add_argument("root", nargs="?", default=".")
     args = parser.parse_args()
