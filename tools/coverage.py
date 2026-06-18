@@ -8,6 +8,10 @@ source file under sources/ and runs/sources/, how many *engine-input* facts
   - a TEXT source with 0 facts      -> an extraction gap (run /factlog sync)
   - a BINARY source under sources/  -> needs conversion first (factlog ingest)
   - a BINARY source under runs/sources/ -> anomaly: ingest output should be text
+A binary original is paired with its runs/sources/<stem> conversion: facts
+attach to the conversion, so a binary whose conversion carries facts is
+"covered via conversion" (NOT a binary gap). A binary is only flagged as needing
+conversion when it has no conversion at all.
 It also surfaces orphan citations: a fact citing a source file that no longer
 exists on disk (a stale/typo'd reference).
 
@@ -66,10 +70,14 @@ def _hidden(path: Path, base: Path) -> bool:
 def coverage_rows(root: Path, facts: list[dict[str, str]]) -> tuple[list[dict[str, object]], list[str]]:
     """Return (per-source rows, orphan citations).
 
-    Each row: {file, dir, text, facts, ignored} where facts is how many
-    engine-input rows cite it (source path before any '#') and ignored marks a
-    source excluded by policy/sync-ignore.md. Orphans are cited paths with no
-    file on disk.
+    Each row: {file, dir, text, facts, ignored, conversion, conv_facts} where
+    facts is how many engine-input rows cite it (source path before any '#') and
+    ignored marks a source excluded by policy/sync-ignore.md. For a binary
+    original under sources/, conversion is its runs/sources/<stem> text
+    conversion (if any) and conv_facts how many facts cite that conversion — so a
+    binary whose conversion carries facts is "covered via conversion", not a gap
+    (facts attach to the conversion, never to the binary original). Orphans are
+    cited paths with no file on disk.
     """
     # NFC-normalise both sides: macOS stores filenames as NFD but candidate
     # sources are NFC, so an un-normalised compare would mis-report a Korean-named
@@ -94,7 +102,23 @@ def coverage_rows(root: Path, facts: list[dict[str, str]]) -> tuple[list[dict[st
             "text": is_text_source(path),
             "facts": cited.get(ref, 0),
             "ignored": is_sync_ignored(ref, patterns),
+            "conversion": "",
+            "conv_facts": 0,
         })
+
+    # Pair a binary original under sources/ with its runs/sources/<stem>
+    # conversion (ingest names conversions by stem; matches `factlog sources`).
+    conv_by_stem: dict[str, dict[str, object]] = {}
+    for r in rows:
+        if r["dir"] == "runs/sources":
+            conv_by_stem.setdefault(Path(str(r["file"])).stem, r)
+    for r in rows:
+        if r["dir"] == "sources" and not r["text"]:
+            conv = conv_by_stem.get(Path(str(r["file"])).stem)
+            if conv is not None:
+                r["conversion"] = conv["file"]
+                r["conv_facts"] = conv["facts"]
+
     orphans = sorted(set(cited) - on_disk)
     return rows, orphans
 
@@ -116,19 +140,37 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  ORPHAN citation (source file missing): {ref}", file=sys.stderr)
         return 0
 
-    covered = [r for r in rows if r["facts"]]
+    # A binary original is "covered via conversion" when its runs/sources/<stem>
+    # conversion carries facts (facts attach to the conversion, not the binary).
+    covered_direct = [r for r in rows if r["facts"]]
+    covered_via_conv = [r for r in rows if not r["facts"] and r["conv_facts"]]
     excluded = [r for r in rows if r["ignored"]]
     # Sources on the sync-ignore list are never gaps: they're excluded on purpose.
     text_gaps = [r for r in rows if not r["facts"] and r["text"] and not r["ignored"]]
-    binary_gaps = [r for r in rows if not r["facts"] and not r["text"] and not r["ignored"]]
+    # A binary original with ANY conversion has been ingested — not a "needs
+    # conversion" gap (if its conversion has 0 facts, that surfaces as the
+    # conversion's own text gap). Only an unconverted binary is a binary gap.
+    binary_gaps = [
+        r for r in rows
+        if not r["facts"] and not r["text"] and not r["ignored"] and not r["conversion"]
+    ]
+    n_covered = len(covered_direct) + len(covered_via_conv)
+    via_note = f" ({len(covered_via_conv)} via conversion)" if covered_via_conv else ""
     excluded_note = f", {len(excluded)} excluded (sync-ignored)" if excluded else ""
     print(
-        f"coverage: {len(rows)} source(s); {len(covered)} covered, "
+        f"coverage: {len(rows)} source(s); {n_covered} covered{via_note}, "
         f"{len(text_gaps)} text gap(s), {len(binary_gaps)} binary needing conversion, "
         f"{len(orphans)} orphan citation(s){excluded_note}"
     )
     for r in rows:
-        tag = "  [excluded]" if r["ignored"] else ""
+        if r["ignored"]:
+            tag = "  [excluded]"
+        elif not r["facts"] and r["conv_facts"]:
+            tag = f"  [covered via {r['conversion']}: {r['conv_facts']} fact(s)]"
+        elif not r["facts"] and r["conversion"]:
+            tag = f"  [converted → {r['conversion']} (0 facts — re-run /factlog sync)]"
+        else:
+            tag = ""
         print(f"  {r['facts']} fact(s): {r['file']}{tag}")
     for r in text_gaps:
         print(f"  GAP (text, run /factlog sync): {r['file']}", file=sys.stderr)
