@@ -582,6 +582,33 @@ def existing_superseded_keys(root: Path) -> set[tuple[str, str, str, str]]:
     return keys
 
 
+def existing_engine_keys(root: Path) -> dict[tuple[str, str, str, str], str]:
+    """Map (subject, relation, object, source-without-#anchor) -> engine status
+    for rows currently marked confirmed/accepted in candidates.csv.
+
+    Preserved across re-merge so a human acceptance (`factlog accept` /
+    `amend --accept`, or a hand-confirm) sticks even though extraction re-asserts
+    the fact as `candidate` — symmetric with existing_superseded_keys. The exact
+    engine status (confirmed vs accepted) is kept. Anchor-insensitive key, like
+    the superseded preservation."""
+    csv_path = root / "facts" / "candidates.csv"
+    if not csv_path.is_file():
+        return {}
+    keys: dict[tuple[str, str, str, str], str] = {}
+    with csv_path.open(newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            status = (row.get("status") or "").strip()
+            if status in ENGINE_STATUSES:
+                key = (
+                    (row.get("subject") or "").strip(),
+                    (row.get("relation") or "").strip(),
+                    (row.get("object") or "").strip(),
+                    (row.get("source") or "").strip().partition("#")[0],
+                )
+                keys[key] = status
+    return keys
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -681,6 +708,22 @@ def main() -> int:
                 preserved += 1
         if preserved:
             print(f"  preserved {preserved} superseded row(s) from candidates.csv")
+
+    # Preserve human acceptances across re-merge: a row a human set to
+    # confirmed/accepted stays so even though extraction re-asserts it as
+    # 'candidate' — symmetric with the superseded preservation above. Skip rows
+    # now superseded (a later rejection wins over an earlier acceptance).
+    engine_keys = existing_engine_keys(root)
+    if engine_keys:
+        restored = 0
+        for row in rows:
+            key = (row["subject"], row["relation"], row["object"], row["source"].partition("#")[0])
+            want = engine_keys.get(key)
+            if want and row["status"] not in SUPERSEDED_STATUSES and row["status"] != want:
+                row["status"] = want
+                restored += 1
+        if restored:
+            print(f"  preserved {restored} human-accepted row(s) from candidates.csv")
 
     # Warn prominently when rows were loaded but all were dropped — this
     # distinguishes a silent contract violation from a genuinely empty run.

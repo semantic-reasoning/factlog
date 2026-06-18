@@ -91,6 +91,21 @@ set +e; out="$("$PYTHON" -m factlog accept X rel Y --target "$KB" 2>&1)"; rc=$?;
 grep -q "X,rel,Y,sources/a.md,accepted," "$KB/facts/candidates.csv" && ok "status change saved even when recompile fails" || bad "status not saved on recompile failure"
 rmdir "$KB/facts/accepted.dl"
 
+# --- accept survives a re-merge (durable, like reject/superseded) ------------
+# merge rebuilds candidates.csv from runs/*.json, so a human acceptance must be
+# preserved (otherwise /factlog sync would revert it to the run's candidate).
+KB="$(mktemp -d)/wiki"
+"$PYTHON" -m factlog init --target "$KB" >/dev/null
+printf 'a\n' > "$KB/sources/a.md"
+printf '[{"subject":"X","relation":"rel","object":"Y","source":"sources/a.md","status":"candidate","confidence":0.8,"note":""},{"subject":"Z","relation":"rel","object":"W","source":"sources/a.md","status":"candidate","confidence":0.8,"note":""}]\n' \
+  > "$KB/runs/r.json"
+"$PYTHON" "$PLUGIN_ROOT/tools/merge_candidates.py" --wiki "$KB" >/dev/null 2>&1
+"$PYTHON" -m factlog accept X rel Y --target "$KB" >/dev/null 2>&1
+"$PYTHON" -m factlog reject Z rel W --target "$KB" >/dev/null 2>&1
+"$PYTHON" "$PLUGIN_ROOT/tools/merge_candidates.py" --wiki "$KB" >/dev/null 2>&1   # re-extract & merge
+grep -q "X,rel,Y,sources/a.md,accepted," "$KB/facts/candidates.csv" && ok "accept survives a re-merge (preserved)" || bad "accept reverted after re-merge"
+grep -q "Z,rel,W,sources/a.md,superseded," "$KB/facts/candidates.csv" && ok "reject still durable after re-merge" || bad "reject reverted after re-merge"
+
 # --- empty queue is graceful -------------------------------------------------
 KB="$(mktemp -d)/wiki"
 "$PYTHON" -m factlog init --target "$KB" >/dev/null
