@@ -67,6 +67,7 @@ working directory — no `--target`/`--wiki` needed:
 factlog use ~/wiki        # make ~/wiki the active KB (recorded in config)
 factlog where             # show the active KB and how it was resolved
 factlog sources           # list registered sources (original, conversion, fact count)
+factlog status            # KB state: facts by status, vocabulary, conflicts, logic freshness, engine
 cd /anywhere && factlog ingest report.pdf   # → ~/wiki/runs/sources/report.txt
 ```
 
