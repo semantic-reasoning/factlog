@@ -58,6 +58,24 @@ printf '%s' "$out" | grep -qF "2 source(s), 3 fact(s)" && ok "summary totals cor
 # the conversion is mapped onto its original's line, not listed as a separate entry
 [ "$(printf '%s' "$out" | grep -c "각문서")" -eq 1 ] && ok "conversion mapped under original (single line, not double-listed)" || bad "conversion double-listed"
 
+# same-stem originals in different subdirs each map to THEIR OWN conversion
+# (ingest mirrors subdirs; pairing is by subdir-aware rel key, not bare stem).
+SUBKB="$(mktemp -d)/wiki"
+"$PYTHON" -m factlog init --target "$SUBKB" >/dev/null
+mkdir -p "$SUBKB/sources/a" "$SUBKB/sources/b" "$SUBKB/runs/sources/a" "$SUBKB/runs/sources/b"
+printf '\x00\x01bin' > "$SUBKB/sources/a/report.docx"
+printf '\x00\x01bin' > "$SUBKB/sources/b/report.docx"
+printf 'a\n' > "$SUBKB/runs/sources/a/report.md"
+printf 'b\n' > "$SUBKB/runs/sources/b/report.md"
+H2="subject,relation,object,source,status,confidence,note"
+printf '%s\n%s\n%s\n' "$H2" \
+  '갑봇,포함,값가,runs/sources/a/report.md,accepted,0.9,' \
+  '을서비스,포함,값나,runs/sources/b/report.md,accepted,0.9,' > "$SUBKB/facts/candidates.csv"
+sout="$("$PYTHON" -m factlog sources --target "$SUBKB" 2>&1)"
+printf '%s' "$sout" | grep -qF "sources/a/report.docx  (docx)  →  runs/sources/a/report.md" && ok "subdir a original maps to a/ conversion" || bad "subdir a mispaired: $sout"
+printf '%s' "$sout" | grep -qF "sources/b/report.docx  (docx)  →  runs/sources/b/report.md" && ok "subdir b original maps to b/ conversion (no stem collision)" || bad "subdir b mispaired"
+[ "$(printf '%s' "$sout" | grep -c "report")" -eq 2 ] && ok "each nested conversion mapped under its original (no double-listing)" || bad "nested conversion double-listed"
+
 # empty KB graceful
 KB2="$(mktemp -d)/wiki2"
 "$PYTHON" -m factlog init --target "$KB2" >/dev/null
