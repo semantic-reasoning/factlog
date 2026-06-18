@@ -944,6 +944,199 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     return 1 if failures else 0
 
 
+def cmd_eject(args: argparse.Namespace) -> int:
+    """Inverse of `ingest`: remove a source from the KB.
+
+    For each named source, eject:
+      - deletes its runs/sources/ conversion (the ingest output);
+      - strips the source's extracted rows from every runs/*.json (removing a
+        now-empty run file) so a later merge stays consistent;
+      - retires the source's rows in facts/candidates.csv — marked `superseded`
+        by default (kept for audit), or removed entirely with --purge;
+      - optionally deletes the user's original under sources/ with
+        --delete-original (off by default: ingest never created it);
+      - recompiles facts/accepted.dl so the engine input drops the removed facts.
+
+    A source is named by its filename, stem, or KB-relative path. Naming the
+    binary original (e.g. report.pptx) also matches its runs/sources/<stem>
+    conversion; a bare stem matches every source with that stem. eject also
+    catches a source cited only in candidates.csv (an already-orphaned ref). With
+    --dry-run nothing changes; the planned actions are printed.
+    """
+    import csv
+    import json
+    import os
+    import subprocess
+    import unicodedata
+    from pathlib import Path
+
+    def nfc(s: str) -> str:
+        return unicodedata.normalize("NFC", s)
+
+    target_str, _ = factlog_config.resolve_root(args.target)
+    target = Path(target_str)
+    if not (target / "sources").is_dir():
+        print(f"factlog eject: {target} is not a factlog KB (no sources/).", file=sys.stderr)
+        return 1
+
+    # Known source refs come from both the candidates table (cited sources) and
+    # the two source roots on disk, so eject works even for an already-orphaned
+    # citation whose file is gone.
+    csv_path = target / "facts" / "candidates.csv"
+    cited_refs: set[str] = set()
+    rows: list[dict[str, str]] = []
+    fieldnames: list[str] = []
+    if csv_path.is_file():
+        with csv_path.open(newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            fieldnames = list(reader.fieldnames or [])
+            rows = list(reader)
+        for row in rows:
+            ref = nfc((row.get("source") or "").partition("#")[0])
+            if ref:
+                cited_refs.add(ref)
+
+    disk_refs: dict[str, Path] = {}  # KB-relative ref -> path
+    for base in ("sources", "runs/sources"):
+        d = target / base
+        if d.is_dir():
+            for p in sorted(d.rglob("*")):
+                if p.is_file() and not p.name.startswith("."):
+                    disk_refs[nfc(p.relative_to(target).as_posix())] = p
+
+    all_refs = set(disk_refs) | cited_refs
+
+    def matches(ref: str, name: str) -> bool:
+        name = nfc(name)
+        rp, np_ = Path(ref), Path(name)
+        if ref == name:
+            return True
+        if np_.suffix:  # an extension was given: match precisely
+            if rp.name == np_.name:  # the named original itself
+                return True
+            # ...and that original's runs/sources/<stem> conversion
+            return ref.startswith("runs/sources/") and rp.stem == np_.stem
+        return rp.stem == np_.stem  # bare stem: every source with that stem
+
+    matched: set[str] = set()
+    for name in args.sources:
+        hits = {ref for ref in all_refs if matches(ref, name)}
+        if hits:
+            matched |= hits
+        else:
+            print(f"factlog eject: no source matches '{name}'", file=sys.stderr)
+    if not matched:
+        print("factlog eject: nothing to eject", file=sys.stderr)
+        return 1
+
+    matched_sorted = sorted(matched)
+    print(f"factlog eject (KB: {target}): {len(matched_sorted)} matched source ref(s):")
+    for ref in matched_sorted:
+        print(f"  - {ref}  [{'on disk' if ref in disk_refs else 'cited only (no file)'}]")
+
+    conv_to_delete = [r for r in matched_sorted if r.startswith("runs/sources/") and r in disk_refs]
+    orig_on_disk = [r for r in matched_sorted if not r.startswith("runs/sources/") and r in disk_refs]
+    affected = [r for r in rows if nfc((r.get("source") or "").partition("#")[0]) in matched]
+
+    action = "purge" if args.purge else "supersede"
+    print(f"  candidates.csv: {len(affected)} row(s) to {action}")
+    print(f"  runs/sources conversion(s) to delete: {len(conv_to_delete)}")
+    if args.delete_original:
+        print(f"  original(s) to delete (--delete-original): {len(orig_on_disk)}")
+    elif orig_on_disk:
+        print(f"  original(s) kept: {len(orig_on_disk)} (pass --delete-original to remove)")
+
+    if args.dry_run:
+        print("factlog eject: --dry-run, no changes made")
+        return 0
+
+    # 1. delete the ingest conversion(s)
+    deleted_conv = 0
+    for ref in conv_to_delete:
+        try:
+            disk_refs[ref].unlink()
+            deleted_conv += 1
+        except OSError as exc:
+            print(f"factlog eject: could not delete {ref}: {exc}", file=sys.stderr)
+
+    # 2. strip the source's rows from runs/*.json (drop now-empty run files)
+    stripped_rows = 0
+    removed_files = 0
+    runs_dir = target / "runs"
+    if runs_dir.is_dir():
+        for jp in sorted(runs_dir.glob("*.json")):
+            try:
+                data = json.loads(jp.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            if not isinstance(data, list):
+                continue
+            kept = [
+                item for item in data
+                if not (isinstance(item, dict)
+                        and nfc(str(item.get("source", "")).partition("#")[0]) in matched)
+            ]
+            if len(kept) != len(data):
+                stripped_rows += len(data) - len(kept)
+                if kept:
+                    jp.write_text(json.dumps(kept, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                else:
+                    jp.unlink()
+                    removed_files += 1
+
+    # 3. retire candidate rows: supersede (default) or purge
+    changed = 0
+    if rows:
+        new_rows: list[dict[str, str]] = []
+        for r in rows:
+            if nfc((r.get("source") or "").partition("#")[0]) in matched:
+                changed += 1
+                if args.purge:
+                    continue  # drop the row entirely
+                r["status"] = "superseded"
+            new_rows.append(r)
+        with csv_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(new_rows)
+
+    # 4. optionally delete the user's original(s)
+    deleted_orig = 0
+    if args.delete_original:
+        for ref in orig_on_disk:
+            try:
+                disk_refs[ref].unlink()
+                deleted_orig += 1
+            except OSError as exc:
+                print(f"factlog eject: could not delete {ref}: {exc}", file=sys.stderr)
+
+    # 5. recompile accepted.dl so the engine input drops the retired facts
+    if csv_path.is_file():
+        proc = subprocess.run(
+            [sys.executable, str(_TOOLS_DIR / "compile_facts.py")],
+            env=dict(os.environ, FACTLOG_ROOT=str(target)),
+            capture_output=True, text=True,
+        )
+        if proc.returncode != 0:
+            print(
+                f"factlog eject: compile_facts failed: {(proc.stderr or proc.stdout).strip()}",
+                file=sys.stderr,
+            )
+
+    verb = "purged" if args.purge else "superseded"
+    print(
+        f"factlog eject: {deleted_conv} conversion(s) deleted, {stripped_rows} run row(s) "
+        f"stripped ({removed_files} run file(s) removed), {changed} candidate row(s) {verb}, "
+        f"{deleted_orig} original(s) deleted; accepted.dl recompiled"
+    )
+    if orig_on_disk and not args.delete_original:
+        print(
+            "factlog eject: note — kept original(s) will be re-converted on the next "
+            "`factlog ingest --scan` / `/factlog sync`; pass --delete-original to remove them."
+        )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="factlog", description="factlog environment and KB helpers")
     parser.add_argument("--version", action="version", version=f"factlog {__version__}")
@@ -989,6 +1182,37 @@ def build_parser() -> argparse.ArgumentParser:
         help="re-convert even when an up-to-date conversion already exists",
     )
     ingest.set_defaults(func=cmd_ingest)
+
+    eject = sub.add_parser(
+        "eject",
+        help="inverse of ingest: remove a source — delete its conversion and retire its facts",
+    )
+    eject.add_argument(
+        "sources",
+        nargs="+",
+        help="source(s) to remove, named by filename, stem, or KB-relative path",
+    )
+    eject.add_argument(
+        "--target",
+        default=None,
+        help="KB root (default: the active KB; see `factlog where`)",
+    )
+    eject.add_argument(
+        "--purge",
+        action="store_true",
+        help="delete the source's candidate rows instead of marking them superseded",
+    )
+    eject.add_argument(
+        "--delete-original",
+        action="store_true",
+        help="also delete the user's original file under sources/ (off by default)",
+    )
+    eject.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the planned changes without modifying anything",
+    )
+    eject.set_defaults(func=cmd_eject)
 
     use = sub.add_parser("use", help="set the active KB targeted by ingest/ask/sync from any directory")
     use.add_argument("target", help="knowledge base root to make active")
