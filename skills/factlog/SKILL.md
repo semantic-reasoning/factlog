@@ -337,6 +337,12 @@ python3 "${CLAUDE_PLUGIN_ROOT}/tools/compile_facts.py"
 Reads `facts/candidates.csv`, filters rows with `status` in
 `{confirmed, accepted}`, and writes `facts/accepted.dl`. Show the stdout.
 
+To promote `candidate`/`needs_review` rows into engine input (or retire them)
+without hand-editing `candidates.csv`, use the review CLI: `factlog review`
+lists the pending queue, `factlog accept <subject> <relation> <object>` sets
+matching pending rows to `accepted`, and `factlog reject ...` sets them to
+`superseded` (both recompile `accepted.dl`; `-` wildcards a position).
+
 ### Step 2 — Run the logic check
 
 ```bash
