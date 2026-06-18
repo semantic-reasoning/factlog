@@ -67,6 +67,16 @@ EKB="$(mktemp -d)/wiki"
 out="$("$PYTHON" -m factlog vocab --target "$EKB" 2>&1)"
 printf '%s' "$out" | grep -qE "entities \(0\):" && printf '%s' "$out" | grep -qF "(none)" && ok "empty KB shows 0 entities/(none)" || bad "empty KB not graceful: $out"
 
+# --- vocab counts reconcile with `status` vocabulary line --------------------
+sout="$("$PYTHON" -m factlog status --target "$KB" 2>&1)"
+s_ent="$(printf '%s' "$sout" | sed -nE 's/.*vocabulary: +([0-9]+) entit.*/\1/p')"
+s_rel="$(printf '%s' "$sout" | sed -nE 's/.*, ([0-9]+) relation\(s\).*/\1/p')"
+vout="$("$PYTHON" -m factlog vocab --target "$KB" 2>&1)"
+v_ent="$(printf '%s' "$vout" | sed -nE 's/.*entities \(([0-9]+)\).*/\1/p')"
+v_rel="$(printf '%s' "$vout" | sed -nE 's/.*relations \(([0-9]+)\).*/\1/p')"
+[ -n "$v_ent" ] && [ "$s_ent" = "$v_ent" ] && ok "vocab entity count matches status ($v_ent)" || bad "entity count mismatch: status=$s_ent vocab=$v_ent"
+[ -n "$v_rel" ] && [ "$s_rel" = "$v_rel" ] && ok "vocab relation count matches status ($v_rel)" || bad "relation count mismatch: status=$s_rel vocab=$v_rel"
+
 # --- non-KB path errors ------------------------------------------------------
 set +e; "$PYTHON" -m factlog vocab --target "$(mktemp -d)" >/dev/null 2>&1; rc=$?; set -e
 [ "$rc" -ne 0 ] && ok "vocab on a non-KB path errors" || bad "non-KB path should error"
