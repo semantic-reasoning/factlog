@@ -861,7 +861,9 @@ def cmd_status(args: argparse.Namespace) -> int:
     literals = f"{len(val) - len(ent)} literal(s)" if attr else "0 literal(s) — none declared"
     print(
         f"  vocabulary: {len(ent)} entit(y/ies), {literals}, "
-        f"{len(c.allowed_relations(facts))} relation(s) "
+        # engine-scoped, like entity_set/value_set above — so the counts agree
+        # with `factlog vocab` (which lists the same engine vocabulary).
+        f"{len(c.allowed_relations(engine_rows))} relation(s) "
         f"({len(attr)} attribute, {len(sv)} single-valued declared)"
     )
 
@@ -1897,7 +1899,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     vocab.add_argument("--entities", action="store_true", help="show only entities")
     vocab.add_argument("--relations", action="store_true", help="show only relations")
-    vocab.add_argument("--all", action="store_true", help="include candidate-only names (default: engine facts)")
+    vocab.add_argument("--all", action="store_true", help="include non-engine names (candidate/needs_review/superseded); default: engine facts")
     vocab.add_argument("--target", default=None, help="KB root (default: the active KB; see `factlog where`)")
     vocab.set_defaults(func=cmd_vocab)
 
