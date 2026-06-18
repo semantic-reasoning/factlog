@@ -334,6 +334,105 @@ def cmd_sources(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_status(args: argparse.Namespace) -> int:
+    """Summarise the active KB's state: sources, facts by status, vocabulary,
+    conflicts, logic-report freshness, and engine availability."""
+    import os
+    import unicodedata
+    from collections import Counter
+    from pathlib import Path
+
+    target_str, source = factlog_config.resolve_root(args.target)
+    target = Path(target_str)
+    if not (target / "sources").is_dir():
+        print(f"factlog status: {target} is not a factlog KB (no sources/). Run 'factlog init'/'use'.", file=sys.stderr)
+        return 1
+    os.environ["FACTLOG_ROOT"] = target_str
+    import importlib
+
+    import common as c  # binds ROOT/FACTS_DIR/... from FACTLOG_ROOT at import
+    if str(c.ROOT) != target_str:
+        # common was already imported in this process bound to a different KB
+        # (latent for any future in-process caller / --target iteration); rebind.
+        importlib.reload(c)
+
+    src_label = {"flag": "--target", "env": "$FACTLOG_ROOT", "config": "config", "cwd": "cwd"}.get(source, source)
+    print(f"factlog status — active KB: {target}  (from {src_label})")
+
+    # Engine
+    try:
+        import pyrewire  # type: ignore
+
+        ver = str(getattr(pyrewire, "__version__", "?"))
+        engine = f"pyrewire {ver}" + ("" if _version_tuple(ver) >= MIN_PYREWIRE else f" (< {'.'.join(map(str, MIN_PYREWIRE))} — run setup)")
+    except ImportError:
+        engine = "pyrewire NOT installed (run /factlog setup; checks degrade gracefully)"
+    print(f"  engine:     {engine}")
+
+    # Facts
+    facts = c.load_facts() if c.CANDIDATES_CSV.is_file() else []
+    by_status = Counter(r["status"] for r in facts)
+    engine_rows = c.engine_facts(facts)
+    if facts:
+        order = ["confirmed", "accepted", "needs_review", "candidate", "superseded"]
+        seen = [f"{s}={by_status[s]}" for s in order if by_status.get(s)]
+        extra = [f"{s}={n}" for s, n in by_status.items() if s not in order]
+        print(f"  facts:      {len(facts)} candidate(s) [{', '.join(seen + extra)}]; {len(engine_rows)} engine fact(s)")
+    else:
+        print("  facts:      none (no facts/candidates.csv — run /factlog sync)")
+
+    # Vocabulary
+    attr = c.attribute_relations()
+    sv = c.single_valued_relations()
+    ent, val = c.entity_set(facts), c.value_set(facts)
+    # Literals are values appearing only as attribute-relation objects; with no
+    # attribute-relations.md declared, entity_set == value_set so there are none.
+    literals = f"{len(val) - len(ent)} literal(s)" if attr else "0 literal(s) — none declared"
+    print(
+        f"  vocabulary: {len(ent)} entit(y/ies), {literals}, "
+        f"{len(c.allowed_relations(facts))} relation(s) "
+        f"({len(attr)} attribute, {len(sv)} single-valued declared)"
+    )
+
+    # Sources (NFC-matched, like coverage)
+    cited = {unicodedata.normalize('NFC', r['source'].partition('#')[0]) for r in engine_rows if r.get('source')}
+    on_disk = c.source_file_refs(target)  # NFC
+    covered = len(on_disk & cited)
+    print(f"  sources:    {len(on_disk)} file(s), {covered} with facts, {len(on_disk) - covered} with none")
+
+    # Conflicts (single-valued relations with >1 distinct object)
+    if sv:
+        by_key: dict[tuple, set] = {}
+        for r in engine_rows:
+            if r["relation"] in sv:
+                by_key.setdefault((r["subject"], r["relation"]), set()).add(r["object"])
+        conflicts = {k: v for k, v in by_key.items() if len(v) > 1}
+        msg = f"  conflicts:  {len(conflicts)} (over {len(sv)} single-valued relation(s))"
+        if conflicts:
+            msg += "  ⚠ resolve via superseded / see tools/check_conflicts.py"
+        print(msg)
+    else:
+        print("  conflicts:  n/a (no single-valued relations declared in policy/single-valued.md)")
+
+    # Logic report freshness
+    report = c.FACTS_DIR / "logic_report.txt"
+    if report.is_file():
+        text = report.read_text(encoding="utf-8", errors="ignore")
+        # Lower-case `errors:`/`warnings:` are the summary lines in
+        # run_logic_check's report (the `Errors:`/`Warnings:` headers are capitalised).
+        errors = next((ln.split(":", 1)[1].strip() for ln in text.splitlines() if ln.startswith("errors:")), "?")
+        warnings = next((ln.split(":", 1)[1].strip() for ln in text.splitlines() if ln.startswith("warnings:")), "?")
+        rep_mtime = report.stat().st_mtime
+        # The report is a function of all three run_logic_check inputs.
+        inputs = [p for p in (c.ACCEPTED_DL, c.FACTS_DIR / "query.dl", c.LOGIC_POLICY_DL) if p.is_file()]
+        stale = any(p.stat().st_mtime > rep_mtime for p in inputs)
+        fresh = "STALE (inputs changed since last check — run /factlog check)" if stale else "fresh"
+        print(f"  logic:      report {fresh}; errors={errors}, warnings={warnings}")
+    else:
+        print("  logic:      no logic_report.txt yet (run /factlog check)")
+    return 0
+
+
 def _find_requirements():
     """Locate requirements.txt.
 
@@ -845,6 +944,10 @@ def build_parser() -> argparse.ArgumentParser:
     sources = sub.add_parser("sources", help="list registered sources (original, conversion, fact count)")
     sources.add_argument("--target", default=None, help="KB root (default: the active KB; see `factlog where`)")
     sources.set_defaults(func=cmd_sources)
+
+    status = sub.add_parser("status", help="summarise KB state (sources, facts, vocabulary, conflicts, engine)")
+    status.add_argument("--target", default=None, help="KB root (default: the active KB; see `factlog where`)")
+    status.set_defaults(func=cmd_status)
 
     return parser
 
