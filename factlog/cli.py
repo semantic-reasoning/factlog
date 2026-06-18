@@ -373,6 +373,195 @@ def cmd_sources(args: argparse.Namespace) -> int:
     return 0
 
 
+def _triple_filter(terms: list[str]) -> dict[str, str] | None:
+    """Map a (subject, relation, object) positional prefix to a field filter.
+
+    A literal '-' wildcards that position; omitted trailing positions are
+    wildcards too. NFC-normalised. Returns None when no non-wildcard term is
+    given (the caller treats that as a usage error). Callers reject >3 terms
+    separately. Shared by provenance / review / accept / reject.
+    """
+    import unicodedata
+
+    fields = ("subject", "relation", "object")
+    filt = {fields[i]: unicodedata.normalize("NFC", t) for i, t in enumerate(terms) if t != "-"}
+    return filt or None
+
+
+def cmd_review(args: argparse.Namespace) -> int:
+    """List facts awaiting a human decision (status candidate/needs_review).
+
+    Grouped by (subject, relation, object) with each backing row's source,
+    status, confidence, and note — the queue for `factlog accept` / `reject`.
+    --status narrows to one of the two pending statuses.
+    """
+    import csv
+    import unicodedata
+    from pathlib import Path
+
+    from common import REVIEW_STATUSES, normalize_confidence
+
+    def nfc(s: str) -> str:
+        return unicodedata.normalize("NFC", s)
+
+    target_str, _ = factlog_config.resolve_root(args.target)
+    target = Path(target_str)
+    if not (target / "sources").is_dir():
+        print(f"factlog review: {target} is not a factlog KB (no sources/).", file=sys.stderr)
+        return 1
+
+    want = {args.status} if args.status else set(REVIEW_STATUSES)
+    csv_path = target / "facts" / "candidates.csv"
+    rows: list[dict[str, str]] = []
+    if csv_path.is_file():
+        with csv_path.open(newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+    pending = [r for r in rows if (r.get("status") or "").strip() in want]
+    if not pending:
+        print(f"factlog review (KB: {target}): no pending facts ({'/'.join(sorted(want))})")
+        return 0
+
+    def fld(r: dict, k: str) -> str:
+        return nfc((r.get(k) or "").strip())
+
+    groups: dict[tuple[str, str, str], list[dict]] = {}
+    for r in pending:
+        groups.setdefault((fld(r, "subject"), fld(r, "relation"), fld(r, "object")), []).append(r)
+
+    print(f"factlog review (KB: {target}): {len(groups)} pending fact(s), {len(pending)} row(s)")
+    for (s, rel, o), grp in groups.items():
+        print(f"  {s} / {rel} / {o}")
+        for r in sorted(grp, key=lambda r: fld(r, "source")):
+            src = fld(r, "source")
+            status = (r.get("status") or "").strip()
+            conf = normalize_confidence((r.get("confidence") or "").strip())
+            note = (r.get("note") or "").strip()
+            print(f"    ← {src or '(no source)'}  [{status}, conf {conf}]")
+            if note:
+                print(f"        note: {note}")
+    print("  decide with: factlog accept <subject> <relation> <object>   (or: factlog reject ...)")
+    return 0
+
+
+def _apply_review_status(args: argparse.Namespace, new_status: str, verb: str) -> int:
+    """Shared body of `accept` (-> accepted) and `reject` (-> superseded).
+
+    Changes only rows currently pending (candidate/needs_review) that match the
+    triple filter; a confirmed/accepted/superseded row is reported as skipped and
+    left untouched (use `factlog eject` to retire a confirmed fact). Atomic CSV
+    write; recompiles accepted.dl. --dry-run previews.
+    """
+    import csv
+    import os
+    import subprocess
+    import unicodedata
+    from pathlib import Path
+
+    from common import FACT_HEADER, REVIEW_STATUSES
+
+    def nfc(s: str) -> str:
+        return unicodedata.normalize("NFC", s)
+
+    target_str, _ = factlog_config.resolve_root(args.target)
+    target = Path(target_str)
+    if not (target / "sources").is_dir():
+        print(f"factlog {verb}: {target} is not a factlog KB (no sources/).", file=sys.stderr)
+        return 1
+    if len(args.terms) > 3:
+        print(
+            f"factlog {verb}: too many terms — give at most SUBJECT RELATION OBJECT "
+            "(quote a value that contains spaces)",
+            file=sys.stderr,
+        )
+        return 2
+    filt = _triple_filter(args.terms)
+    if filt is None:
+        print(
+            f"factlog {verb}: give at least one of SUBJECT RELATION OBJECT "
+            "(use '-' to wildcard a position)",
+            file=sys.stderr,
+        )
+        return 2
+
+    csv_path = target / "facts" / "candidates.csv"
+    rows: list[dict[str, str]] = []
+    fieldnames: list[str] = []
+    if csv_path.is_file():
+        with csv_path.open(newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            fieldnames = list(reader.fieldnames or [])
+            rows = list(reader)
+
+    def fld(r: dict, k: str) -> str:
+        return nfc((r.get(k) or "").strip())
+
+    matched = [r for r in rows if all(fld(r, k) == v for k, v in filt.items())]
+    if not matched:
+        shown = ", ".join(f"{k}={v}" for k, v in filt.items())
+        print(f"factlog {verb}: no fact matches ({shown})", file=sys.stderr)
+        return 1
+    pending = [r for r in matched if (r.get("status") or "").strip() in REVIEW_STATUSES]
+    skipped = len(matched) - len(pending)
+    if not pending:
+        print(
+            f"factlog {verb}: {len(matched)} matching row(s) are not pending "
+            "(already confirmed/accepted/superseded); nothing to change. "
+            "Use `factlog eject` to retire a non-pending fact.",
+            file=sys.stderr,
+        )
+        return 1
+
+    note = f" ({skipped} non-pending skipped)" if skipped else ""
+    print(f"factlog {verb} (KB: {target}): {len(pending)} pending row(s) → {new_status}{note}")
+    for r in pending:
+        print(
+            f"  {fld(r, 'subject')} / {fld(r, 'relation')} / {fld(r, 'object')}  "
+            f"[{(r.get('status') or '').strip()} → {new_status}]  ← {fld(r, 'source') or '(no source)'}"
+        )
+    if args.dry_run:
+        print(f"factlog {verb}: --dry-run, no changes made")
+        return 0
+
+    out_fields = fieldnames or list(FACT_HEADER)
+    if "status" not in out_fields:
+        out_fields = [*out_fields, "status"]
+    changed = 0
+    for r in rows:
+        if all(fld(r, k) == v for k, v in filt.items()) and (r.get("status") or "").strip() in REVIEW_STATUSES:
+            r["status"] = new_status
+            changed += 1
+    tmp = csv_path.with_name(csv_path.name + ".tmp")
+    with tmp.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=out_fields, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+    os.replace(tmp, csv_path)
+
+    recompile_failed = False
+    proc = subprocess.run(
+        [sys.executable, str(_TOOLS_DIR / "compile_facts.py")],
+        env=dict(os.environ, FACTLOG_ROOT=str(target)),
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        recompile_failed = True
+        print(f"factlog {verb}: compile_facts failed: {(proc.stderr or proc.stdout).strip()}", file=sys.stderr)
+    recompiled = "accepted.dl NOT recompiled" if recompile_failed else "accepted.dl recompiled"
+    print(f"factlog {verb}: {changed} row(s) → {new_status}; {recompiled}")
+    print("factlog review: note — pages/ may be stale; run /factlog sync to regenerate them.")
+    return 1 if recompile_failed else 0
+
+
+def cmd_accept(args: argparse.Namespace) -> int:
+    """Promote matching pending fact(s) to engine input (status → accepted)."""
+    return _apply_review_status(args, "accepted", "accept")
+
+
+def cmd_reject(args: argparse.Namespace) -> int:
+    """Retire matching pending fact(s) (status → superseded, kept for audit)."""
+    return _apply_review_status(args, "superseded", "reject")
+
+
 def cmd_provenance(args: argparse.Namespace) -> int:
     """Trace a fact to its source(s).
 
@@ -407,9 +596,8 @@ def cmd_provenance(args: argparse.Namespace) -> int:
         )
         return 2
 
-    fields = ("subject", "relation", "object")
-    filt = {fields[i]: nfc(t) for i, t in enumerate(args.terms) if t != "-"}
-    if not filt:
+    filt = _triple_filter(args.terms)
+    if filt is None:
         print(
             "factlog provenance: give at least one of SUBJECT RELATION OBJECT "
             "(use '-' to wildcard a position)",
@@ -1633,6 +1821,34 @@ def build_parser() -> argparse.ArgumentParser:
     )
     provenance.add_argument("--target", default=None, help="KB root (default: the active KB; see `factlog where`)")
     provenance.set_defaults(func=cmd_provenance)
+
+    review = sub.add_parser(
+        "review",
+        help="list facts awaiting a human decision (candidate/needs_review)",
+    )
+    review.add_argument(
+        "--status",
+        choices=["candidate", "needs_review"],
+        default=None,
+        help="show only this pending status (default: both)",
+    )
+    review.add_argument("--target", default=None, help="KB root (default: the active KB; see `factlog where`)")
+    review.set_defaults(func=cmd_review)
+
+    for _name, _func, _verb in (("accept", cmd_accept, "accepted"), ("reject", cmd_reject, "superseded")):
+        _p = sub.add_parser(
+            _name,
+            help=f"set matching pending fact(s) to {_verb} (use `factlog review` to see the queue)",
+        )
+        _p.add_argument(
+            "terms",
+            nargs="+",
+            metavar="TERM",
+            help="SUBJECT [RELATION [OBJECT]] prefix; use '-' to wildcard a position",
+        )
+        _p.add_argument("--dry-run", action="store_true", help="print the planned changes without modifying anything")
+        _p.add_argument("--target", default=None, help="KB root (default: the active KB; see `factlog where`)")
+        _p.set_defaults(func=_func)
 
     ignore = sub.add_parser(
         "ignore",
