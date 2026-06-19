@@ -45,6 +45,28 @@ def enable_utf8_stdio() -> None:
 enable_utf8_stdio()
 
 
+class FactlogError(Exception):
+    """A recoverable factlog error (missing input, malformed policy, ...).
+
+    Library functions in this module raise it instead of calling ``sys.exit`` so
+    an in-process caller (e.g. the CLI or ask_router) can catch and handle the
+    condition rather than having the interpreter killed underneath it. Tool entry
+    points wrap their ``main`` in :func:`run_cli`, which restores the legacy
+    behaviour of printing the message to stderr and exiting with status 1.
+    """
+
+
+def run_cli(main_func) -> int:
+    """Invoke a tool ``main()`` translating a :class:`FactlogError` into the
+    legacy "print message to stderr, exit 1" behaviour that ``raise FactlogError(str)``
+    used to provide. Returns the main's exit code (None -> 0)."""
+    try:
+        return main_func() or 0
+    except FactlogError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+
 ROOT = Path(os.environ.get("FACTLOG_ROOT", ".")).expanduser().resolve()
 FACTS_DIR = ROOT / "facts"
 DECISIONS_DIR = ROOT / "decisions"
@@ -76,10 +98,10 @@ def version_tuple(value: str) -> tuple[int, ...]:
 
 def require_pyrewire_version() -> None:
     if EasySession is None or pyrewire is None:
-        sys.exit("pyrewire가 필요합니다. 예: pip install 'pyrewire>=1.0.1'")
+        raise FactlogError("pyrewire가 필요합니다. 예: pip install 'pyrewire>=1.0.1'")
     current = version_tuple(str(getattr(pyrewire, "__version__", "0")))
     if current < MIN_PYREWIRE_VERSION:
-        sys.exit(
+        raise FactlogError(
             "pyrewire 1.0.1 이상이 필요합니다. "
             f"현재 버전: {getattr(pyrewire, '__version__', 'unknown')}"
         )
@@ -88,7 +110,7 @@ def require_pyrewire_version() -> None:
 def ensure_wiki_root() -> None:
     missing = [name for name in ["sources", "pages", "facts", "decisions", "policy"] if not (ROOT / name).exists()]
     if missing:
-        sys.exit(f"not a factlog KB root: missing {', '.join(missing)}")
+        raise FactlogError(f"not a factlog KB root: missing {', '.join(missing)}")
 
 
 def ensure_dirs() -> None:
@@ -102,7 +124,7 @@ def ensure_dirs() -> None:
 
 def read_csv(path: Path) -> list[dict[str, str]]:
     if not path.is_file():
-        sys.exit(f"missing {path.relative_to(ROOT)}")
+        raise FactlogError(f"missing {path.relative_to(ROOT)}")
     with path.open(newline="", encoding="utf-8") as f:
         return list(csv.DictReader(f))
 
@@ -194,7 +216,7 @@ def load_facts() -> list[dict[str, str]]:
 
 def load_accepted_facts() -> list[dict[str, str]]:
     if not ACCEPTED_DL.is_file():
-        sys.exit("missing facts/accepted.dl; run tools/compile_facts.py first")
+        raise FactlogError("missing facts/accepted.dl; run tools/compile_facts.py first")
     rows: list[dict[str, str]] = []
     for line in ACCEPTED_DL.read_text(encoding="utf-8").splitlines():
         line = line.strip()
@@ -203,14 +225,14 @@ def load_accepted_facts() -> list[dict[str, str]]:
         try:
             subject, relation, object_ = parse_relation_fact(line)
         except ValueError:
-            sys.exit(f"accepted.dl contains unsupported fact syntax: {line}")
+            raise FactlogError(f"accepted.dl contains unsupported fact syntax: {line}")
         rows.append({"subject": subject, "relation": relation, "object": object_})
     return rows
 
 
 def load_logic_policy() -> str:
     if not LOGIC_POLICY_DL.is_file():
-        sys.exit("missing policy/logic-policy.dl; run factlog init --target <kb> --force")
+        raise FactlogError("missing policy/logic-policy.dl; run factlog init --target <kb> --force")
     return LOGIC_POLICY_DL.read_text(encoding="utf-8").strip()
 
 
@@ -226,7 +248,7 @@ def policy_predicates(policy_program: str | None = None) -> set[str]:
 
 def load_questions() -> list[dict[str, str]]:
     if not QUESTIONS_MD.is_file():
-        sys.exit("missing policy/questions.md; run factlog init --target <kb> --force")
+        raise FactlogError("missing policy/questions.md; run factlog init --target <kb> --force")
     rows: list[dict[str, str]] = []
     seen_ids: set[str] = set()
     for lineno, line in enumerate(QUESTIONS_MD.read_text(encoding="utf-8").splitlines(), start=1):
@@ -236,7 +258,7 @@ def load_questions() -> list[dict[str, str]]:
         text = re.sub(r"^[-*]\s+", "", stripped)
         text = re.sub(r"^\d+\.\s+", "", text)
         if re.match(r"^\[[ xX]\]\s+", text):
-            sys.exit(f"policy/questions.md line {lineno}: task-list checkboxes are not supported; use '- [q1] 질문' instead")
+            raise FactlogError(f"policy/questions.md line {lineno}: task-list checkboxes are not supported; use '- [q1] 질문' instead")
         match = re.match(r"^\[([A-Za-z0-9_-]+)\]\s*(.+)$", text)
         if match:
             question_id, question = match.groups()
@@ -250,11 +272,11 @@ def load_questions() -> list[dict[str, str]]:
         if question:
             question_id = question_id.strip()
             if question_id in seen_ids:
-                sys.exit(f"policy/questions.md line {lineno}: duplicate question id {question_id!r}")
+                raise FactlogError(f"policy/questions.md line {lineno}: duplicate question id {question_id!r}")
             seen_ids.add(question_id)
             rows.append({"id": question_id, "question": question})
     if not rows:
-        sys.exit("policy/questions.md has no questions. Add lines such as '- [q1] Claude Code가 사용하는 것은 무엇인가?'")
+        raise FactlogError("policy/questions.md has no questions. Add lines such as '- [q1] Claude Code가 사용하는 것은 무엇인가?'")
     return rows
 
 
@@ -550,11 +572,11 @@ def schema_context() -> str:
 
 def build_text_to_datalog_prompt(question: str) -> str:
     if not TEXT_TO_DATALOG_PROMPT.is_file():
-        sys.exit("missing policy/prompts/text_to_datalog.md; run factlog init --target <kb> --force")
+        raise FactlogError("missing policy/prompts/text_to_datalog.md; run factlog init --target <kb> --force")
     template = TEXT_TO_DATALOG_PROMPT.read_text(encoding="utf-8")
     bad = [name for name in ["{{SCHEMA_CONTEXT}}", "{{QUESTION}}"] if template.count(name) != 1]
     if bad:
-        sys.exit(f"policy/prompts/text_to_datalog.md must contain placeholder(s) exactly once: {', '.join(bad)}")
+        raise FactlogError(f"policy/prompts/text_to_datalog.md must contain placeholder(s) exactly once: {', '.join(bad)}")
     rendered = (
         template.replace("{{SCHEMA_CONTEXT}}", schema_context())
         .replace("{{QUESTION}}", question)
@@ -562,7 +584,7 @@ def build_text_to_datalog_prompt(question: str) -> str:
     )
     unresolved = sorted(set(re.findall(r"{{[^}]+}}", rendered)))
     if unresolved:
-        sys.exit(f"policy/prompts/text_to_datalog.md contains unknown placeholder(s): {', '.join(unresolved)}")
+        raise FactlogError(f"policy/prompts/text_to_datalog.md contains unknown placeholder(s): {', '.join(unresolved)}")
     return rendered
 
 
@@ -633,7 +655,7 @@ def run_wirelog() -> dict[str, set[tuple[str, ...]]]:
     require_pyrewire_version()
 
     if not ACCEPTED_DL.is_file():
-        sys.exit("missing facts/accepted.dl; run tools/compile_facts.py first")
+        raise FactlogError("missing facts/accepted.dl; run tools/compile_facts.py first")
 
     accepted_program = ACCEPTED_DL.read_text(encoding="utf-8")
     policy_program = load_logic_policy()
