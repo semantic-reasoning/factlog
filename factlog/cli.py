@@ -30,6 +30,21 @@ MIN_PYTHON = (3, 11)
 MIN_PYREWIRE = (1, 0, 1)
 
 
+def _atomic_write_text(path: _Path, text: str) -> None:
+    """Write *text* to *path* atomically (temp file + os.replace).
+
+    Used for run-file JSON so an interrupted/`amend`/`eject` run can never leave a
+    truncated runs/*.json behind — a corrupt run file still holds retired rows and
+    would resurrect them (or be skipped, losing the run) on the next merge. Mirrors
+    the temp+replace pattern already used for candidates.csv.
+    """
+    import os
+
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def _version_tuple(value: str) -> tuple[int, ...]:
     import re
 
@@ -690,7 +705,7 @@ def cmd_amend(args: argparse.Namespace) -> int:
                     dirty = True
                     runs_changed += 1
             if dirty:
-                jp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                _atomic_write_text(jp, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 
     # 3. recompile accepted.dl
     recompile_failed = False
@@ -1963,7 +1978,7 @@ def cmd_eject(args: argparse.Namespace) -> int:
             if len(kept) != len(data):
                 stripped_rows += len(data) - len(kept)
                 if kept:
-                    jp.write_text(json.dumps(kept, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                    _atomic_write_text(jp, json.dumps(kept, ensure_ascii=False, indent=2) + "\n")
                 else:
                     jp.unlink()
                     removed_files += 1
