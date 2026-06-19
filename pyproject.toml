@@ -14,6 +14,9 @@ authors = [{ name = "Justin Kim" }]
 keywords = ["claude-code", "skill", "datalog", "wirelog", "knowledge-base", "neurosymbolic", "fact-extraction"]
 dependencies = ["pyrewire>=1.0.1,<2.0"]
 
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
 [project.urls]
 Homepage = "https://github.com/semantic-reasoning/factlog"
 
@@ -22,6 +25,11 @@ factlog = "factlog.cli:main"
 
 [tool.setuptools]
 packages = ["factlog"]
+
+[tool.pytest.ini_options]
+# Python unit tests for the pure helpers live under tests/unit/; the legacy
+# end-to-end suite is shell scripts (tests/*.sh) and is run separately.
+testpaths = ["tests/unit"]
 
 [tool.ruff]
 target-version = "py311"
