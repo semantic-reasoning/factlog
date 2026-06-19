@@ -555,14 +555,21 @@ python3 "${CLAUDE_PLUGIN_ROOT}/tools/ask_router.py" render "<draft>" --target "$
 ```
 
 Show the `VERIFIED — engine` block verbatim (positive rows, or `rows: 0` /
-"no such fact (verified negative)"). This is engine-backed evidence. Relation
-rows are annotated `(sources: N, confidence: C)` — distinct-source count (a
-multi-source trust signal; `tools/corroboration.py` reports the full view) and
-max confidence — plus `[stale: source missing]` when a backing source has
-vanished and the fact should be re-verified. Each backing source path is listed
-beneath the row (`    ← <source>`), so a verified fact can be traced to its
-origin. For an out-of-band trace (any fact, full or partial triple, all
-statuses), use `factlog provenance <subject> [relation] [object]`.
+"no such fact (verified negative)"). This is engine-backed evidence. The engine
+verdict is **binary** — a row is verified or it is not; the annotations describe
+the row's *evidentiary basis*, never the certainty of the verdict. A relation
+row backed by an extracted candidate is annotated `(sources: N, extraction conf:
+C)` — distinct-source count (a multi-source trust signal; `tools/corroboration.py`
+reports the full view) and the LLM's source→fact **extraction** confidence (a
+candidate-stage trust signal, NOT a probability on the verification) — plus
+`[stale: source missing]` when a backing source has vanished and the fact should
+be re-verified. Each backing source path is listed beneath the row (`    ←
+<source>`). A relation row with **no** extraction backing is engine-DERIVED
+(rule-inferred, not extracted) and is marked `[derived — no extraction
+confidence]`; non-relation predicates (path/count/policy) are computed and carry
+no extraction confidence by construction. For an out-of-band trace (any fact,
+full or partial triple, all statuses), use `factlog provenance <subject>
+[relation] [object]`.
 
 ### Step 3b — Wiki exploration (UNVERIFIED)
 

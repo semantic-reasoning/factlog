@@ -209,7 +209,8 @@ printf '# a\n' > "$KB/sources/a.md"; printf '# b\n' > "$KB/sources/b.md"
 printf 'subject,relation,object,source,status,confidence,note\nAcme API,uses,FastAPI,sources/a.md,confirmed,0.90,\nAcme API,uses,FastAPI,sources/b.md,confirmed,0.95,\n' > "$KB/facts/candidates.csv"
 ann="$(router render 'relation("Acme API", "uses", V)?')"
 printf '%s' "$ann" | grep -qF "sources: 2" && ok "engine answer annotated with distinct-source count" || bad "no source count annotation"
-printf '%s' "$ann" | grep -qF "confidence: 0.95" && ok "annotation shows max confidence" || bad "confidence annotation missing/wrong"
+printf '%s' "$ann" | grep -qF "extraction conf: 0.95" && ok "annotation shows max extraction confidence (relabeled)" || bad "extraction conf annotation missing/wrong"
+printf '%s' "$ann" | grep -qE "[^ ]confidence: 0.95|[(]confidence:" && bad "bare 'confidence:' must be relabeled 'extraction conf:'" || ok "no bare 'confidence:' label leaks into the verified block"
 printf '%s' "$ann" | grep -qF "stale" && bad "non-stale fact wrongly flagged stale" || ok "present sources are not flagged stale"
 # staleness: backing source file missing -> flagged
 printf 'subject,relation,object,source,status,confidence,note\nAcme API,uses,FastAPI,sources/gone.md,confirmed,0.90,\n' > "$KB/facts/candidates.csv"
@@ -255,7 +256,7 @@ printf 'subject,relation,object,source,status,confidence,note\n%s\n%s\n' \
   'Acme API,uses,FastAPI,sources/a.md,confirmed,0.90,' \
   'Acme API,uses,FastAPI,sources/b.md,confirmed,0.95,' > "$SKB/facts/candidates.csv"
 sout="$("$PYTHON" "$ROUTER" render 'relation("Acme API", "uses", V)?' --target "$SKB")"
-printf '%s' "$sout" | grep -qF "(sources: 2, confidence: 0.95)" && ok "engine answer keeps the sources/confidence signal" || bad "signal line wrong: $sout"
+printf '%s' "$sout" | grep -qF "(sources: 2, extraction conf: 0.95)" && ok "engine answer keeps the sources/extraction-conf signal" || bad "signal line wrong: $sout"
 printf '%s' "$sout" | grep -qF "← sources/a.md" && printf '%s' "$sout" | grep -qF "← sources/b.md" \
   && ok "engine answer lists both backing source paths" || bad "source paths not listed: $sout"
 # a missing backing source is flagged stale on the main line
@@ -264,6 +265,33 @@ printf 'subject,relation,object,source,status,confidence,note\n%s\n' \
 gout="$("$PYTHON" "$ROUTER" render 'relation("Acme API", "uses", V)?' --target "$SKB")"
 printf '%s' "$gout" | grep -qF "[stale: source missing]" && printf '%s' "$gout" | grep -qF "← sources/gone.md" \
   && ok "engine answer lists a stale source and flags it" || bad "stale source path handling wrong: $gout"
+
+# --- engine-DERIVED relation row carries no extraction confidence ------------
+# A relation result with no extracted backing (no signal entry) is rule-inferred,
+# not extracted, so it must be marked derived rather than shown with a confidence.
+# Drive render_engine_answer directly: one backed row + one unbacked (derived) row.
+if "$PYTHON" -c "
+import sys
+sys.path.insert(0, '$PLUGIN_ROOT/tools')
+from ask_router import render_engine_answer
+rows = [['Acme API', 'uses', 'FastAPI'], ['Acme API', 'reaches', 'Datadog']]
+signals = {('Acme API', 'uses', 'FastAPI'): {'sources': 1, 'source_paths': ['sources/a.md'], 'confidence': '0.90', 'stale': False}}
+out = render_engine_answer('relation(\"Acme API\", R, O)?', rows, signals)
+assert 'uses, FastAPI (sources: 1, extraction conf: 0.90)' in out, out
+assert 'reaches, Datadog [derived — no extraction confidence]' in out, out
+# the derived row must NOT carry any extraction-conf annotation
+assert 'reaches, Datadog (' not in out, out
+" 2>/dev/null; then ok "derived relation row marked '[derived — no extraction confidence]', backed row keeps extraction conf"; else bad "derived/base relation row distinction wrong in render_engine_answer"; fi
+
+# non-relation predicates (signals=None) never get a derived marker (computed rows)
+if "$PYTHON" -c "
+import sys
+sys.path.insert(0, '$PLUGIN_ROOT/tools')
+from ask_router import render_engine_answer
+out = render_engine_answer('count(\"Acme API\", \"uses\")?', [['1']], None)
+assert 'derived — no extraction confidence' not in out, out
+assert 'extraction conf' not in out, out
+" 2>/dev/null; then ok "non-relation (path/count/policy) rows render plain, no derived/conf annotation"; else bad "non-relation row wrongly annotated"; fi
 
 echo ""
 echo "========================================"

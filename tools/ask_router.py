@@ -233,21 +233,39 @@ def render_engine_answer(
     """Render the VERIFIED — engine answer block (positive or negative).
 
     The literal marker 'VERIFIED — engine' is the greppable verification token.
-    When *signals* is given, a relation row is annotated with answer-quality
-    signals — '(sources: N, confidence: C)' and '[stale: source missing]' when a
-    backing source has vanished — and the backing source path(s) are listed
-    beneath the row ('    ← <source>') so a verified fact can be traced to its
-    origin.
+    The engine verdict is BINARY — a row is verified or it is not; it carries no
+    probability. The annotations below describe the *evidentiary basis* of a
+    verified row, never the certainty of the verdict:
+
+    - A relation row backed by an extracted candidate is annotated with
+      '(sources: N, extraction conf: C)' — the distinct-source count and the
+      LLM's source->fact *extraction* confidence (a candidate-stage trust signal,
+      NOT a confidence in the engine verification) — plus '[stale: source
+      missing]' when a backing source has vanished, with backing source path(s)
+      listed beneath ('    ← <source>').
+    - A relation row with NO such backing is engine-DERIVED (rule-inferred, not
+      extracted), so no extraction confidence applies; it is marked
+      '[derived — no extraction confidence]' rather than left ambiguous.
+
+    Non-relation predicates (path/count/policy) pass signals=None: their rows are
+    computed by the engine, carry no extraction confidence by construction, and
+    are rendered without an annotation.
     """
     lines = ["VERIFIED — engine", f"query: {draft}", f"rows: {len(rows)}"]
     if rows:
         for row in rows:
             line = f"  - {', '.join(row)}"
-            sig = signals.get((row[0], row[1], row[2])) if signals and len(row) == 3 else None
+            sig = signals.get((row[0], row[1], row[2])) if signals is not None and len(row) == 3 else None
             if sig:
-                line += f" (sources: {sig['sources']}, confidence: {sig['confidence']})"
+                line += f" (sources: {sig['sources']}, extraction conf: {sig['confidence']})"
                 if sig.get("stale"):
                     line += " [stale: source missing]"
+            elif signals is not None and len(row) == 3:
+                # In a relation answer (signals supplied) a row with no extraction
+                # provenance is engine-derived, not extracted — so it carries no
+                # extraction confidence. The verdict stays binary (the row IS
+                # verified); we only mark the absence of an extraction basis.
+                line += " [derived — no extraction confidence]"
             lines.append(line)
             if sig:
                 for path in sig.get("source_paths", []):
