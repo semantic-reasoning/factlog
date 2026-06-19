@@ -1705,6 +1705,14 @@ def cmd_eject(args: argparse.Namespace) -> int:
     conversion; a bare stem matches every source with that stem. eject also
     catches a source cited only in candidates.csv (an already-orphaned ref).
 
+    Orphan mode (`eject --orphans`) selects every orphaned source automatically
+    instead of naming each one: a runs/sources/ conversion whose ingest original
+    under sources/ is gone (read from the provenance header), or a cited source
+    whose file no longer exists on disk. This reconciles deletions made directly
+    in sources/ in one pass. A hand-placed runs/sources/ file (no provenance
+    header) has no original to track and is never treated as an orphan. Honours
+    --purge / --delete-original / --dry-run like an explicit source list.
+
     Fact mode (`eject --fact SUBJECT RELATION OBJECT`, repeatable) — retires
     candidate rows matching the given (subject, relation, object) triple(s)
     across all sources, leaving the source files in place. The default
@@ -1763,13 +1771,17 @@ def cmd_eject(args: argparse.Namespace) -> int:
 
     fact_specs: list[list[str]] = list(args.fact or [])
     fact_mode = bool(fact_specs)
+    orphan_mode = bool(args.orphans)
 
-    # Exactly one mode: a source list OR --fact triples (never both, never neither).
+    # Exactly one selector: a source list, --orphans, OR --fact triples.
     if fact_mode and args.sources:
         print("factlog eject: give either source(s) or --fact, not both", file=sys.stderr)
         return 2
-    if not fact_mode and not args.sources:
-        print("factlog eject: nothing to eject (give a source, or --fact S R O)", file=sys.stderr)
+    if orphan_mode and (fact_mode or args.sources):
+        print("factlog eject: --orphans cannot be combined with source(s) or --fact", file=sys.stderr)
+        return 2
+    if not fact_mode and not orphan_mode and not args.sources:
+        print("factlog eject: nothing to eject (give a source, --orphans, or --fact S R O)", file=sys.stderr)
         return 2
     if fact_mode and args.delete_original:
         print("factlog eject: --delete-original is only valid when ejecting a source", file=sys.stderr)
@@ -1848,15 +1860,43 @@ def cmd_eject(args: argparse.Namespace) -> int:
             return rp.stem == np_.stem  # bare stem: every source with that stem
 
         matched: set[str] = set()
-        for name in args.sources:
-            hits = {ref for ref in all_refs if matches(ref, name)}
-            if hits:
-                matched |= hits
-            else:
-                print(f"factlog eject: no source matches '{name}'", file=sys.stderr)
-        if not matched:
-            print("factlog eject: nothing to eject", file=sys.stderr)
-            return 1
+        if orphan_mode:
+            # Auto-detect orphaned sources — a source whose backing original is
+            # gone. For a runs/sources/ conversion the origin is the file named
+            # in its provenance header (conv_origin); it is an orphan when no
+            # source under sources/ still bears that basename. A hand-placed
+            # conversion (no header → no conv_origin entry) is kept. A cited ref
+            # whose file is simply missing on disk is also an orphan. Only refs
+            # under the two source roots are considered, so a malformed citation
+            # is never auto-ejected.
+            src_basenames = {Path(r).name for r in disk_refs if not r.startswith("runs/sources/")}
+            for ref in all_refs:
+                if ref.startswith("runs/sources/"):
+                    if ref in disk_refs:
+                        origin = conv_origin.get(ref)
+                        if origin is not None and origin not in src_basenames:
+                            matched.add(ref)  # the original it was made from is gone
+                    else:
+                        matched.add(ref)  # cited conversion whose file is already gone
+                elif ref.startswith("sources/") and ref not in disk_refs:
+                    matched.add(ref)  # a directly-cited source whose file is gone
+            if not matched:
+                print(
+                    "factlog eject: no orphaned sources found "
+                    "(every cited source's original is present)."
+                )
+                return 0
+            print(f"factlog eject (KB: {target}): orphan scan — {len(matched)} orphaned source(s)")
+        else:
+            for name in args.sources:
+                hits = {ref for ref in all_refs if matches(ref, name)}
+                if hits:
+                    matched |= hits
+                else:
+                    print(f"factlog eject: no source matches '{name}'", file=sys.stderr)
+            if not matched:
+                print("factlog eject: nothing to eject", file=sys.stderr)
+                return 1
 
         def match_row(d: dict) -> bool:
             return nfc(str(d.get("source", "")).partition("#")[0]) in matched
@@ -2060,6 +2100,12 @@ def build_parser() -> argparse.ArgumentParser:
         nargs=3,
         metavar=("SUBJECT", "RELATION", "OBJECT"),
         help="retire one fact by its triple, leaving the source in place (repeatable)",
+    )
+    eject.add_argument(
+        "--orphans",
+        action="store_true",
+        help="auto-detect and eject every orphaned source (a conversion whose "
+        "original under sources/ is gone, or a cited source with no file)",
     )
     eject.add_argument(
         "--target",

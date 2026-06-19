@@ -186,6 +186,80 @@ set +e
 "$PYTHON" -m factlog eject --fact No Such Triple --target "$KB" >/dev/null 2>&1; [ $? -eq 1 ] && ok "fact mode: unknown triple errors (rc 1)" || bad "no-match triple did not error"
 set -e
 
+# =============================================================================
+# Orphan mode: auto-detect and eject sources whose original is gone (#orphans)
+# =============================================================================
+
+# Seed a KB mixing: a live conversion (original present), an orphaned conversion
+# (original deleted), a hand-placed conversion (no provenance), a live text
+# source, and a cited-but-missing text source.
+seed_orphans() {  # $1 = KB path
+  local kb="$1"
+  "$PYTHON" -m factlog init --target "$kb" >/dev/null
+  printf 'PK\003\004\000' > "$kb/sources/live.pdf"                       # original present
+  printf '<!-- ingested-by-factlog | source: live.pdf | converter: pdftotext | date: 2026-01-01T00:00:00Z -->\nlive\n' \
+    > "$kb/runs/sources/live.md"
+  printf '<!-- ingested-by-factlog | source: gone.docx | converter: pandoc | date: 2026-01-01T00:00:00Z -->\ngone\n' \
+    > "$kb/runs/sources/gone.md"                                          # original gone.docx absent
+  printf 'hand authored, no provenance header\n' > "$kb/runs/sources/hand.md"  # hand-placed
+  printf 'plain\n' > "$kb/sources/keep.md"                               # live text source
+  printf '%s\n%s\n%s\n%s\n%s\n%s\n' "$H" \
+    'L,rel,M,runs/sources/live.md,confirmed,0.9,' \
+    'G,rel,H,runs/sources/gone.md,confirmed,0.9,' \
+    'N,rel,O,runs/sources/hand.md,confirmed,0.9,' \
+    'K,rel,P,sources/keep.md,confirmed,0.9,' \
+    'D,rel,E,sources/deleted.md,confirmed,0.9,' > "$kb/facts/candidates.csv"  # deleted.md has no file
+  printf '[{"subject":"G","relation":"rel","object":"H","source":"runs/sources/gone.md","status":"confirmed","confidence":0.9,"note":""}]\n' \
+    > "$kb/runs/2026-01-01-gone.json"
+}
+
+# --- default (supersede): only the orphans are retired ------------------------
+KB="$(mktemp -d)/wiki"; seed_orphans "$KB"
+out="$("$PYTHON" -m factlog eject --orphans --target "$KB" 2>&1)"
+printf '%s\n' "$out"; echo "---"
+printf '%s' "$out" | grep -qF "orphan scan" && ok "orphan mode announces the scan" || bad "no orphan scan header"
+[ ! -f "$KB/runs/sources/gone.md" ] && ok "orphan conversion (original gone) deleted" || bad "orphan conversion kept"
+[ -f "$KB/runs/sources/live.md" ] && ok "live conversion (original present) kept" || bad "live conversion wrongly deleted"
+[ -f "$KB/runs/sources/hand.md" ] && ok "hand-placed conversion (no provenance) kept" || bad "hand-placed conversion wrongly ejected"
+[ -f "$KB/sources/keep.md" ] && ok "live text source kept" || bad "live text source deleted"
+grep -q "G,rel,H,runs/sources/gone.md,superseded," "$KB/facts/candidates.csv" && ok "orphan conversion fact superseded" || bad "orphan conversion fact not retired"
+grep -q "D,rel,E,sources/deleted.md,superseded," "$KB/facts/candidates.csv" && ok "cited-but-missing source fact superseded" || bad "missing-file fact not retired"
+grep -q "L,rel,M,runs/sources/live.md,confirmed," "$KB/facts/candidates.csv" && ok "live conversion fact preserved" || bad "live fact wrongly retired"
+grep -q "N,rel,O,runs/sources/hand.md,confirmed," "$KB/facts/candidates.csv" && ok "hand-placed conversion fact preserved" || bad "hand-placed fact wrongly retired"
+grep -q "K,rel,P,sources/keep.md,confirmed," "$KB/facts/candidates.csv" && ok "live text fact preserved" || bad "live text fact wrongly retired"
+grep -q '"G", "rel", "H"' "$KB/facts/accepted.dl" && bad "orphan fact still in accepted.dl" || ok "orphan facts dropped from accepted.dl"
+grep -q '"L", "rel", "M"' "$KB/facts/accepted.dl" && ok "live fact kept in accepted.dl" || bad "live fact lost from accepted.dl"
+
+# --- --orphans --purge removes rows and strips runs/*.json --------------------
+KB="$(mktemp -d)/wiki"; seed_orphans "$KB"
+"$PYTHON" -m factlog eject --orphans --purge --target "$KB" >/dev/null 2>&1
+grep -q "runs/sources/gone.md" "$KB/facts/candidates.csv" && bad "--orphans --purge left the orphan row" || ok "--orphans --purge deletes the orphan row"
+[ ! -f "$KB/runs/2026-01-01-gone.json" ] && ok "--orphans --purge strips the emptied runs/*.json" || bad "runs json not stripped"
+grep -q "sources/keep.md" "$KB/facts/candidates.csv" && ok "--orphans --purge keeps live rows" || bad "live rows wrongly purged"
+
+# --- --dry-run changes nothing ------------------------------------------------
+KB="$(mktemp -d)/wiki"; seed_orphans "$KB"
+before="$(cat "$KB/facts/candidates.csv")"
+"$PYTHON" -m factlog eject --orphans --dry-run --target "$KB" >/dev/null 2>&1
+[ -f "$KB/runs/sources/gone.md" ] && [ "$(cat "$KB/facts/candidates.csv")" = "$before" ] \
+  && ok "--orphans --dry-run leaves files and candidates.csv untouched" || bad "--orphans --dry-run mutated state"
+
+# --- a clean KB (no orphans) reports none and exits 0, touching nothing -------
+KB="$(mktemp -d)/wiki"
+"$PYTHON" -m factlog init --target "$KB" >/dev/null
+printf 'plain\n' > "$KB/sources/ok.md"
+printf '%s\n%s\n' "$H" 'A,rel,B,sources/ok.md,confirmed,0.9,' > "$KB/facts/candidates.csv"
+set +e; out="$("$PYTHON" -m factlog eject --orphans --target "$KB" 2>&1)"; rc=$?; set -e
+[ "$rc" -eq 0 ] && printf '%s' "$out" | grep -qF "no orphaned sources found" && ok "clean KB: orphan scan finds none (rc 0)" || bad "clean KB orphan scan misbehaved (rc=$rc)"
+grep -q "sources/ok.md,confirmed," "$KB/facts/candidates.csv" && ok "clean KB: rows untouched" || bad "clean KB rows changed"
+
+# --- validation: --orphans cannot mix with source(s) or --fact ----------------
+KB="$(mktemp -d)/wiki"; seed_orphans "$KB"
+set +e
+"$PYTHON" -m factlog eject --orphans live.pdf --target "$KB" >/dev/null 2>&1; [ $? -eq 2 ] && ok "rejects --orphans + source" || bad "--orphans + source not rejected"
+"$PYTHON" -m factlog eject --orphans --fact G rel H --target "$KB" >/dev/null 2>&1; [ $? -eq 2 ] && ok "rejects --orphans + --fact" || bad "--orphans + --fact not rejected"
+set -e
+
 # --- non-KB path errors -------------------------------------------------------
 set +e; "$PYTHON" -m factlog eject anything --target "$(mktemp -d)" >/dev/null 2>&1; rc=$?; set -e
 [ "$rc" -ne 0 ] && ok "eject on a non-KB path errors" || bad "non-KB path should error"
