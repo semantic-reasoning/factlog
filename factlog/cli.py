@@ -45,6 +45,58 @@ def _atomic_write_text(path: _Path, text: str) -> None:
     os.replace(tmp, path)
 
 
+def _atomic_write_csv(csv_path, rows, fieldnames) -> None:
+    """Write candidate *rows* to *csv_path* atomically (temp + os.replace).
+
+    Uses extrasaction="ignore" so extra row keys are dropped, matching what every
+    candidates.csv writer relied on. Mirrors _atomic_write_text for run-file JSON.
+    """
+    import csv
+    import os
+
+    tmp = csv_path.with_name(csv_path.name + ".tmp")
+    with tmp.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+    os.replace(tmp, csv_path)
+
+
+def _require_kb(target, command: str, *, suffix: str = "") -> bool:
+    """True if *target* is a factlog KB (has sources/); else print the standard
+    error to stderr and return False so the caller can pick its own exit code.
+
+    *command* is the subcommand name in the message ("factlog <command>: ...").
+    *suffix* appends command-specific guidance (e.g. an ingest hint).
+    """
+    if (_Path(target) / "sources").is_dir():
+        return True
+    tail = f" {suffix}" if suffix else ""
+    print(f"factlog {command}: {target} is not a factlog KB (no sources/).{tail}", file=sys.stderr)
+    return False
+
+
+def _recompile_accepted(target, command: str) -> bool:
+    """Recompile facts/accepted.dl after a candidates.csv change.
+
+    Returns True on success; on failure prints the standard "compile_facts failed"
+    error (tagged with *command*) and returns False. Callers add their own
+    command-specific follow-up messaging.
+    """
+    import os
+    import subprocess
+
+    proc = subprocess.run(
+        [sys.executable, str(_TOOLS_DIR / "compile_facts.py")],
+        env=dict(os.environ, FACTLOG_ROOT=str(target)),
+        capture_output=True, text=True,
+    )
+    if proc.returncode == 0:
+        return True
+    print(f"factlog {command}: compile_facts failed: {(proc.stderr or proc.stdout).strip()}", file=sys.stderr)
+    return False
+
+
 def _version_tuple(value: str) -> tuple[int, ...]:
     import re
 
@@ -325,8 +377,7 @@ def cmd_sources(args: argparse.Namespace) -> int:
 
     target_str, _ = factlog_config.resolve_root(args.target)
     target = Path(target_str)
-    if not (target / "sources").is_dir():
-        print(f"factlog sources: {target} is not a factlog KB (no sources/).", file=sys.stderr)
+    if not _require_kb(target, "sources"):
         return 1
 
     # fact count per cited source (NFC-normalised, anchor stripped)
@@ -421,8 +472,7 @@ def cmd_review(args: argparse.Namespace) -> int:
 
     target_str, _ = factlog_config.resolve_root(args.target)
     target = Path(target_str)
-    if not (target / "sources").is_dir():
-        print(f"factlog review: {target} is not a factlog KB (no sources/).", file=sys.stderr)
+    if not _require_kb(target, "review"):
         return 1
 
     want = {args.status} if args.status else set(REVIEW_STATUSES)
@@ -467,8 +517,6 @@ def _apply_review_status(args: argparse.Namespace, new_status: str, verb: str) -
     write; recompiles accepted.dl. --dry-run previews.
     """
     import csv
-    import os
-    import subprocess
     import unicodedata
     from pathlib import Path
 
@@ -479,8 +527,7 @@ def _apply_review_status(args: argparse.Namespace, new_status: str, verb: str) -
 
     target_str, _ = factlog_config.resolve_root(args.target)
     target = Path(target_str)
-    if not (target / "sources").is_dir():
-        print(f"factlog {verb}: {target} is not a factlog KB (no sources/).", file=sys.stderr)
+    if not _require_kb(target, verb):
         return 1
     if len(args.terms) > 3:
         print(
@@ -545,22 +592,9 @@ def _apply_review_status(args: argparse.Namespace, new_status: str, verb: str) -
         if all(fld(r, k) == v for k, v in filt.items()) and (r.get("status") or "").strip() in REVIEW_STATUSES:
             r["status"] = new_status
             changed += 1
-    tmp = csv_path.with_name(csv_path.name + ".tmp")
-    with tmp.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=out_fields, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(rows)
-    os.replace(tmp, csv_path)
+    _atomic_write_csv(csv_path, rows, out_fields)
 
-    recompile_failed = False
-    proc = subprocess.run(
-        [sys.executable, str(_TOOLS_DIR / "compile_facts.py")],
-        env=dict(os.environ, FACTLOG_ROOT=str(target)),
-        capture_output=True, text=True,
-    )
-    if proc.returncode != 0:
-        recompile_failed = True
-        print(f"factlog {verb}: compile_facts failed: {(proc.stderr or proc.stdout).strip()}", file=sys.stderr)
+    recompile_failed = not _recompile_accepted(target, verb)
     recompiled = "accepted.dl NOT recompiled" if recompile_failed else "accepted.dl recompiled"
     print(f"factlog {verb}: {changed} row(s) → {new_status}; {recompiled}")
     if recompile_failed:
@@ -596,8 +630,6 @@ def cmd_amend(args: argparse.Namespace) -> int:
     """
     import csv
     import json
-    import os
-    import subprocess
     import unicodedata
     from pathlib import Path
 
@@ -608,8 +640,7 @@ def cmd_amend(args: argparse.Namespace) -> int:
 
     target_str, _ = factlog_config.resolve_root(args.target)
     target = Path(target_str)
-    if not (target / "sources").is_dir():
-        print(f"factlog amend: {target} is not a factlog KB (no sources/).", file=sys.stderr)
+    if not _require_kb(target, "amend"):
         return 1
 
     old = (nfc(args.subject), nfc(args.relation), nfc(args.object))
@@ -675,12 +706,7 @@ def cmd_amend(args: argparse.Namespace) -> int:
             if args.accept:
                 r["status"] = "accepted"
             changed += 1
-    tmp = csv_path.with_name(csv_path.name + ".tmp")
-    with tmp.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=out_fields, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(rows)
-    os.replace(tmp, csv_path)
+    _atomic_write_csv(csv_path, rows, out_fields)
 
     # 2. runs/*.json (durability) — a value lives here; merge rebuilds from it
     runs_changed = 0
@@ -710,14 +736,7 @@ def cmd_amend(args: argparse.Namespace) -> int:
     # 3. recompile accepted.dl
     recompile_failed = False
     if csv_path.is_file():
-        proc = subprocess.run(
-            [sys.executable, str(_TOOLS_DIR / "compile_facts.py")],
-            env=dict(os.environ, FACTLOG_ROOT=str(target)),
-            capture_output=True, text=True,
-        )
-        if proc.returncode != 0:
-            recompile_failed = True
-            print(f"factlog amend: compile_facts failed: {(proc.stderr or proc.stdout).strip()}", file=sys.stderr)
+        recompile_failed = not _recompile_accepted(target, "amend")
 
     recompiled = "accepted.dl NOT recompiled" if recompile_failed else "accepted.dl recompiled"
     print(
@@ -757,8 +776,7 @@ def cmd_search(args: argparse.Namespace) -> int:
 
     target_str, _ = factlog_config.resolve_root(args.target)
     target = Path(target_str)
-    if not (target / "sources").is_dir():
-        print(f"factlog search: {target} is not a factlog KB (no sources/).", file=sys.stderr)
+    if not _require_kb(target, "search"):
         return 1
 
     term = nfc(args.term).strip().casefold()
@@ -820,8 +838,7 @@ def cmd_provenance(args: argparse.Namespace) -> int:
 
     target_str, _ = factlog_config.resolve_root(args.target)
     target = Path(target_str)
-    if not (target / "sources").is_dir():
-        print(f"factlog provenance: {target} is not a factlog KB (no sources/).", file=sys.stderr)
+    if not _require_kb(target, "provenance"):
         return 1
 
     if len(args.terms) > 3:
@@ -904,8 +921,7 @@ def cmd_ignore(args: argparse.Namespace) -> int:
 
     target_str, _ = factlog_config.resolve_root(args.target)
     target = Path(target_str)
-    if not (target / "sources").is_dir():
-        print(f"factlog ignore: {target} is not a factlog KB (no sources/).", file=sys.stderr)
+    if not _require_kb(target, "ignore"):
         return 1
 
     policy_file = target / "policy" / "sync-ignore.md"
@@ -987,8 +1003,7 @@ def cmd_vocab(args: argparse.Namespace) -> int:
 
     target_str, _ = factlog_config.resolve_root(args.target)
     target = Path(target_str)
-    if not (target / "sources").is_dir():
-        print(f"factlog vocab: {target} is not a factlog KB (no sources/).", file=sys.stderr)
+    if not _require_kb(target, "vocab"):
         return 1
     os.environ["FACTLOG_ROOT"] = target_str
     import importlib
@@ -1045,8 +1060,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     target_str, source = factlog_config.resolve_root(args.target)
     target = Path(target_str)
-    if not (target / "sources").is_dir():
-        print(f"factlog status: {target} is not a factlog KB (no sources/). Run 'factlog init'/'use'.", file=sys.stderr)
+    if not _require_kb(target, "status", suffix="Run 'factlog init'/'use'."):
         return 1
     os.environ["FACTLOG_ROOT"] = target_str
     import importlib
@@ -1567,13 +1581,12 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     target = Path(target_str)
     if source in ("config", "cwd"):
         print(f"factlog ingest: target KB {target} (from {source})")
-    if not (target / "sources").is_dir():
-        hint = (
-            "Run 'factlog init --target <kb>' (or 'factlog use <kb>') first."
-            if source in ("config", "cwd")
-            else f"Run 'factlog init --target {args.target}' first."
-        )
-        print(f"factlog ingest: {target} is not a factlog KB (no sources/). {hint}", file=sys.stderr)
+    hint = (
+        "Run 'factlog init --target <kb>' (or 'factlog use <kb>') first."
+        if source in ("config", "cwd")
+        else f"Run 'factlog init --target {args.target}' first."
+    )
+    if not _require_kb(target, "ingest", suffix=hint):
         return 1
     # Converted files are *derived* artifacts, so they collect with the other
     # generated run outputs under runs/sources/ — never in sources/, which holds
@@ -1746,9 +1759,7 @@ def cmd_eject(args: argparse.Namespace) -> int:
     """
     import csv
     import json
-    import os
     import re
-    import subprocess
     import unicodedata
     from pathlib import Path
 
@@ -1759,8 +1770,7 @@ def cmd_eject(args: argparse.Namespace) -> int:
 
     target_str, _ = factlog_config.resolve_root(args.target)
     target = Path(target_str)
-    if not (target / "sources").is_dir():
-        print(f"factlog eject: {target} is not a factlog KB (no sources/).", file=sys.stderr)
+    if not _require_kb(target, "eject"):
         return 1
 
     # Known source refs come from both the candidates table (cited sources) and
@@ -2020,14 +2030,9 @@ def cmd_eject(args: argparse.Namespace) -> int:
                     continue  # drop the row entirely
                 r["status"] = "superseded"
             new_rows.append(r)
-        # Write atomically (temp + replace) so an interrupted run can't leave a
-        # half-written candidates.csv.
-        tmp = csv_path.with_name(csv_path.name + ".tmp")
-        with tmp.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=out_fields, extrasaction="ignore")
-            writer.writeheader()
-            writer.writerows(new_rows)
-        os.replace(tmp, csv_path)
+        # Atomic temp+replace (see _atomic_write_csv) so an interrupted run can't
+        # leave a half-written candidates.csv.
+        _atomic_write_csv(csv_path, new_rows, out_fields)
 
     # 4. optionally delete the user's original(s) (source mode only)
     deleted_orig = 0
@@ -2042,17 +2047,7 @@ def cmd_eject(args: argparse.Namespace) -> int:
     # 5. recompile accepted.dl so the engine input drops the retired facts
     recompile_failed = False
     if csv_path.is_file():
-        proc = subprocess.run(
-            [sys.executable, str(_TOOLS_DIR / "compile_facts.py")],
-            env=dict(os.environ, FACTLOG_ROOT=str(target)),
-            capture_output=True, text=True,
-        )
-        if proc.returncode != 0:
-            recompile_failed = True
-            print(
-                f"factlog eject: compile_facts failed: {(proc.stderr or proc.stdout).strip()}",
-                file=sys.stderr,
-            )
+        recompile_failed = not _recompile_accepted(target, "eject")
 
     verb = "purged" if args.purge else "superseded"
     recompiled = "accepted.dl NOT recompiled" if recompile_failed else "accepted.dl recompiled"
