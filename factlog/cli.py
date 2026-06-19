@@ -2287,7 +2287,19 @@ def main(argv: list[str] | None = None) -> int:
     if not getattr(args, "command", None):
         parser.print_help()
         return 0
-    return args.func(args)
+    try:
+        return args.func(args)
+    except Exception as exc:
+        # A library-level FactlogError (raised by common's loaders) becomes the
+        # legacy "message to stderr, exit 1". Resolve the class lazily so it still
+        # matches after a command reloads the common module. Anything else
+        # propagates unchanged.
+        from common import FactlogError
+
+        if isinstance(exc, FactlogError):
+            print(str(exc), file=sys.stderr)
+            return 1
+        raise
 
 
 if __name__ == "__main__":

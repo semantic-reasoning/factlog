@@ -32,4 +32,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    from common import run_cli
+
+    raise SystemExit(run_cli(main))

@@ -829,4 +829,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    from common import run_cli
+
+    sys.exit(run_cli(main))
