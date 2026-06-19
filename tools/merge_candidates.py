@@ -456,9 +456,12 @@ def decision_section(row: dict[str, str]) -> str:
 
 
 def insert_bullet(text: str, section: str, bullet: str) -> str:
-    if bullet in text:
-        return text
     lines = text.splitlines()
+    # Idempotency by exact line, not substring: a plain `bullet in text` dropped a
+    # new bullet whenever it was a prefix-substring of a longer existing bullet
+    # (e.g. "...note" skipped because "...note extra" was already present).
+    if bullet.rstrip() in {line.rstrip() for line in lines}:
+        return text
     try:
         index = lines.index(section)
     except ValueError:
