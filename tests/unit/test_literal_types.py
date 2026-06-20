@@ -50,21 +50,52 @@ class TestParseOrdinal:
         assert lt.parse_ordinal(raw) is None
 
 
+class TestParseAmount:
+    @pytest.mark.parametrize("raw,expected", [
+        ("100억", 10000000000),
+        ("1,000원", 1000),
+        ("50억", 5000000000),
+        ("1조", 1000000000000),
+        ("100 억", 10000000000),  # single space allowed
+    ])
+    def test_accepts(self, raw, expected):
+        assert lt.parse_amount(raw, lt.DEFAULT_AMOUNT_UNITS) == expected
+
+    def test_decimal_is_exact(self):
+        # int(2.675 * 1e8) == 267499999 (IEEE-754 error); Decimal is exact.
+        assert lt.parse_amount("2.675억", lt.DEFAULT_AMOUNT_UNITS) == 267500000
+
+    @pytest.mark.parametrize("raw", ["3GB", "제3호", "50%", "2026년", "3 GB", "", "억"])
+    def test_rejects(self, raw):
+        # unknown/ASCII units, ordinal marker, percent, date unit -> None
+        assert lt.parse_amount(raw, lt.DEFAULT_AMOUNT_UNITS) is None
+
+    def test_returns_int_never_float(self):
+        result = lt.parse_amount("2.675억", lt.DEFAULT_AMOUNT_UNITS)
+        assert type(result) is int
+
+
 class TestNormalizeDispatcher:
     def test_dispatches_by_tag(self):
         assert lt.normalize("date", "2030.1") == 20300101
         assert lt.normalize("number", "3.14") == 3.14
         assert lt.normalize("ordinal", "3위") == 3
 
+    def test_amount_uses_default_table(self):
+        # amount is no longer an unknown tag: with no table it uses the default.
+        assert lt.normalize("amount", "100억") == 10000000000
+
+    def test_amount_uses_passed_table(self):
+        assert lt.normalize("amount", "3.3억", {"억": 10**8}) == 330000000
+
     def test_unknown_tag_is_none(self):
-        assert lt.normalize("amount", "100억") is None  # amount is a follow-up
         assert lt.normalize("nonsense", "x") is None
 
     def test_non_parsing_is_none(self):
         assert lt.normalize("date", "not a date") is None
 
     def test_types_constant(self):
-        assert lt.TYPES == {"date", "number", "ordinal"}
+        assert lt.TYPES == {"date", "number", "ordinal", "amount"}
 
     def test_deterministic(self):
         assert lt.normalize("date", "2030.1") == lt.normalize("date", "2030.1")
@@ -81,6 +112,10 @@ class TestLiteralReConsistency:
     flags as a literal is parseable by its intended-type normalizer."""
 
     # (raw, intended type, expected scalar)
+    # NB: only amount canonicals that _LITERAL_RE ALREADY detects belong here.
+    # entity_audit's amount detection is partial/advisory (e.g. it does not flag
+    # `1,000원` or `3.3억`); parse_amount is intentionally more permissive. We do
+    # not widen the advisory detector to match — a known minor gap.
     CANONICAL = [
         ("2030.1", "date", 20300101),
         ("2024-07-01", "date", 20240701),
@@ -89,6 +124,7 @@ class TestLiteralReConsistency:
         ("3.14", "number", 3.14),
         ("제3호", "ordinal", 3),
         ("3위", "ordinal", 3),
+        ("100억", "amount", 10000000000),
     ]
 
     @pytest.mark.parametrize("raw,type_tag,expected", CANONICAL)
