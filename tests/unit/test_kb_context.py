@@ -78,6 +78,14 @@ class TestExtraLogicPolicy:
         dl = self._write_policy(tmp_path, base=base, extra="// just a note\n// nothing here\n")
         assert common._load_logic_policy_from(dl) == base.strip()
 
+    def test_hash_comment_only_extra_is_byte_identical(self, tmp_path):
+        # Authors instinctively use `#` (every other policy file does).
+        # A `#`-only stub must stay byte-identical — wirelog rejects `#` with
+        # a ParseError if it leaks into the engine program.
+        base = ".decl requires_review(entity: symbol, reason: symbol)\n"
+        dl = self._write_policy(tmp_path, base=base, extra="# just a note\n# nothing here\n")
+        assert common._load_logic_policy_from(dl) == base.strip()
+
     def test_extra_discovered_via_kb_context(self, tmp_path):
         base = ".decl requires_review(entity: symbol, reason: symbol)\n"
         extra = ".decl after2030(entity: symbol, reason: symbol)\n"

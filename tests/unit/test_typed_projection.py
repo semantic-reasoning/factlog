@@ -91,6 +91,10 @@ def _build_kb(root: Path) -> None:
         "- `정식_운영` : date as launch_date\n", encoding="utf-8"
     )
     (root / "policy" / "logic-policy.dl").write_text(
+        # Arity-1 head is intentional here: this test calls run_wirelog()
+        # directly and never touches the report path. Do NOT copy this shape
+        # into logic-policy.extra.dl — an arity-1 head crashes
+        # run_logic_check.py's 2-tuple unpack (#120 uses arity-2).
         ".decl after2030(s: symbol)\n"
         "after2030(S) :- launch_date(S, D), D >= 20300101.\n",
         encoding="utf-8",

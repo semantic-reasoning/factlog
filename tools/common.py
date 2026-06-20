@@ -332,9 +332,14 @@ def _load_logic_policy_from(logic_policy_dl: Path) -> str:
     if extra.is_file():
         extra_text = extra.read_text(encoding="utf-8").strip()
         # Skip an empty or comment-only sibling so the program text stays
-        # byte-identical to today (a `//`-comment-only stub is a no-op).
+        # byte-identical to today. Both `//` (Datalog) and `#` (used in every
+        # other policy file) are treated as comments; a `#`-only stub must NOT
+        # leak bytes into the engine program — wirelog rejects `#` with a
+        # ParseError.
         if extra_text and any(
-            line.strip() and not line.strip().startswith("//")
+            line.strip()
+            and not line.strip().startswith("//")
+            and not line.strip().startswith("#")
             for line in extra_text.splitlines()
         ):
             text = text + "\n" + extra_text
