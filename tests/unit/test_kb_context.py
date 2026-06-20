@@ -45,6 +45,47 @@ class TestLoaders:
         assert ctx.single_valued_relations() == {"capital_of"}
 
 
+class TestExtraLogicPolicy:
+    """Optional policy/logic-policy.extra.dl is concatenated onto the generated
+    logic-policy.dl, for hand-authored rules the --check golden never touches (#120)."""
+
+    def _write_policy(self, root, *, base, extra=None):
+        (root / "policy").mkdir(parents=True, exist_ok=True)
+        dl = root / "policy" / "logic-policy.dl"
+        dl.write_text(base, encoding="utf-8")
+        if extra is not None:
+            (root / "policy" / "logic-policy.extra.dl").write_text(extra, encoding="utf-8")
+        return dl
+
+    def test_absent_extra_is_byte_identical(self, tmp_path):
+        base = ".decl requires_review(entity: symbol, reason: symbol)\n"
+        dl = self._write_policy(tmp_path, base=base)
+        assert common._load_logic_policy_from(dl) == base.strip()
+
+    def test_present_extra_is_appended(self, tmp_path):
+        base = ".decl requires_review(entity: symbol, reason: symbol)\n"
+        extra = '.decl after2030(entity: symbol, reason: symbol)\nafter2030(S, "x") :- launch_date(S, D), D >= 20300101.\n'
+        dl = self._write_policy(tmp_path, base=base, extra=extra)
+        assert common._load_logic_policy_from(dl) == base.strip() + "\n" + extra.strip()
+
+    def test_empty_extra_is_byte_identical(self, tmp_path):
+        base = ".decl requires_review(entity: symbol, reason: symbol)\n"
+        dl = self._write_policy(tmp_path, base=base, extra="   \n\n")
+        assert common._load_logic_policy_from(dl) == base.strip()
+
+    def test_comment_only_extra_is_byte_identical(self, tmp_path):
+        base = ".decl requires_review(entity: symbol, reason: symbol)\n"
+        dl = self._write_policy(tmp_path, base=base, extra="// just a note\n// nothing here\n")
+        assert common._load_logic_policy_from(dl) == base.strip()
+
+    def test_extra_discovered_via_kb_context(self, tmp_path):
+        base = ".decl requires_review(entity: symbol, reason: symbol)\n"
+        extra = ".decl after2030(entity: symbol, reason: symbol)\n"
+        self._write_policy(tmp_path, base=base, extra=extra)
+        ctx = common.KbContext.for_root(tmp_path)
+        assert "after2030" in common.policy_predicates(ctx.load_logic_policy())
+
+
 class TestTwoKbsAreIndependent:
     def test_contexts_do_not_bleed(self, tmp_path):
         # Two KBs with different attribute-relation policies, read in one process.
