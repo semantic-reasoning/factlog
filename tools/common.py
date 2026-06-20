@@ -323,7 +323,22 @@ def load_accepted_facts() -> list[dict[str, str]]:
 def _load_logic_policy_from(logic_policy_dl: Path) -> str:
     if not logic_policy_dl.is_file():
         raise FactlogError("missing policy/logic-policy.dl; run factlog init --target <kb> --force")
-    return logic_policy_dl.read_text(encoding="utf-8").strip()
+    text = logic_policy_dl.read_text(encoding="utf-8").strip()
+    # Optional sibling for hand-authored rules (e.g. typed comparison predicates,
+    # #120). Unlike logic-policy.dl this file is never regenerated or byte-compared
+    # by generate_logic_policy.py --check, so authors may edit it directly. Absent
+    # or all-comment/empty → text is byte-identical to today (#116 invariant 1).
+    extra = logic_policy_dl.with_name("logic-policy.extra.dl")
+    if extra.is_file():
+        extra_text = extra.read_text(encoding="utf-8").strip()
+        # Skip an empty or comment-only sibling so the program text stays
+        # byte-identical to today (a `//`-comment-only stub is a no-op).
+        if extra_text and any(
+            line.strip() and not line.strip().startswith("//")
+            for line in extra_text.splitlines()
+        ):
+            text = text + "\n" + extra_text
+    return text
 
 
 def load_logic_policy() -> str:
