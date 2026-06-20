@@ -1006,6 +1006,58 @@ def decode_wirelog_value(session: EasySession, value: object) -> object:
     return value
 
 
+def _project_typed_relations(session, specs, accepted) -> None:
+    """Insert each parseable typed-relation object into its int64 side-relation,
+    deterministically ordered so the run is reproducible (#116 invariant 3). A
+    non-parsing object warns and skips ONLY that row — the fact still loads
+    untyped via relation/3 (#116 invariant 4). Scalars are bare ints and must
+    NEVER be interned.
+
+    Touches *session* only via intern/insert — no step/close — so it is
+    unit-testable with a fake session and no engine.
+
+    NB: hand-authored comparison-predicate rules (#120) use arity-2
+    (subject, reason) heads with a quoted reason string; the scalar stays in
+    the body. A bare scalar in a head would be mis-decoded as an interned
+    symbol by decode_wirelog_value (it round-trips ints through the intern
+    table), so it must never appear there. Those rules live in the optional
+    policy/logic-policy.extra.dl, not here.
+    """
+    if not specs:
+        return
+    for row in sorted(accepted, key=lambda r: (r["relation"], r["subject"], r["object"])):
+        spec = specs.get(row["relation"])
+        if spec is None or spec.type not in _TYPED_COL:
+            continue
+        scalar = literal_types.normalize(spec.type, row["object"], spec.units)
+        if scalar is None:
+            print(
+                f"typed-relations: {row['object']!r} for {row['relation']!r} "
+                f"({row['subject']!r}) does not parse as {spec.type}; loading untyped",
+                file=sys.stderr,
+            )
+            continue
+        # Defensive: every _TYPED_COL is an int64 column. pyrewire silently
+        # accepts a float into an int64 column (wrong comparison), so if a
+        # future normalizer ever leaks a non-int, skip + warn loudly rather
+        # than insert a silently-wrong value.
+        if not isinstance(scalar, int):
+            print(
+                f"typed-relations: {row['object']!r} for {row['relation']!r} "
+                f"({row['subject']!r}) normalized to non-int {scalar!r}; skipping",
+                file=sys.stderr,
+            )
+            continue
+        if not (-(2**63) <= scalar < 2**63):
+            print(
+                f"typed-relations: {row['object']!r} for {row['relation']!r} "
+                f"({row['subject']!r}) = {scalar} out of int64 range; skipping",
+                file=sys.stderr,
+            )
+            continue
+        session.insert(spec.alias, (session.intern(row["subject"]), scalar))
+
+
 def run_wirelog() -> dict[str, set[tuple[str, ...]]]:
     require_pyrewire_version()
 
@@ -1041,49 +1093,7 @@ def run_wirelog() -> dict[str, set[tuple[str, ...]]]:
         session.intern(row["relation"])
         session.intern(row["object"])
 
-    # Project typed rows into their side-relations, deterministically ordered so
-    # the run is reproducible (#116 invariant 3). A non-parsing object warns and
-    # skips ONLY that row — the fact still loads untyped via relation/3 (#116
-    # invariant 4). Scalars are bare ints and must NEVER be interned.
-    #
-    # NB: hand-authored comparison-predicate rules (#120) use arity-2
-    # (subject, reason) heads with a quoted reason string; the scalar stays in
-    # the body. A bare scalar in a head would be mis-decoded as an interned
-    # symbol by decode_wirelog_value (it round-trips ints through the intern
-    # table), so it must never appear there. Those rules live in the optional
-    # policy/logic-policy.extra.dl, not here.
-    if specs:
-        for row in sorted(accepted, key=lambda r: (r["relation"], r["subject"], r["object"])):
-            spec = specs.get(row["relation"])
-            if spec is None or spec.type not in _TYPED_COL:
-                continue
-            scalar = literal_types.normalize(spec.type, row["object"], spec.units)
-            if scalar is None:
-                print(
-                    f"typed-relations: {row['object']!r} for {row['relation']!r} "
-                    f"({row['subject']!r}) does not parse as {spec.type}; loading untyped",
-                    file=sys.stderr,
-                )
-                continue
-            # Defensive: every _TYPED_COL is an int64 column. pyrewire silently
-            # accepts a float into an int64 column (wrong comparison), so if a
-            # future normalizer ever leaks a non-int, skip + warn loudly rather
-            # than insert a silently-wrong value.
-            if not isinstance(scalar, int):
-                print(
-                    f"typed-relations: {row['object']!r} for {row['relation']!r} "
-                    f"({row['subject']!r}) normalized to non-int {scalar!r}; skipping",
-                    file=sys.stderr,
-                )
-                continue
-            if not (-(2**63) <= scalar < 2**63):
-                print(
-                    f"typed-relations: {row['object']!r} for {row['relation']!r} "
-                    f"({row['subject']!r}) = {scalar} out of int64 range; skipping",
-                    file=sys.stderr,
-                )
-                continue
-            session.insert(spec.alias, (session.intern(row["subject"]), scalar))
+    _project_typed_relations(session, specs, accepted)
 
     inferred: dict[str, set[tuple[str, ...]]] = defaultdict(set)
     for relation_name, row, diff in session.step():
