@@ -1029,8 +1029,9 @@ def cmd_vocab(args: argparse.Namespace) -> int:
     --all to include candidate-only names. Objects of declared attribute
     relations are literals, not entities, so they are excluded from the entity
     list (consistent with `status`). --entities / --relations show one section;
-    default shows both. Relations are tagged [attribute]/[single-valued].
+    default shows both. Relations are tagged [attribute]/[single-valued]/[typed:<type>].
     """
+    import unicodedata
     from collections import Counter
     from pathlib import Path
 
@@ -1049,6 +1050,7 @@ def cmd_vocab(args: argparse.Namespace) -> int:
     scope_label = "all candidate" if args.all else "engine"
     attr = ctx.attribute_relations()
     sv = ctx.single_valued_relations()
+    typed = ctx.typed_relations()  # {name: TypedRelSpec}; {} when no typed-relations.md
 
     show_e = args.entities or not args.relations
     show_r = args.relations or not args.entities
@@ -1075,6 +1077,10 @@ def cmd_vocab(args: argparse.Namespace) -> int:
         print(f"  relations ({len(rel_counts)}):")
         for name, n in sorted(rel_counts.items(), key=lambda kv: (-kv[1], kv[0])):
             tags = [t for t, on in (("attribute", name in attr), ("single-valued", name in sv)) if on]
+            # typed_relations() keys are NFC-normalized; the CSV-sourced name may be NFD.
+            tname = unicodedata.normalize("NFC", name)
+            if tname in typed:
+                tags.append(f"typed:{typed[tname].type}")
             tagstr = f"  [{', '.join(tags)}]" if tags else ""
             print(f"    [{n:>3}] {name}{tagstr}")
         if not rel_counts:
