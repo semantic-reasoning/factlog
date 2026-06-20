@@ -31,6 +31,10 @@ KB="$(mktemp -d)/wiki"
 printf 'x\n' > "$KB/sources/a.md"
 printf -- '- 운영\n' > "$KB/policy/attribute-relations.md"     # 운영 object is a literal
 printf '# single-valued\n- 주속성\n' > "$KB/policy/single-valued.md"
+# 운영 is also typed (date): its object is a literal already, so declaring it typed
+# adds a [typed:date] tag without changing entity/relation counts. It is already in
+# attribute-relations.md, so _warn_typed_not_attribute stays silent (no stderr noise).
+printf -- '- `운영` : date as op_date\n' > "$KB/policy/typed-relations.md"
 printf '%s\n%s\n%s\n%s\n%s\n' "$H" \
   '갑봇,통합,을서비스,sources/a.md,confirmed,0.9,' \
   '갑봇,운영,2030,sources/a.md,confirmed,0.9,' \
@@ -46,8 +50,9 @@ printf '%s' "$out" | grep -qE "relations \(3\):" && ok "relation count is engine
 printf '%s' "$out" | grep -qE "\] 을서비스" && ok "non-attribute object listed as an entity" || bad "entity object missing"
 printf '%s' "$out" | grep -qF "2030" && bad "attribute-relation object (literal) leaked into vocab" || ok "literal object excluded from entities"
 printf '%s' "$out" | grep -qF "후보관계" && bad "candidate-only name shown without --all" || ok "candidate-only names excluded by default"
-printf '%s' "$out" | grep -qE "\] 운영  \[attribute\]" && ok "attribute relation tagged" || bad "attribute tag missing"
+printf '%s' "$out" | grep -qE "\] 운영  \[attribute(,|\])" && ok "attribute relation tagged" || bad "attribute tag missing"
 printf '%s' "$out" | grep -qE "\] 주속성  \[single-valued\]" && ok "single-valued relation tagged" || bad "single-valued tag missing"
+printf '%s' "$out" | grep -qE "\] 운영  \[attribute, typed:date\]" && ok "typed relation tagged [typed:date]" || bad "typed tag missing: $(printf '%s' "$out"|grep '운영')"
 
 # --- --entities / --relations show one section -------------------------------
 out="$("$PYTHON" -m factlog vocab --entities --target "$KB" 2>&1)"
