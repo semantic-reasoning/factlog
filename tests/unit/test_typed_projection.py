@@ -14,11 +14,14 @@ import pytest
 
 
 def _run_child(command: list[str], *, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    # encoding="utf-8" already selects text mode and matches the child's UTF-8
+    # stdio (common.enable_utf8_stdio), so output decodes consistently even on
+    # non-UTF-8 host locales (e.g. Windows CP949). Passing text=True too is
+    # redundant.
     return subprocess.run(
         command,
         env=env,
         capture_output=True,
-        text=True,
         encoding="utf-8",
     )
 
