@@ -42,11 +42,16 @@ printf '%s\n%s\n%s\n' "$HEADER" \
   > "$KB/facts/candidates.csv"
 
 # --- compile ---------------------------------------------------------------
-FACTLOG_ROOT="$KB" "$PYTHON" -m factlog.compile_facts >/dev/null
+compile_out="$(FACTLOG_ROOT="$KB" "$PYTHON" -m factlog.compile_facts)"
 
 # (a) exactly one relation() line for the triple in accepted.dl
 n_lines="$(grep -cF 'relation("PMID:16354850", "게재저널", "Chest")' "$KB/facts/accepted.dl" || true)"
 if [ "$n_lines" = "1" ]; then ok "multi-source triple appears once in accepted.dl"; else bad "expected 1 accepted.dl line, got $n_lines"; fi
+
+# (a2) compile stdout surfaces the distinct-source count for the merged triple
+printf '%s' "$compile_out" | grep -F 'PMID:16354850 / 게재저널 / Chest' | grep -qF 'sources=2' \
+  && ok "compile stdout annotates the merged triple with sources=2 (observability)" \
+  || bad "compile stdout missing sources=2 on the merged triple: $compile_out"
 
 router() { "$PYTHON" "$ROUTER" "$@" --target "$KB"; }
 field() { "$PYTHON" -c "import json,sys; print(json.load(sys.stdin).get(sys.argv[1]))" "$1"; }

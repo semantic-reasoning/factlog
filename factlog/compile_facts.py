@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from factlog.common import (
     FACTS_DIR,
+    corroboration_counts,
     dedup_engine_atoms,
     dl_atom,
     engine_facts,
@@ -33,12 +34,19 @@ def main() -> None:
 
     out = FACTS_DIR / "accepted.dl"
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # Distinct-source count per collapsed triple, so the compile log surfaces the
+    # multi-source provenance of a deduped atom (observability only — accepted.dl,
+    # render's `sources: N`, and provenance are unchanged). Computed on the
+    # candidates path (corroboration_counts), which is untouched by the dedup.
+    source_counts = corroboration_counts(facts)
     print(f"engine facts: {len(accepted)} / {len(facts)}")
     for row in accepted:
+        key = (row["subject"], row["relation"], row["object"])
+        n_sources = source_counts.get(key, 1)
         print(
             "  - "
             f"{row['subject']} / {row['relation']} / {row['object']} "
-            f"(confidence={row['confidence']}, source={row['source']})"
+            f"(confidence={row['confidence']}, source={row['source']}, sources={n_sources})"
         )
     print(f"written: {out}")
 
