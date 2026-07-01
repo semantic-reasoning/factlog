@@ -622,6 +622,78 @@ def single_valued_relations() -> set[str]:
     return _relation_names_from(POLICY_DIR / "single-valued.md")
 
 
+def relation_aliases(root: Path | None = None) -> dict[str, str]:
+    """Parse ``policy/relation-aliases.md`` into a ``{raw: canonical}`` map.
+
+    File format — one bullet per mapping, two backtick groups separated by
+    ``->``:
+
+    .. code-block:: markdown
+
+        # Relation aliases
+        - `게재연도` -> `published_year`
+        - `publication_year` -> `published_year`
+
+    Rules: skip blank lines and ``#`` comments; each mapping line has exactly
+    two backtick groups with ``->`` between; a leading ``-``/``*`` bullet is
+    ignored.  Absent file → ``{}`` (behaviour is byte-identical for KBs without
+    the file).  *root* selects the KB (mirrors how ``sync_ignore_patterns(root)``
+    picks ``root/policy``); ``None`` → module ``POLICY_DIR``.
+
+    Validation (raises :class:`FactlogError` on first violation — fail loud):
+
+    * a ``raw`` mapped to two DIFFERENT canonicals → error;
+    * a name that is both a ``raw`` key and a ``canonical`` value → chain →
+      error;
+    * ``raw == canonical`` self-map → error.
+    """
+    base = (root / "policy") if root is not None else POLICY_DIR
+    path = base / "relation-aliases.md"
+    if not path.is_file():
+        return {}
+    aliases: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = re.sub(r"^\s*[-*]\s+", "", line.strip()).strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        # Expect exactly two backtick groups: `raw` -> `canonical`
+        groups = re.findall(r"`([^`]+)`", stripped)
+        if len(groups) != 2:
+            continue
+        raw, canonical = groups[0].strip(), groups[1].strip()
+        if not raw or not canonical:
+            continue
+        # self-map
+        if raw == canonical:
+            raise FactlogError(
+                f"relation-aliases.md: self-map {raw!r} -> {canonical!r} is not allowed"
+            )
+        # duplicate raw with conflicting canonical
+        if raw in aliases and aliases[raw] != canonical:
+            raise FactlogError(
+                f"relation-aliases.md: {raw!r} mapped to both "
+                f"{aliases[raw]!r} and {canonical!r}"
+            )
+        aliases[raw] = canonical
+    # chain: a raw that also appears as a canonical value
+    canonical_values = set(aliases.values())
+    for raw in aliases:
+        if raw in canonical_values:
+            raise FactlogError(
+                f"relation-aliases.md: {raw!r} is both a raw predicate and a "
+                "canonical target — alias chains are not allowed"
+            )
+    return aliases
+
+
+def surface_variants(canonical: str, aliases: dict[str, str]) -> set[str]:
+    """Reverse lookup — all raw predicates that map to *canonical*.
+
+    Returns an empty set when *canonical* has no surface aliases.
+    """
+    return {raw for raw, canon in aliases.items() if canon == canonical}
+
+
 def attribute_relations() -> set[str]:
     """Relation names whose object is a LITERAL value, not a first-class entity
     (policy/attribute-relations.md).
