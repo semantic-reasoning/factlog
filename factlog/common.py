@@ -317,7 +317,10 @@ def _load_accepted_facts_from(accepted_dl: Path) -> list[dict[str, str]]:
         except ValueError:
             raise FactlogError(f"accepted.dl contains unsupported fact syntax: {line}")
         rows.append({"subject": subject, "relation": relation, "object": object_})
-    return rows
+    # Defensive: a stale or hand-edited accepted.dl may still carry duplicate
+    # triples; collapse them so evaluate/check stay set-consistent. These rows
+    # are bare triples, so no source/provenance is lost here.
+    return dedup_engine_atoms(rows)
 
 
 def load_accepted_facts() -> list[dict[str, str]]:
@@ -810,6 +813,28 @@ def fact_signals(
 
 def engine_facts(facts: list[dict[str, str]]) -> list[dict[str, str]]:
     return [row for row in facts if row["status"] in ENGINE_STATUSES]
+
+
+def dedup_engine_atoms(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Collapse rows that share a ``(subject, relation, object)`` triple to a
+    single engine atom, keeping the FIRST occurrence (stable, not sort-min).
+
+    The engine atom carries only the triple (see ``dl_atom``); the same triple
+    accepted from several sources must appear once in ``accepted.dl`` so ``ask``
+    and ``run_logic_check`` report set semantics (one row / true count) rather
+    than an inflated, duplicated count. Source aggregation (``sources: N``,
+    provenance) lives on the separate candidates path (``corroboration_counts``,
+    ``fact_signals``) and is untouched by this collapse. First-occurrence order
+    keeps ``accepted.dl`` byte-identical when the KB has no duplicate triple."""
+    seen: set[tuple[str, str, str]] = set()
+    unique: list[dict[str, str]] = []
+    for row in rows:
+        key = (row["subject"], row["relation"], row["object"])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(row)
+    return unique
 
 
 def review_facts(facts: list[dict[str, str]]) -> list[dict[str, str]]:

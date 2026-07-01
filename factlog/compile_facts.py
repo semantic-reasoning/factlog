@@ -4,13 +4,25 @@
 
 from __future__ import annotations
 
-from factlog.common import FACTS_DIR, dl_atom, engine_facts, ensure_dirs, load_facts
+from factlog.common import (
+    FACTS_DIR,
+    dedup_engine_atoms,
+    dl_atom,
+    engine_facts,
+    ensure_dirs,
+    load_facts,
+)
 
 
 def main() -> None:
     ensure_dirs()
     facts = load_facts()
-    accepted = engine_facts(facts)
+    # Collapse the same (subject, relation, object) accepted from several sources
+    # to a single engine atom so accepted.dl / ask / run_logic_check use set
+    # semantics. Source aggregation (sources: N, provenance) stays on the
+    # candidates path and is unaffected. First-occurrence keeps accepted.dl
+    # byte-identical when there are no duplicate triples.
+    accepted = dedup_engine_atoms(engine_facts(facts))
     lines = [
         "// generated from facts/candidates.csv",
         "// only confirmed/accepted facts become engine input",
