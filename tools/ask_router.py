@@ -241,6 +241,7 @@ def render_engine_answer(
     draft: str,
     rows: list[list[str]],
     signals: dict[tuple[str, str, str], dict[str, object]] | None = None,
+    annotate_objects: bool = False,
 ) -> str:
     """Render the VERIFIED — engine answer block (positive or negative).
 
@@ -262,20 +263,24 @@ def render_engine_answer(
       when the two are out of sync (recompile via /factlog check); it would also
       cover a future rule-derived relation. Either way the verdict stays binary.
 
-    Non-relation predicates (path/count/policy) pass signals=None: their rows are
-    computed by the engine, carry no extraction confidence by construction, and
-    are rendered without an annotation.
+    Non-relation predicates (path/count/policy) pass signals=None and
+    annotate_objects=False: their rows are computed by the engine, carry no
+    extraction confidence by construction, and are rendered without annotation.
+    Both the signals annotation and the humanize annotation are gated to relation
+    rows via these flags; a coincidental 3-element shape on a path/policy row
+    never triggers either annotation.
     """
     lines = ["VERIFIED — engine", f"query: {draft}", f"rows: {len(rows)}"]
     if rows:
         for row in rows:
             line = f"  - {', '.join(row)}"
             # Display-only: annotate a compound-term object (amount/date/number)
-            # with its human-friendly form. The stored/canonical string stays in
-            # the row verbatim (still copy-paste queryable); the pretty form is
-            # appended, never substituted. No-op for plain objects, so a KB with
-            # no compound objects renders byte-identically (#188 follow-up).
-            if len(row) == 3:
+            # with its human-friendly form. Gated to relation rows via
+            # annotate_objects so a coincidental 3-element shape on a path/policy
+            # row is never annotated. The stored/canonical string stays in the row
+            # verbatim (still copy-paste queryable); the pretty form is appended,
+            # never substituted. No-op for plain objects (#188 follow-up).
+            if annotate_objects and len(row) == 3:
                 pretty = literal_types.humanize(row[2])
                 if pretty != row[2]:
                     line += f"  (= {pretty})"
@@ -592,12 +597,18 @@ def cmd_render(args: argparse.Namespace) -> int:
         # staleness) annotate relation rows only (the (s,r,o) key is a relation
         # triple); gate on the predicate so path/policy rows are never annotated
         # by a coincidental 3-element shape.
+        is_relation = decision["predicate"] == "relation"
         signals = (
             fact_signals(load_facts(), Path(os.environ["FACTLOG_ROOT"]))
-            if decision["predicate"] == "relation" and CANDIDATES_CSV.is_file()
+            if is_relation and CANDIDATES_CSV.is_file()
             else None
         )
-        print(render_engine_answer(args.draft, evaluate(args.draft, facts)["rows"], signals))
+        print(render_engine_answer(
+            args.draft,
+            evaluate(args.draft, facts)["rows"],
+            signals,
+            annotate_objects=is_relation,
+        ))
         return 0
     # route == wiki
     print(json.dumps({"route": "wiki", "reason": decision["reason"]}, ensure_ascii=False))
