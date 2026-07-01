@@ -43,6 +43,33 @@ class TestDedupEngineAtoms:
         # stable, not sort-min: the first-seen row survives verbatim
         assert out[0]["source"] == "first"
 
+    def test_three_or_more_sources_collapse_to_one(self):
+        rows = [
+            _row("A", "r", "B", source="s1"),
+            _row("A", "r", "B", source="s2"),
+            _row("A", "r", "B", source="s3"),
+            _row("A", "r", "B", source="s4"),
+        ]
+        out = common.dedup_engine_atoms(rows)
+        assert len(out) == 1
+        assert out[0]["source"] == "s1"  # first-occurrence survives
+
+    def test_scattered_duplicates_keep_first_and_preserve_order(self):
+        # a=same triple appearing 3x, interleaved with distinct b and c:
+        # [a, b, a, c, a] -> [a, b, c] with a's FIRST occurrence retained.
+        rows = [
+            _row("A", "r", "B", source="a1"),
+            _row("X", "r", "Y", source="b1"),
+            _row("A", "r", "B", source="a2"),
+            _row("P", "r", "Q", source="c1"),
+            _row("A", "r", "B", source="a3"),
+        ]
+        out = common.dedup_engine_atoms(rows)
+        keys = [(r["subject"], r["relation"], r["object"]) for r in out]
+        assert keys == [("A", "r", "B"), ("X", "r", "Y"), ("P", "r", "Q")]
+        # the first-seen row for the scattered triple is the one kept
+        assert out[0]["source"] == "a1"
+
     def test_distinct_triples_preserve_order(self):
         rows = [
             _row("A", "r", "B"),
