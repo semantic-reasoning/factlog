@@ -219,3 +219,36 @@ def normalize(type_tag: str, raw: str, units: dict[str, int] | None = None) -> i
         return parse_amount(raw, units or DEFAULT_AMOUNT_UNITS)
     parser = _PARSERS.get(type_tag)
     return parser(raw) if parser is not None else None
+
+
+def humanize(value: str) -> str:
+    """A compound-term object string -> a human-friendly display form, or *value*
+    unchanged if it is not a recognized compound term. Total: never raises.
+
+    DISPLAY-ONLY. The stored/canonical string stays the source of truth — dedup
+    (``merge_candidates``), engine input (``accepted.dl``) and query matching all
+    key on the stored form — so a caller must render this *beside* the stored
+    object, never in place of it (else a humanized value copied into a query
+    would miss). Recognizes the unambiguous compound terms:
+
+      ``date(2030,1)`` -> ``2030-01``   ``date(2030,1,15)`` -> ``2030-01-15``
+      ``amount(7,"억")`` -> ``7억``       ``number(2.5)`` -> ``2.5``
+
+    ``ordinal(N)`` is intentionally NOT humanized: the source unit (호/위/번) is
+    lost at normalization, so a bare rank would be ambiguous. Any non-compound or
+    unrecognized string is returned verbatim, so a KB that emits no compound
+    objects is byte-identical."""
+    text = value.strip()
+    m = _DATE_COMPOUND_RE.match(text)
+    if m:
+        iso = f"{int(m.group(1)):04d}-{int(m.group(2)):02d}"
+        if m.group(3) is not None:
+            iso += f"-{int(m.group(3)):02d}"
+        return iso
+    m = _AMOUNT_COMPOUND_RE.match(text)
+    if m:
+        return f"{m.group('num')}{_amount_unit(m)}"
+    m = _NUMBER_COMPOUND_RE.match(text)
+    if m:
+        return m.group(1)
+    return value
