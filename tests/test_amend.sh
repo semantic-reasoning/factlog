@@ -109,6 +109,55 @@ out="$("$PYTHON" -m factlog amend Solo rel Old --set-object New --target "$KB" 2
 printf '%s' "$out" | grep -qF "0 runs/*.json row(s) updated" && printf '%s' "$out" | grep -qF "will NOT survive a re-merge" \
   && ok "candidates-only edit warns it won't survive re-merge" || bad "no-runs durability warning missing"
 
+# --- #220: amend leaves a superseded tombstone so a re-extraction of the ------
+# --- ORIGINAL (uncorrected) source does NOT revive the old value -------------
+# The durability case above only re-merges the SAME runs/*.json the amend
+# rewrote, so it can't catch a fresh re-extraction. Here a new runs/*.json
+# re-asserts the original (pre-amend) value — as a real re-sync would, because
+# the source text still carries the typo. Without a tombstone the old value
+# comes back as a live candidate and lingers in the review queue forever.
+KB="$(mktemp -d)/wiki"
+"$PYTHON" -m factlog init --target "$KB" >/dev/null
+printf 'a\n' > "$KB/sources/a.md"
+printf '[{"subject":"Svc","relation":"uses","object":"FastApi","source":"sources/a.md","status":"needs_review","confidence":0.5,"note":""}]\n' \
+  > "$KB/runs/T1.json"
+"$PYTHON" "$MERGE" --wiki "$KB" >/dev/null 2>&1
+grep -q "Svc,uses,FastApi,sources/a.md,needs_review," "$KB/facts/candidates.csv" && ok "#220 seed: original typo merges into the review queue" || bad "#220 seed merge failed: $(grep uses "$KB/facts/candidates.csv")"
+# correct the typo and accept
+"$PYTHON" -m factlog amend Svc uses FastApi --set-object FastAPI --accept --target "$KB" >/dev/null 2>&1
+grep -q "Svc,uses,FastAPI,sources/a.md,accepted," "$KB/facts/candidates.csv" && ok "#220 amend: corrected value is accepted" || bad "#220 amend did not accept corrected value"
+grep -q "Svc,uses,FastApi,sources/a.md,superseded," "$KB/facts/candidates.csv" && ok "#220 amend: leaves a superseded tombstone for the old value" || bad "#220 no tombstone left: $(grep uses "$KB/facts/candidates.csv")"
+# a fresh extraction of the still-uncorrected source re-asserts the old value
+printf '[{"subject":"Svc","relation":"uses","object":"FastApi","source":"sources/a.md","status":"needs_review","confidence":0.5,"note":""}]\n' \
+  > "$KB/runs/T2.json"
+"$PYTHON" "$MERGE" --wiki "$KB" >/dev/null 2>&1
+# corrected value survives as accepted...
+grep -q "Svc,uses,FastAPI,sources/a.md,accepted," "$KB/facts/candidates.csv" && ok "#220 corrected value stays accepted after re-extraction" || bad "#220 corrected value lost after re-extraction: $(grep uses "$KB/facts/candidates.csv")"
+# ...and the old typo does NOT come back as a live candidate / review item
+if grep -qE "^Svc,uses,FastApi,sources/a\.md,(candidate|needs_review)," "$KB/facts/candidates.csv"; then
+  bad "#220 old typo revived by re-extraction: $(grep uses "$KB/facts/candidates.csv")"
+else
+  ok "#220 old typo NOT revived by re-extraction (tombstone suppresses it)"
+fi
+
+# --- #220: subject/relation amend also leaves a tombstone --------------------
+KB="$(mktemp -d)/wiki"
+"$PYTHON" -m factlog init --target "$KB" >/dev/null
+printf 'a\n' > "$KB/sources/a.md"
+printf '[{"subject":"Widgit","relation":"codename","object":"Nova","source":"sources/a.md","status":"needs_review","confidence":0.5,"note":""}]\n' \
+  > "$KB/runs/T1.json"
+"$PYTHON" "$MERGE" --wiki "$KB" >/dev/null 2>&1
+"$PYTHON" -m factlog amend Widgit codename Nova --set-subject Widget --accept --target "$KB" >/dev/null 2>&1
+grep -q "Widgit,codename,Nova,sources/a.md,superseded," "$KB/facts/candidates.csv" && ok "#220 subject amend leaves a tombstone for the old subject" || bad "#220 subject amend left no tombstone: $(grep codename "$KB/facts/candidates.csv")"
+printf '[{"subject":"Widgit","relation":"codename","object":"Nova","source":"sources/a.md","status":"needs_review","confidence":0.5,"note":""}]\n' \
+  > "$KB/runs/T2.json"
+"$PYTHON" "$MERGE" --wiki "$KB" >/dev/null 2>&1
+if grep -qE "^Widgit,codename,Nova,sources/a\.md,(candidate|needs_review)," "$KB/facts/candidates.csv"; then
+  bad "#220 old subject revived by re-extraction: $(grep codename "$KB/facts/candidates.csv")"
+else
+  ok "#220 old subject NOT revived by re-extraction"
+fi
+
 echo ""
 echo "========================================"
 echo "test_amend: $pass passed, $fail failed"
