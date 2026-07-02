@@ -73,6 +73,24 @@ class TestHumanizeDateOutOfRange:
         assert lt.humanize("date(2030,1)") == "2030-01"
 
 
+class TestHumanizeCalendarImpossible:
+    """A day <= 31 that is impossible for its month must not be fabricated as ISO."""
+
+    @pytest.mark.parametrize("value", [
+        "date(2024,2,30)",   # February never has 30 days
+        "date(2024,4,31)",   # April has 30 days
+        "date(2023,2,29)",   # non-leap Feb 29
+    ])
+    def test_impossible_returns_verbatim(self, value):
+        assert lt.humanize(value) == value
+
+    def test_leap_feb_29_humanizes(self):
+        assert lt.humanize("date(2024,2,29)") == "2024-02-29"
+
+    def test_extreme_future_humanizes(self):
+        assert lt.humanize("date(9999,12,31)") == "9999-12-31"
+
+
 class TestHumanizeNeverRaises:
     @pytest.mark.parametrize("value", [
         "",

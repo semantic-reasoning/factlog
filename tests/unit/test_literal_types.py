@@ -23,6 +23,32 @@ class TestParseDate:
     def test_rejects(self, raw):
         assert lt.parse_date(raw) is None
 
+    @pytest.mark.parametrize("raw", [
+        "2024-02-30",       # February never has 30 days
+        "2024-04-31",       # April has 30 days
+        "2024-06-31",       # June has 30 days
+        "2024-11-31",       # November has 30 days
+        "2023-02-29",       # 2023 is not a leap year
+        "date(2024,2,30)",  # compound path, calendar-impossible
+        "date(2023,2,29)",  # compound path, non-leap Feb 29
+    ])
+    def test_rejects_calendar_impossible(self, raw):
+        # docstring contract: "Returns None if out of range" — a day <= 31 that is
+        # nonetheless impossible for its month must degrade to untyped (None).
+        assert lt.parse_date(raw) is None
+
+    @pytest.mark.parametrize("raw,expected", [
+        ("2024-02-29", 20240229),   # 2024 IS a leap year
+        ("2024-01-31", 20240131),   # January really has 31 days
+        ("2024-12-31", 20241231),   # December really has 31 days
+        ("9999-12-31", 99991231),   # extreme-future valid date must pass
+        ("2030.1", 20300101),       # month precision: day defaults to valid 01
+        ("2030-01-15", 20300115),
+        ("date(2024,2,29)", 20240229),  # compound path, leap-year Feb 29
+    ])
+    def test_accepts_calendar_valid(self, raw, expected):
+        assert lt.parse_date(raw) == expected
+
 
 class TestParseNumber:
     @pytest.mark.parametrize("raw,expected", [
