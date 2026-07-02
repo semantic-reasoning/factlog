@@ -191,6 +191,37 @@ via the existing policy-findings path, because its `.decl` name is auto-discover
 by `policy_predicates()`. With no `typed-relations.md` and no
 `logic-policy.extra.dl`, behaviour is byte-identical to a KB without the feature.
 
+**Relation aliases and canonical/3 (hand-authored rules, #227).** `policy/relation-aliases.md`
+declares surface-to-canonical predicate mappings (one `` `raw` -> `canonical` `` bullet per
+line). At compile time, `compile_facts.py` emits a `canonical/3` EDB block in `facts/accepted.dl`
+for every alias-participating fact, so a logic-policy rule can fire over any surface variant
+without naming it explicitly:
+
+```
+// policy/logic-policy.extra.dl
+.decl conflict(entity: symbol, reason: symbol)
+conflict(X, "retracted_conclusion") :-
+  canonical(X, "결론", _),
+  canonical(X, "철회상태", _).
+```
+
+Four authoring rules:
+
+1. **`policy/relation-aliases.md`** declares the surface→canonical mappings; `/factlog ask`
+   resolves canonical queries across all variants (Slice-1, already shipped).
+2. **A logic-policy rule that references `canonical/3` must be hand-authored in
+   `policy/logic-policy.extra.dl`** (NOT `logic-policy.dl`, which is regenerated from
+   `logic-policy.md` and byte-checked by `generate_logic_policy.py --check`; a canonical rule
+   there is flagged STALE and can be regenerated away). `extra.dl` is the same channel used for
+   typed-comparison predicates (#120); `--check` never touches it.
+3. **`canonical` is a reserved engine EDB predicate** — populated automatically from
+   `relation-aliases.md` into `accepted.dl`. Use it freely in rule *bodies* (right of `:-`),
+   but **never as a rule head or bare fact** in `logic-policy(.extra).dl`. A head occurrence
+   makes pyrewire treat `canonical` as IDB and silently drops all compile-emitted EDB atoms
+   (wrong answers, rc=0). The engine rejects such policy text with a loud `FactlogError`.
+4. The predicate shape for the head must be arity-2 `(entity: symbol, reason: symbol)` with a
+   quoted reason string — the same shape as typed-comparison and `requires_review` findings.
+
 Use `/factlog add` for quick capture; use the explicit `sync → query → check →
 repair` sequence when you need the full question→query workflow.
 
