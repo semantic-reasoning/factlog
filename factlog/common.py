@@ -1099,6 +1099,18 @@ def schema_context() -> str:
     candidates = load_facts()
     entities = sorted(entity_set(accepted))
     relations = sorted(allowed_relations(accepted))
+    # Build canonical section: one line per canonical name (sorted), listing its
+    # surface variants. Absent alias file → aliases is {} → section is empty →
+    # schema_context output is byte-identical to a KB without the file.
+    aliases = relation_aliases()
+    canonical_names: set[str] = set(aliases.values())
+    canonical_lines: list[str] = []
+    if canonical_names:
+        canonical_lines.append("")
+        canonical_lines.append("Canonical relation names (prefer these):")
+        for canonical in sorted(canonical_names):
+            variants = sorted(surface_variants(canonical, aliases))
+            canonical_lines.append(f"- {canonical} <- {', '.join(variants)}")
     return "\n".join(
         [
             "Allowed query predicates:",
@@ -1112,6 +1124,7 @@ def schema_context() -> str:
             "",
             "Allowed relation names from facts/accepted.dl:",
             ", ".join(relations) or "(none)",
+            *canonical_lines,
             "",
             "Review facts still outside engine input:",
             str(len(review_facts(candidates))),
@@ -1402,14 +1415,30 @@ def _relation_match_count(query: str, facts: list[dict[str, str]]) -> int:
         args = _query_args(query)
         if len(args) != 3:
             return 0
+        # Pre-compute surface variants for the relation argument when it is a
+        # quoted canonical name (i.e. its surface_variants set is non-empty).
+        # This lets a canonical query count surface-variant rows so the validator
+        # returns QUERY_OK (not QUERY_FACT_ABSENT) when matching rows exist.
+        rel_arg = args[1]
+        canonical_variants: set[str] = set()
+        if _is_quoted_string(rel_arg):
+            _rel_name = unicodedata.normalize("NFC", _arg_value(rel_arg))
+            _aliases = relation_aliases()
+            canonical_variants = surface_variants(_rel_name, _aliases)
         count = 0
         for row in facts:
-            values = [row["subject"], row["relation"], row["object"]]
-            if all(
-                _is_variable(arg) or _canonical_value(_arg_value(arg)) == _canonical_value(value)
-                for arg, value in zip(args, values, strict=True)
-            ):
-                count += 1
+            s_arg, r_arg, o_arg = args
+            s_val, r_val, o_val = row["subject"], row["relation"], row["object"]
+            if not (_is_variable(s_arg) or _canonical_value(_arg_value(s_arg)) == _canonical_value(s_val)):
+                continue
+            # Relation: match exact canonical name OR any surface variant.
+            if not (_is_variable(r_arg) or
+                    _canonical_value(_arg_value(r_arg)) == _canonical_value(r_val) or
+                    r_val in canonical_variants):
+                continue
+            if not (_is_variable(o_arg) or _canonical_value(_arg_value(o_arg)) == _canonical_value(o_val)):
+                continue
+            count += 1
         return count
     return 0
 
@@ -1480,7 +1509,12 @@ def classify_query(
         if not _is_variable(subject) and _arg_value(subject) not in entities:
             return False, QUERY_ENTITY_NOT_ACCEPTED, f"relation subject is not an accepted entity: {_arg_value(subject)}"
         if not _is_variable(relation) and _arg_value(relation) not in relations:
-            return False, QUERY_RELATION_NOT_ACCEPTED, f"relation name is not accepted: {_arg_value(relation)}"
+            # A declared canonical name (one whose surface_variants is non-empty)
+            # counts as accepted even though the canonical itself may not appear
+            # literally in accepted.dl — the stored facts use surface variants.
+            _rel_name = unicodedata.normalize("NFC", _arg_value(relation))
+            if not surface_variants(_rel_name, relation_aliases()):
+                return False, QUERY_RELATION_NOT_ACCEPTED, f"relation name is not accepted: {_arg_value(relation)}"
         if not _is_variable(object_) and _canonical_value(_arg_value(object_)) not in {
             _canonical_value(v) for v in values
         }:
