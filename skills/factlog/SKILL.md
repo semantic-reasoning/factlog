@@ -43,7 +43,7 @@ produced by `factlog ingest`).
 Examples:
 - `"sources/my-doc.md"`
 - `"sources/subdir/notes.md#section-heading"`
-- `"runs/sources/report.md"`  (a converted `.docx`/`.pdf` original)
+- `"runs/sources/report.pdf.md"`  (a converted `.docx`/`.pdf` original — the conversion keeps the original's full name, extension included, so same-stem originals never collide; #213)
 
 Bare filenames (e.g. `"my-doc.md"`) are NOT valid and will be silently dropped
 by `merge_candidates.py`. Always include the `sources/` or `runs/sources/` prefix.
@@ -216,8 +216,9 @@ first:
 
 `--scan` auto-discovers every binary file under `sources/` and writes a text
 conversion (with a provenance header) into `runs/sources/` — never into
-`sources/`, mirroring the original's subdirectory (`sources/sub/x.pdf` →
-`runs/sources/sub/x.md`). It is idempotent (unchanged files are skipped).
+`sources/`, mirroring the original's subdirectory and keeping the original's
+full name so same-stem originals never collide (`sources/sub/x.pdf` →
+`runs/sources/sub/x.pdf.md`; #213). It is idempotent (unchanged files are skipped).
 Sources matching `policy/sync-ignore.md` are skipped. Then extract from **both**
 `sources/` (native text) and `runs/sources/` (conversions).
 
@@ -439,7 +440,7 @@ it is correctly reported as a gap, not "covered":
   `/factlog sync` (or investigate why nothing was extracted).
 - **binary gap** — a binary source under `sources/` with **no conversion** at
   all: it needs conversion first via `factlog ingest`. A binary that already has
-  a `runs/sources/<stem>` conversion is **not** a gap — facts attach to the
+  a `runs/sources/<original-name>.md` conversion is **not** a gap — facts attach to the
   conversion, so the original is reported as *covered via conversion* (it counts
   toward "covered", with a `(N via conversion)` note in the summary). A binary
   under `runs/sources/` is instead flagged as an anomaly (that directory holds

@@ -56,8 +56,8 @@ PY
 # --- explicit ingest ----------------------------------------------------------
 make_hwpx "$KB/sources/sample.hwpx"
 set +e; out="$("$PYTHON" -m factlog ingest --target "$KB" "$KB/sources/sample.hwpx" 2>&1)"; rc=$?; set -e
-md="$KB/runs/sources/sample.md"
-[ "$rc" -eq 0 ] && [ -f "$md" ] && ok "hwpx ingests to runs/sources/<stem>.md (rc 0)" || bad "hwpx ingest failed (rc=$rc)"
+md="$KB/runs/sources/sample.hwpx.md"  # #213: conversion keeps the original's full name
+[ "$rc" -eq 0 ] && [ -f "$md" ] && ok "hwpx ingests to runs/sources/<name>.md (rc 0)" || bad "hwpx ingest failed (rc=$rc)"
 head -1 "$md" | grep -qF "ingested-by-factlog" && head -1 "$md" | grep -qF "factlog-hwpx" && ok "provenance header written" || bad "provenance header missing"
 grep -qx "첫째 문단" "$md" && ok "multiple <hp:t> runs join into one line" || bad "runs not joined"
 grep -qx "태그제거" "$md" && ok "inline tags stripped" || bad "inline tag not stripped"
@@ -70,7 +70,7 @@ grep -qx "둘째 섹션" "$md" && ok "text from a second section included" || ba
 rm -f "$md"
 make_hwpx "$KB/sources/scanned.hwpx"
 set +e; "$PYTHON" -m factlog ingest --target "$KB" --scan >/dev/null 2>&1; rc=$?; set -e
-[ "$rc" -eq 0 ] && [ -f "$KB/runs/sources/scanned.md" ] && ok "--scan auto-discovers and converts hwpx" || bad "--scan did not convert hwpx (rc=$rc)"
+[ "$rc" -eq 0 ] && [ -f "$KB/runs/sources/scanned.hwpx.md" ] && ok "--scan auto-discovers and converts hwpx" || bad "--scan did not convert hwpx (rc=$rc)"
 
 # --- corrupt hwpx: explicit fails, --scan reports but does not fail ------------
 printf 'not a zip file' > "$KB/sources/broken.hwpx"

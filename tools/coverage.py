@@ -54,6 +54,7 @@ from common import (  # noqa: E402
     load_facts,
     source_files,
     source_rel_key,
+    source_stem_key,
     sync_ignore_patterns,
 )
 
@@ -114,7 +115,12 @@ def coverage_rows(root: Path, facts: list[dict[str, str]]) -> tuple[list[dict[st
             conv_by_key.setdefault(source_rel_key(str(r["file"])), r)
     for r in rows:
         if r["dir"] == "sources" and not r["text"]:
-            conv = conv_by_key.get(source_rel_key(str(r["file"])))
+            # Pair on the full-name key (#213); fall back to the legacy stem key
+            # so a pre-#213 conversion (named by the bare stem) still pairs until
+            # the KB is re-ingested.
+            conv = conv_by_key.get(source_rel_key(str(r["file"]))) or conv_by_key.get(
+                source_stem_key(str(r["file"]))
+            )
             if conv is not None:
                 r["conversion"] = conv["file"]
                 r["conv_facts"] = conv["facts"]
