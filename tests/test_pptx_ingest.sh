@@ -73,8 +73,8 @@ PY
 # --- explicit ingest ----------------------------------------------------------
 make_pptx "$KB/sources/deck.pptx"
 set +e; out="$("$PYTHON" -m factlog ingest --target "$KB" "$KB/sources/deck.pptx" 2>&1)"; rc=$?; set -e
-md="$KB/runs/sources/deck.md"
-[ "$rc" -eq 0 ] && [ -f "$md" ] && ok "pptx ingests to runs/sources/<stem>.md (rc 0)" || bad "pptx ingest failed (rc=$rc): $out"
+md="$KB/runs/sources/deck.pptx.md"  # #213: conversion keeps the original's full name
+[ "$rc" -eq 0 ] && [ -f "$md" ] && ok "pptx ingests to runs/sources/<name>.md (rc 0)" || bad "pptx ingest failed (rc=$rc): $out"
 head -1 "$md" | grep -qF "ingested-by-factlog" && head -1 "$md" | grep -qF "factlog-pptx" && ok "provenance header written" || bad "provenance header missing"
 grep -qx "첫째 줄" "$md" && ok "multiple <a:t> runs join into one line" || bad "runs not joined"
 grep -qx "태그제거" "$md" && ok "inline tags stripped" || bad "inline tag not stripped"
@@ -94,7 +94,7 @@ awk '/^둘째 슬라이드$/{s2=NR} /^열번째 슬라이드$/{s10=NR} END{exit 
 rm -f "$md"
 make_pptx "$KB/sources/scanned.pptx"
 set +e; "$PYTHON" -m factlog ingest --target "$KB" --scan >/dev/null 2>&1; rc=$?; set -e
-[ "$rc" -eq 0 ] && [ -f "$KB/runs/sources/scanned.md" ] && ok "--scan auto-discovers and converts pptx" || bad "--scan did not convert pptx (rc=$rc)"
+[ "$rc" -eq 0 ] && [ -f "$KB/runs/sources/scanned.pptx.md" ] && ok "--scan auto-discovers and converts pptx" || bad "--scan did not convert pptx (rc=$rc)"
 
 # --- corrupt pptx: explicit fails, --scan reports but does not fail ------------
 printf 'not a zip file' > "$KB/sources/broken.pptx"

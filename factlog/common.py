@@ -217,15 +217,54 @@ SOURCE_ROOTS = ("sources", "runs/sources")
 
 
 def source_rel_key(ref: str) -> str:
-    """A source ref minus its source-root prefix and file suffix.
+    """The key that pairs a binary original with its runs/sources/ conversion.
 
-    This is the key that pairs a binary original with its runs/sources/<rel>
-    conversion now that `factlog ingest` mirrors the original's subdirectory:
-        'sources/a/report.pdf'      -> 'a/report'
-        'runs/sources/a/report.md'  -> 'a/report'   (pairs with the line above)
-        'sources/report.pdf'        -> 'report'      (top-level: unchanged)
-    Subdirectory-aware, so same-stem files in different subtrees no longer
-    collide. NFC-normalised. (Uses PurePosixPath since refs are posix-style.)
+    `factlog ingest` names a conversion by appending the converter's out-suffix
+    to the original's *full* filename (extension included) and mirrors the
+    original's subdirectory, so same-stem/different-extension originals no longer
+    collide on one output file (#213). The pairing key therefore keeps the
+    original's extension and drops only the conversion's final (out-)suffix:
+        'sources/a/report.hwpx'         -> 'a/report.hwpx'
+        'runs/sources/a/report.hwpx.md' -> 'a/report.hwpx'  (pairs with above)
+        'sources/report.pptx'           -> 'report.pptx'
+        'runs/sources/report.pptx.md'   -> 'report.pptx'    (pairs with above)
+    An original under sources/ keeps its full name; a conversion under
+    runs/sources/ drops one suffix. Subdirectory-aware, so same-name files in
+    different subtrees never collide. NFC-normalised. (PurePosixPath: refs are
+    posix-style.)
+
+    Backward compatibility: a legacy conversion made before #213 is named by the
+    bare stem (`runs/sources/report.md` from `report.pdf`), so its key is the
+    stem (`report`) and no longer equals the new full-name original key
+    (`report.pdf`). Such conversions pair through their provenance header where
+    that signal exists (eject/orphan); otherwise re-run `factlog ingest --force`
+    to migrate them to the new layout. See the migration note in the #213 PR.
+    """
+    ref = unicodedata.normalize("NFC", ref)
+    is_conversion = False
+    for rootname in SOURCE_ROOTS:
+        prefix = rootname + "/"
+        if ref.startswith(prefix):
+            is_conversion = rootname == "runs/sources"
+            ref = ref[len(prefix):]
+            break
+    p = PurePosixPath(ref)
+    # Conversion: drop the out-suffix (.md/.txt) added by ingest, keeping the
+    # original's own extension. Original: keep the full name so its extension is
+    # part of the key and can't be confused with a same-stem sibling.
+    return (p.with_suffix("") if is_conversion else p).as_posix()
+
+
+def source_stem_key(ref: str) -> str:
+    """The pre-#213 pairing key: source-root prefix stripped, one suffix dropped.
+
+        'sources/a/report.pdf'     -> 'a/report'
+        'runs/sources/a/report.md' -> 'a/report'   (legacy naming)
+
+    Used only as a *fallback* to keep a legacy conversion (named by the bare
+    stem, before #213 kept the original's extension) pairing with its original.
+    A fresh/re-ingested KB matches on source_rel_key() and never needs this.
+    Subdirectory-aware; NFC-normalised. See the #213 migration note.
     """
     ref = unicodedata.normalize("NFC", ref)
     for rootname in SOURCE_ROOTS:

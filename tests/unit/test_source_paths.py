@@ -7,16 +7,29 @@ import pytest
 
 
 class TestSourceRelKey:
-    def test_strips_sources_prefix_and_suffix(self):
-        assert common.source_rel_key("sources/a/report.pdf") == "a/report"
+    def test_original_keeps_full_name(self):
+        # An original keeps its extension (#213: extension is part of the key).
+        assert common.source_rel_key("sources/a/report.pdf") == "a/report.pdf"
 
     def test_conversion_pairs_with_original(self):
-        # The binary original and its runs/sources conversion key identically.
-        assert common.source_rel_key("runs/sources/a/report.md") == "a/report"
-        assert common.source_rel_key("sources/a/report.pdf") == "a/report"
+        # The binary original and its runs/sources conversion key identically:
+        # ingest names the conversion <original-full-name>.<out-suffix>.
+        assert common.source_rel_key("runs/sources/a/report.pdf.md") == "a/report.pdf"
+        assert common.source_rel_key("sources/a/report.pdf") == "a/report.pdf"
 
-    def test_top_level_unchanged(self):
-        assert common.source_rel_key("sources/report.pdf") == "report"
+    def test_same_stem_different_ext_do_not_collide(self):
+        # The #213 bug: report.hwpx and report.pptx must key distinctly so each
+        # pairs with only its own conversion.
+        assert common.source_rel_key("sources/report.hwpx") == "report.hwpx"
+        assert common.source_rel_key("sources/report.pptx") == "report.pptx"
+        assert common.source_rel_key("sources/report.hwpx") != common.source_rel_key(
+            "sources/report.pptx"
+        )
+        assert common.source_rel_key("runs/sources/report.hwpx.md") == "report.hwpx"
+        assert common.source_rel_key("runs/sources/report.pptx.md") == "report.pptx"
+
+    def test_top_level_full_name(self):
+        assert common.source_rel_key("sources/report.pdf") == "report.pdf"
 
     def test_subdirs_do_not_collide(self):
         assert common.source_rel_key("sources/a/report.pdf") != common.source_rel_key(

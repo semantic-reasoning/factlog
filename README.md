@@ -251,23 +251,29 @@ python3 -m factlog init --target ~/wiki   # scaffold the KB layout
 
 `factlog ingest` 는 변환된 텍스트를 KB의 **`runs/sources/`** 디렉터리(다른 생성
 런 아티팩트와 같은 위치)에 기록합니다 — 사용자의 원본이 그대로 남아 있어야 하는
-**`sources/` 에는 결코 쓰지 않습니다**. 하위 디렉터리에 있는 원본은 그 하위
-구조를 그대로 미러링하므로(`sources/sub/report.pdf` → `runs/sources/sub/report.md`),
-서로 다른 폴더의 동일 이름 파일이 충돌하지 않습니다. 원본은 손대지 않으며,
-변환본에는 출처(provenance) 헤더(소스, 변환기, 날짜)가 붙습니다. `sources/` 와
-`runs/sources/` 모두 추출이 읽는 유효한 소스 루트입니다.
+**`sources/` 에는 결코 쓰지 않습니다**. 변환본 파일명은 **원본의 전체 파일명(확장자
+포함) + 변환 확장자**로 만들어지므로(`report.hwpx` → `runs/sources/report.hwpx.md`,
+`report.pptx` → `runs/sources/report.pptx.md`), 같은 폴더에 이름이 같고 확장자만 다른
+두 원본이 하나의 변환본으로 **충돌해 유실되는 일이 없습니다**. 하위 디렉터리에 있는
+원본은 그 하위 구조를 그대로 미러링하므로(`sources/sub/report.pdf` →
+`runs/sources/sub/report.pdf.md`), 서로 다른 폴더의 동일 이름 파일도 충돌하지 않습니다.
+원본은 손대지 않으며, 변환본에는 출처(provenance) 헤더(소스, 변환기, 날짜)가 붙습니다.
+`sources/` 와 `runs/sources/` 모두 추출이 읽는 유효한 소스 루트입니다.
 
-> **업그레이드 안내:** 하위 디렉터리 미러링은 기존의 평면(flat) 레이아웃보다
-> 나중에 도입되었습니다. 이전에 적재된 KB는 중첩 원본에 대해 평면 변환본
-> (`runs/sources/report.md`)을 가지고 있는데, 이는 더 이상 짝이 맞지 않으므로
-> 중첩 바이너리가 커버리지/`factlog sources` 누락으로 다시 나타날 수 있습니다.
-> `factlog ingest --scan --force` 를 다시 실행해 변환본을 미러링된 경로로
-> 옮기십시오(이후 남은 평면 변환본은 삭제). 최상위(비중첩) 소스는 영향받지 않습니다.
+> **업그레이드 안내(#213):** 변환본 파일명 규칙이 바뀌었습니다. 예전에는 원본의
+> **어간(stem)**만 써서 `report.pdf` → `runs/sources/report.md` 였지만, 이제는
+> 원본의 **전체 이름**을 써서 `runs/sources/report.pdf.md` 로 만듭니다. 이 덕분에
+> 같은 폴더의 `report.hwpx`·`report.pptx` 가 각각 별도 변환본으로 보존됩니다.
+> 기존에 적재된 KB의 구(舊) 어간 변환본(`runs/sources/report.md`)은 `factlog
+> sources`/`coverage`/`status` 가 **어간 기반 폴백으로 계속 원본과 짝지어** 인식하므로
+> 조용히 유실되지 않습니다. 새 레이아웃으로 옮기려면 `factlog ingest --scan --force`
+> 를 다시 실행하십시오(이후 남은 구 변환본은 `factlog eject --orphans` 로 정리).
+> 특히 어간이 충돌하던 KB는 재적재해야 유실되었던 원본이 복원됩니다.
 
 *터미널에서 실행:*
 
 ```bash
-factlog ingest report.docx --target ~/wiki   # → ~/wiki/runs/sources/report.md (pandoc)
+factlog ingest report.docx --target ~/wiki   # → ~/wiki/runs/sources/report.docx.md (pandoc)
 factlog ingest --scan --target ~/wiki        # auto-convert every binary under sources/
 ```
 
@@ -456,8 +462,9 @@ factlog ignore --remove drafts/*.md               # remove a pattern
 `factlog eject <source>` 는 적재(ingest)를 되돌립니다. `runs/sources/` 변환본을
 삭제하고, 해당 소스에서 추출된 행을 `runs/*.json` 에서 제거하며, 그 소스를 인용하는
 사실을 폐기합니다. 소스는 파일명, 어간(stem), 또는 KB 기준 상대 경로로 지정할 수
-있습니다 — 바이너리 원본(예: `report.pdf`)을 지정하면 그 `runs/sources/<stem>`
-변환본도 함께 매칭되고, 어간만 주면 같은 어간을 가진 모든 소스가 매칭됩니다.
+있습니다 — 바이너리 원본(예: `report.pdf`)을 지정하면 그 `runs/sources/<원본이름>.md`
+변환본도 함께 매칭되고(변환본의 provenance 헤더로 짝을 확인), 어간만 주면 같은 어간을
+가진 모든 소스가 매칭됩니다.
 
 ```bash
 factlog eject report.pdf                 # delete conversion; mark citing facts superseded (kept for audit)
