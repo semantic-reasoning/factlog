@@ -115,6 +115,28 @@ if router wiki 'Nope 관련 자료가 있나' | grep -qF "policy is uncompiled";
 printf '%s\n' "$POLICY_MD_BAK" > "$KB/policy/logic-policy.md"
 if router render 'relation("Acme API", "uses", V)?' | grep -qF "policy is uncompiled"; then bad "warning persisted after restoring prose-only policy"; else ok "warning clears once authored rules are removed"; fi
 
+# #209 (A): .dl PRESENT + md rules present => NOT uncompiled. This pins the
+# `if LOGIC_POLICY_DL.is_file(): return False` short-circuit in _policy_uncompiled:
+# once the policy is compiled, authored md rules no longer trigger the warning even
+# though logic-policy.md still contains them. (A compiled .dl means policy IS applied.)
+printf '# policy\n## Rules\n- [usage_chain] 어떤 항목이 `uses` 관계를 가지면 검토(review)가 필요하다.\n' > "$KB/policy/logic-policy.md"
+: > "$KB/policy/logic-policy.dl"   # present (empty is enough: detection keys on existence, not content)
+check_field "compiled policy (.dl present) not flagged uncompiled despite md rules" validate 'relation("Acme API", "uses", V)?' policy_uncompiled False
+if router render 'relation("Acme API", "uses", V)?' | grep -qF "policy is uncompiled"; then bad "compiled policy still warned uncompiled (.dl-present short-circuit broken)"; else ok "compiled policy (.dl present) suppresses the uncompiled warning"; fi
+rm -f "$KB/policy/logic-policy.dl"
+printf '%s\n' "$POLICY_MD_BAK" > "$KB/policy/logic-policy.md"   # restore benign prose-only policy
+
+# #209 (B) / #198 (KNOWN LIMITATION, documented not endorsed): rules living ONLY in
+# logic-policy.extra.dl (with logic-policy.dl absent) do NOT trip the uncompiled
+# warning, because _policy_uncompiled inspects only logic-policy.dl + logic-policy.md.
+# ask thus answers with the extra.dl policy IGNORED and stays silent. This assertion
+# PINS the current (silent) behavior so a future partial fix can't regress it
+# unnoticed; the real parity fix belongs to #198, not here.
+printf '.decl uses_fastapi(entity: symbol, reason: symbol)\nuses_fastapi(S, "uses_fastapi") :- relation(S, "uses", "FastAPI").\n' > "$KB/policy/logic-policy.extra.dl"
+check_field "extra.dl-only rules do not flag uncompiled (#198 known limitation)" validate 'relation("Acme API", "uses", V)?' policy_uncompiled False
+if router render 'relation("Acme API", "uses", V)?' | grep -qF "policy is uncompiled"; then bad "extra.dl-only KB warned uncompiled — #198 status changed; update this pin"; else ok "extra.dl-only KB stays silent (current behavior pinned; parity tracked in #198)"; fi
+rm -f "$KB/policy/logic-policy.extra.dl"
+
 # --- regression: an unaccepted relation name containing the fact-absence
 # phrase must route to wiki, NOT masquerade as a verified negative (exact-match) ---
 check_field "marker-collision relation name routes wiki" validate 'relation("Acme API", "does not match accepted facts", "X")?' route wiki
