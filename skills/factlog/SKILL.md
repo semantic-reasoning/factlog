@@ -568,12 +568,20 @@ including the `review_required("<verbatim question>")?` fallback.
 "${CLAUDE_PLUGIN_ROOT}/tools/factlog_python.sh" "${CLAUDE_PLUGIN_ROOT}/tools/ask_router.py" validate "<draft>" --target "$FACTLOG_ROOT"
 ```
 
-This prints JSON `{ok, code, reason, route, negative, predicate}`. **Branch on
-`route`/`code`, never on `reason` text:**
+This prints JSON `{ok, code, reason, route, negative, predicate,
+policy_uncompiled}`. **Branch on `route`/`code`, never on `reason` text:**
 
 - `route == "engine"` → Step 3a (the engine answer; `negative=true` is a
   *verified negative*, a real answer — never treat it as "no answer").
 - `route == "wiki"` → Step 3b.
+
+`policy_uncompiled == true` means the author wrote rules in
+`policy/logic-policy.md` but never compiled `policy/logic-policy.dl`, so ask is
+answering with **no policy applied** — the same condition `/factlog check` fails
+loud on (#193). Ask stays graceful: `render`/`wiki` append a one-line
+`WARNING: policy is uncompiled …` you show verbatim (below); do not suppress the
+answer. Tell the user to run `tools/generate_logic_policy.py` (or `/factlog add`)
+to compile the policy.
 
 ### Step 2′ — Multi-draft probe (reduce missed-engine)
 
