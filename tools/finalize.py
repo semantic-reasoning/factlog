@@ -30,6 +30,11 @@ from common import logic_policy_md_has_rules
 
 _TOOLS = Path(__file__).parent
 
+# Exact content of the empty-policy stub finalize writes for a benign no-rules KB.
+# Matched byte-for-byte to recognise (and self-heal) a stub left by a pre-#194
+# finalize that wrote it OVER an uncompilable policy.
+POLICY_STUB = "// no policy rules\n"
+
 
 def _run(script: str, *args: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -83,25 +88,53 @@ def main(argv: list[str] | None = None) -> int:
     #    Generate from policy/logic-policy.md when it has compilable rules; otherwise
     #    write a no-op stub so the check can run with an empty policy.
     policy_dl = root / "policy" / "logic-policy.dl"
+    policy_md = root / "policy" / "logic-policy.md"
+    # Shared has-rules definition (factlog/common.py) so finalize and
+    # _load_logic_policy_from never drift on what "defines rules" means (#190).
+    policy_uncompiled = False  # md defines rules but nothing compiled → NOT applied
+    # Self-heal a KB poisoned by a pre-#194 finalize: that version wrote the empty
+    # stub OVER an uncompilable policy, and the leftover stub then (a) made every
+    # later run skip regeneration (the `not policy_dl.is_file()` guard below) and
+    # (b) fooled /factlog check (#190 keys on the .dl being ABSENT). If the .dl is
+    # exactly that stub yet the .md defines rules, drop it so this run regenerates
+    # (and, if generation still fails, leaves it absent to fail loud) instead of
+    # inheriting the silent-ignore. A benign stub (no rules in .md) is left alone.
+    if (
+        policy_dl.is_file()
+        and policy_dl.read_text(encoding="utf-8") == POLICY_STUB
+        and logic_policy_md_has_rules(policy_md)
+    ):
+        policy_dl.unlink()
     if not policy_dl.is_file():
         gen = _run("generate_logic_policy.py", env=env)
         if not policy_dl.is_file():
             # generate produced nothing. Distinguish "no compilable rules" (the
             # benign fresh-KB case → stub) from a genuine generation failure when
             # the .md DOES define rules (do not silently drop the user's policy).
-            policy_md = root / "policy" / "logic-policy.md"
-            # Shared has-rules definition (factlog/common.py) so finalize and
-            # _load_logic_policy_from never drift on what "defines rules" means (#190).
             if logic_policy_md_has_rules(policy_md):
+                # The policy defines rules but did NOT compile. Deliberately do
+                # NOT write a stub here (#194): a "// no policy rules" .dl would
+                # (a) satisfy the `not policy_dl.is_file()` guard above so the NEXT
+                # finalize skips regeneration — permanently ignoring the policy —
+                # and (b) mask the uncompiled state from /factlog check, whose loud
+                # detection (#190) keys on the .dl being ABSENT. Leaving it absent
+                # means every re-run retries generation and re-warns, and
+                # run_logic_check below still fails loud via _load_logic_policy_from.
+                policy_uncompiled = True
                 sys.stderr.write(gen.stderr)
                 print(
-                    "finalize: WARNING — policy/logic-policy.md appears to define rules but "
-                    "generate_logic_policy did not produce logic-policy.dl. Proceeding with an "
-                    "empty policy; fix the policy and re-run to apply it.",
+                    "finalize: WARNING — policy/logic-policy.md defines rules but "
+                    "generate_logic_policy did not produce logic-policy.dl (see the "
+                    "error above), so the policy is NOT applied. Fix the policy and "
+                    "re-run — no empty-policy stub was written, so re-running retries "
+                    "generation.",
                     file=sys.stderr,
                 )
-            policy_dl.parent.mkdir(parents=True, exist_ok=True)
-            policy_dl.write_text("// no policy rules\n", encoding="utf-8")
+            else:
+                # Benign: no compilable rules → a no-op stub lets the check run
+                # with an empty policy (fresh-KB case).
+                policy_dl.parent.mkdir(parents=True, exist_ok=True)
+                policy_dl.write_text(POLICY_STUB, encoding="utf-8")
 
     # 3. compile confirmed/accepted facts -> facts/accepted.dl
     compile_proc = _run("compile_facts.py", env=env)
@@ -142,6 +175,16 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
+    if policy_uncompiled:
+        # Reached only when the logic check was skipped (no pyrewire); with the
+        # engine present, run_logic_check above already failed loud on the absent
+        # .dl. Keep the summary honest — facts are compiled but the policy is not.
+        print(
+            f"\nfinalize: done — merged, {checked}, no contradictions, "
+            "but the policy is NOT applied (see the WARNING above). Install "
+            "pyrewire and run /factlog check to gate on the policy."
+        )
+        return 0
     print(f"\nfinalize: done — merged, {checked}, no contradictions.")
     return 0
 

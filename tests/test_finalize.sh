@@ -62,6 +62,80 @@ printf '# Logic policy\n\n## Rules\n\n- [hosting_check] 어떤 항목이 `deploy
 if [ "$r1" -eq 0 ] && [ "$r2" -eq 0 ]; then ok "idempotent with a real policy (2nd finalize survives policy-response JSON in runs/)"; else bad "policy-rule KB: finalize not idempotent (rc1=$r1 rc2=$r2)"; fi
 [ -f "$KB2/policy/logic-policy.dl" ] && grep -q "requires_review" "$KB2/policy/logic-policy.dl" && ok "real policy compiled (not stubbed over)" || bad "real policy not compiled"
 
+# --- #194: a policy that defines rules but FAILS to compile must NOT be stubbed
+# over (stub-then-skip permanently ignores it). logic-policy.md below passes the
+# has-rules check ([id] + a backtick relation) but the relation name has a space,
+# so generate_logic_policy rejects it -> no .dl is produced. finalize must leave
+# .dl ABSENT (not write a "// no policy rules" stub) so the next run retries and
+# re-warns, and check's loud detection (#190) still sees the uncompiled state.
+KB3="$(mktemp -d)/wiki"
+"$PYTHON" -m factlog init --target "$KB3" >/dev/null
+printf '# src\n\nAcme API uses FastAPI.\n' > "$KB3/sources/a.md"
+printf '[{"subject":"Acme API","relation":"uses","object":"FastAPI","source":"sources/a.md","status":"confirmed","confidence":0.95,"note":""}]' > "$KB3/runs/r1.json"
+printf '# Logic policy\n\n## Rules\n\n- [c1] flag when `foo bar` occurs\n' > "$KB3/policy/logic-policy.md"
+
+out3="$("$PYTHON" "$FINALIZE" --target "$KB3" 2>&1)" || true
+if [ ! -f "$KB3/policy/logic-policy.dl" ]; then ok "#194: uncompilable policy leaves logic-policy.dl absent (no masking stub)"; else bad "#194: a stub .dl was written over an uncompilable policy"; fi
+printf '%s' "$out3" | grep -qF "NOT applied" && ok "#194: finalize warns the policy is not applied" || bad "#194: missing not-applied warning"
+# the WARNING must NOT falsely promise a plain re-run will apply it via a skip;
+# it must state a stub was not written (so re-run genuinely retries).
+printf '%s' "$out3" | grep -qF "no empty-policy stub was written" && ok "#194: warning states no stub written (re-run retries)" || bad "#194: warning still implies stub/skip"
+
+# re-run must RE-WARN (the old bug: run 2 skipped silently because the stub existed)
+out3b="$("$PYTHON" "$FINALIZE" --target "$KB3" 2>&1)" || true
+printf '%s' "$out3b" | grep -qF "NOT applied" && ok "#194: re-run re-warns (not silently skipped)" || bad "#194: re-run went silent (stub-then-skip regression)"
+[ ! -f "$KB3/policy/logic-policy.dl" ] && ok "#194: re-run still writes no stub" || bad "#194: re-run wrote a stub"
+
+# recovery: once the policy is fixed, finalize compiles it (no leftover stub blocks it)
+printf '# Logic policy\n\n## Rules\n\n- [c1] 어떤 항목이 `uses` 관계를 가지면 검토(review)가 필요하다.\n' > "$KB3/policy/logic-policy.md"
+"$PYTHON" "$FINALIZE" --target "$KB3" >/dev/null 2>&1 || true
+[ -f "$KB3/policy/logic-policy.dl" ] && grep -q "requires_review" "$KB3/policy/logic-policy.dl" && ok "#194: fixed policy compiles on re-run (recovery)" || bad "#194: fixed policy did not compile (stub blocked regeneration?)"
+
+# --- #194 self-heal: a KB already poisoned by a pre-fix finalize (a leftover
+# "// no policy rules" stub sitting on top of a real policy) must recover. The
+# stub would otherwise satisfy the skip guard forever AND fool /factlog check.
+KB4="$(mktemp -d)/wiki"
+"$PYTHON" -m factlog init --target "$KB4" >/dev/null
+printf '# src\n\nAcme API uses FastAPI.\n' > "$KB4/sources/a.md"
+printf '[{"subject":"Acme API","relation":"uses","object":"FastAPI","source":"sources/a.md","status":"confirmed","confidence":0.95,"note":""}]' > "$KB4/runs/r1.json"
+printf '# Logic policy\n\n## Rules\n\n- [c1] 어떤 항목이 `uses` 관계를 가지면 검토(review)가 필요하다.\n' > "$KB4/policy/logic-policy.md"
+printf '// no policy rules\n' > "$KB4/policy/logic-policy.dl"   # simulate the pre-fix stub
+"$PYTHON" "$FINALIZE" --target "$KB4" >/dev/null 2>&1 || true
+if grep -q "requires_review" "$KB4/policy/logic-policy.dl" 2>/dev/null; then ok "#194: self-heals a leftover stub over a compilable policy (regenerates real .dl)"; else bad "#194: leftover stub was NOT healed (skip guard still fooled)"; fi
+
+# self-heal, uncompilable variant: a leftover stub over an UNCOMPILABLE policy is
+# removed (not kept), so the state becomes loud-detectable rather than masked.
+KB5="$(mktemp -d)/wiki"
+"$PYTHON" -m factlog init --target "$KB5" >/dev/null
+printf '# src\n\nAcme API uses FastAPI.\n' > "$KB5/sources/a.md"
+printf '[{"subject":"Acme API","relation":"uses","object":"FastAPI","source":"sources/a.md","status":"confirmed","confidence":0.95,"note":""}]' > "$KB5/runs/r1.json"
+printf '# Logic policy\n\n## Rules\n\n- [c1] flag when `foo bar` occurs\n' > "$KB5/policy/logic-policy.md"
+printf '// no policy rules\n' > "$KB5/policy/logic-policy.dl"
+out5="$("$PYTHON" "$FINALIZE" --target "$KB5" 2>&1)" || true
+[ ! -f "$KB5/policy/logic-policy.dl" ] && ok "#194: leftover stub over an uncompilable policy is removed (no longer masks)" || bad "#194: stub kept over an uncompilable policy"
+printf '%s' "$out5" | grep -qF "NOT applied" && ok "#194: healed uncompilable KB now warns (was silent before)" || bad "#194: healed uncompilable KB stayed silent"
+
+# a BENIGN stub (no rules in .md) must be left alone — self-heal must not churn it
+KB6="$(mktemp -d)/wiki"
+"$PYTHON" -m factlog init --target "$KB6" >/dev/null   # init leaves prose-only .md (no rules)
+printf '// no policy rules\n' > "$KB6/policy/logic-policy.dl"
+"$PYTHON" "$FINALIZE" --target "$KB6" >/dev/null 2>&1 || true
+[ -f "$KB6/policy/logic-policy.dl" ] && ok "#194: benign empty-policy stub is preserved (no false heal)" || bad "#194: benign stub wrongly removed"
+
+# pyrewire-present ONLY: with the engine installed, an uncompiled policy must fail
+# LOUD at run_logic_check (rc != 0), matching #190 — the design's loud half.
+if "$PYTHON" -c "import pyrewire; raise SystemExit(0 if tuple(int(x) for x in pyrewire.__version__.split('.')[:3])>=(1,0,3) else 1)" >/dev/null 2>&1; then
+  KB7="$(mktemp -d)/wiki"
+  "$PYTHON" -m factlog init --target "$KB7" >/dev/null
+  printf '# src\n\nAcme API uses FastAPI.\n' > "$KB7/sources/a.md"
+  printf '[{"subject":"Acme API","relation":"uses","object":"FastAPI","source":"sources/a.md","status":"confirmed","confidence":0.95,"note":""}]' > "$KB7/runs/r1.json"
+  printf '# Logic policy\n\n## Rules\n\n- [c1] flag when `foo bar` occurs\n' > "$KB7/policy/logic-policy.md"
+  "$PYTHON" "$FINALIZE" --target "$KB7" >/dev/null 2>&1; rc7=$?
+  [ "$rc7" -ne 0 ] && ok "#194: uncompiled policy fails loud with pyrewire (rc=$rc7)" || bad "#194: uncompiled policy did not fail loud with pyrewire"
+else
+  echo "SKIP: pyrewire absent — skipping the loud-fail assertion (#194 loud half)"
+fi
+
 echo ""
 echo "========================================"
 echo "test_finalize: $pass passed, $fail failed"
