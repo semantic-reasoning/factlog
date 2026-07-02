@@ -578,10 +578,13 @@ policy_uncompiled}`. **Branch on `route`/`code`, never on `reason` text:**
 `policy_uncompiled == true` means the author wrote rules in
 `policy/logic-policy.md` but never compiled `policy/logic-policy.dl`, so ask is
 answering with **no policy applied** — the same condition `/factlog check` fails
-loud on (#193). Ask stays graceful: `render`/`wiki` append a one-line
-`WARNING: policy is uncompiled …` you show verbatim (below); do not suppress the
-answer. Tell the user to run `tools/generate_logic_policy.py` (or `/factlog add`)
-to compile the policy.
+loud on (#193). Ask stays graceful — it warns, it does not suppress the answer —
+but *which command* prints the one-line `WARNING: policy is uncompiled …` depends
+on the route: on the **engine** route `render` appends the warning text itself; on
+the **wiki** route `render` only forwards the `policy_uncompiled` flag in its JSON
+directive (no text), and the warning text is appended by the `wiki` command. Either
+way you show the warning verbatim (below). Tell the user to run
+`tools/generate_logic_policy.py` (or `/factlog add`) to compile the policy.
 
 ### Step 2′ — Multi-draft probe (reduce missed-engine)
 
