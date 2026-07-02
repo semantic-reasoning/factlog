@@ -173,6 +173,67 @@ class TestParseAmount:
         # a negative amount (a loss / refund) projects to a negative base unit.
         assert lt.parse_amount(raw, lt.DEFAULT_AMOUNT_UNITS) == expected
 
+    @pytest.mark.parametrize("raw,expected", [
+        ("100억원", 10000000000),      # fused 억 + 원
+        ("12000억원", 1200000000000),
+        ("1.2조원", 1200000000000),
+        ("-500억원", -50000000000),
+        ("5,400억원", 540000000000),
+    ])
+    def test_accepts_fused_currency_suffix(self, raw, expected):
+        # (#205) a fused currency suffix (억원/조원) recovers by stripping one
+        # trailing 원 and re-looking-up the stem in the unit table.
+        assert lt.parse_amount(raw, lt.DEFAULT_AMOUNT_UNITS) == expected
+
+    @pytest.mark.parametrize("raw,expected", [
+        ("100억", 10000000000),        # bare stem still parses first-pass
+        ("1,000원", 1000),             # 원 is a valid unit, matched first-pass
+        ("1.2조", 1200000000000),
+        ('amount(100,"억")', 10000000000),
+        ("2.675억", 267500000),
+    ])
+    def test_fused_suffix_does_not_regress_known_inputs(self, raw, expected):
+        # (#205) the 원-strip retry only fires after a first-pass miss, so inputs
+        # that already parsed are unchanged (esp. 1,000원 where 원 IS the unit).
+        assert lt.parse_amount(raw, lt.DEFAULT_AMOUNT_UNITS) == expected
+
+    @pytest.mark.parametrize("raw", ["백만원", "3 GB", "50%", "$22M", "22M", "달러원"])
+    def test_unknown_unit_still_none(self, raw):
+        # (#205) stripping 원 must not guess: 백만원 -> 백만 (unknown) stays None,
+        # and foreign-currency / non-KRW units remain None (no-guess contract).
+        assert lt.parse_amount(raw, lt.DEFAULT_AMOUNT_UNITS) is None
+
+    @pytest.mark.parametrize("raw,expected", [
+        # int64 max is 9_223_372_036_854_775_807; 9,223,372조 == 9.223372e18 fits.
+        ("9223372조", 9223372000000000000),
+        (str(lt._INT64_MAX), lt._INT64_MAX),          # exactly max, unit 원
+        (str(lt._INT64_MIN), lt._INT64_MIN),          # exactly min, unit 원
+    ])
+    def test_int64_boundary_in_range(self, raw, expected):
+        # (#205) values inside the signed-64-bit range are returned as-is.
+        assert lt.parse_amount(raw + "원" if raw[-1].isdigit() else raw,
+                               lt.DEFAULT_AMOUNT_UNITS) == expected
+
+    @pytest.mark.parametrize("raw", [
+        "9300000조",                  # 9.3e18 > int64 max -> overflow guard
+        "-9300000조",                 # symmetric lower-bound overflow
+        str(lt._INT64_MAX + 1),       # one past max (unit 원 appended below)
+        str(lt._INT64_MIN - 1),       # one past min
+    ])
+    def test_int64_out_of_range_is_none(self, raw):
+        # (#205) values outside [int64_min, int64_max] would overflow the engine's
+        # int64 column, so parse_amount returns None (untyped) instead of guessing.
+        text = raw + "원" if raw.lstrip("-").isdigit() else raw
+        assert lt.parse_amount(text, lt.DEFAULT_AMOUNT_UNITS) is None
+
+    def test_fused_suffix_with_custom_units(self):
+        # (#205) the 원-strip retry uses the caller-supplied table, not a hardcoded
+        # default: 억원 -> 억 looked up in the custom table.
+        custom = {"원": 1, "억": 10**8}
+        assert lt.parse_amount("3억원", custom) == 300000000
+        # a stem absent from the custom table stays None (no-guess).
+        assert lt.parse_amount("3조원", custom) is None
+
 
 class TestCanonicalAmount:
     """always-quote (wirelog#924): an amount compound term stores its unit always

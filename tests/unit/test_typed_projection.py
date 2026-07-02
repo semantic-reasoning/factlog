@@ -395,6 +395,9 @@ def test_amount_out_of_int64_range_is_skipped(tmp_path: Path):
     # An amount that resolves above 2**63 must be skipped + warned rather than
     # silently truncated/misinserted into the int64 column. 큰예산 = 1e11 * 1e8 =
     # 1e19 (> 9.22e18 = 2**63); 갑서비스 100억 = 1e10 still clears the threshold.
+    # (#205) parse_amount now guards int64 itself: an out-of-range amount returns
+    # None (untyped), so the projection drops the row via the generic
+    # "does not parse; loading untyped" contract shared with the other parsers.
     (tmp_path / "facts").mkdir(parents=True, exist_ok=True)
     (tmp_path / "policy").mkdir(parents=True, exist_ok=True)
     (tmp_path / "facts" / "accepted.dl").write_text(
@@ -418,7 +421,9 @@ def test_amount_out_of_int64_range_is_skipped(tmp_path: Path):
     subjects = json.loads(proc.stdout.strip().splitlines()[-1])
     # The out-of-range row is dropped from projection; the in-range one survives.
     assert subjects == ["갑서비스"]
-    assert "out of int64 range" in proc.stderr
+    # (#205) parse_amount rejects the out-of-range value, so the projection reports
+    # it via the shared "does not parse; loading untyped" warning (not truncated).
+    assert "does not parse as amount" in proc.stderr
     assert "큰예산서비스" in proc.stderr
 
 
