@@ -10,10 +10,13 @@
 #     (byte-identical to pre-feature baseline).
 #   - Golden 5/5 byte-identical (covered by tests/golden.sh).
 #
-# The policy rule is authored directly as logic-policy.dl (hand-authored),
-# since generate_logic_policy.py only emits relation/3 bodies — canonical/3
-# rules are written in the .dl directly, mirroring how logic-policy.extra.dl
-# is used for typed-comparison predicates (#120).
+# Authoring path (panel-agreed, #227):
+#   - The canonical `conflict` rule lives in policy/logic-policy.extra.dl (NOT
+#     logic-policy.dl, which is regenerated from logic-policy.md and byte-checked
+#     by generate_logic_policy.py --check). Canonical/3 rules are hand-authored
+#     in extra.dl, the same channel as typed-comparison predicates (#120).
+#   - generate_logic_policy.py --check passes (rc=0) with the canonical rule in
+#     extra.dl, because --check only validates logic-policy.dl against its .md source.
 #
 # Requires pyrewire. Skipped cleanly if absent.
 # Usage: PYTHON=<path> bash tests/test_canonical_rule_firing.sh
@@ -27,6 +30,7 @@ export PYTHONPATH="$PLUGIN_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 PYTHON="${PYTHON:-python3}"
 RLC="$PLUGIN_ROOT/tools/run_logic_check.py"
 CF="$PLUGIN_ROOT/tools/compile_facts.py"
+GLP="$PLUGIN_ROOT/tools/generate_logic_policy.py"
 HEADER="subject,relation,object,source,status,confidence,note"
 
 pass=0
@@ -60,13 +64,24 @@ cat > "$KB/policy/relation-aliases.md" <<'ALIASES'
 - `retraction_status` -> `철회상태`
 ALIASES
 
-# Logic-policy: hand-authored .dl with a canonical/3 rule body.
-# The rule fires ONLY via canonical atoms — neither surface variant
-# ("concludes" / "retraction_status") appears in the rule body.
-cat > "$KB/policy/logic-policy.dl" <<'DL'
-// generated from policy/logic-policy.md
-// run tools/generate_logic_policy.py to regenerate
+# Logic-policy.md: a minimal rule so generate_logic_policy.py has something to
+# compile (canonical/3 rules cannot be expressed via the .md DSL; they live in
+# extra.dl — see authoring path comment at the top of this file).
+cat > "$KB/policy/logic-policy.md" <<'LPMD'
+# Logic policy
 
+## Rules
+
+- [uses_relation] A document `concludes` something.
+LPMD
+
+# Generate logic-policy.dl from the .md (deterministic, non-LLM path).
+FACTLOG_ROOT="$KB" "$PYTHON" "$GLP" >/dev/null 2>&1
+
+# Canonical conflict rule goes in logic-policy.extra.dl (NOT logic-policy.dl).
+# generate_logic_policy.py --check never touches extra.dl, so this rule
+# survives the byte-check gate without being flagged as STALE.
+cat > "$KB/policy/logic-policy.extra.dl" <<'DL'
 .decl conflict(entity: symbol, reason: symbol)
 
 // retracted_conclusion: a doc that concludes something and is retracted
@@ -74,6 +89,17 @@ conflict(X, "retracted_conclusion") :-
   canonical(X, "결론", _),
   canonical(X, "철회상태", _).
 DL
+
+# ---------------------------------------------------------------------------
+# Test 0: generate_logic_policy.py --check exits 0 with rule in extra.dl
+# (proves the canonical rule in extra.dl survives the byte-check gate)
+# ---------------------------------------------------------------------------
+check_out="$(FACTLOG_ROOT="$KB" "$PYTHON" "$GLP" --check 2>&1)"; check_rc=$?
+if [ "$check_rc" -eq 0 ]; then
+  ok "--check exits 0 (canonical rule in extra.dl does not affect byte-check gate)"
+else
+  bad "--check exited $check_rc: $check_out"
+fi
 
 # Compile facts → accepted.dl (emits relation block + canonical block)
 FACTLOG_ROOT="$KB" "$PYTHON" "$CF" >/dev/null 2>&1
