@@ -79,6 +79,12 @@ POLICY_DIR = ROOT / "policy"
 PROMPTS_DIR = POLICY_DIR / "prompts"
 CANDIDATES_CSV = FACTS_DIR / "candidates.csv"
 ACCEPTED_DL = FACTS_DIR / "accepted.dl"
+# Comment marker compile_facts writes before the synthetic canonical side-atom
+# block (#188). Shared here so the writer (compile_facts) and the readers that
+# must tell human/verbatim atoms from synthetic ones (schema_context) never
+# drift on the exact string. Everything AFTER this line in accepted.dl is a
+# parallel-indexing side-atom, not a stored/verbatim fact.
+CANONICAL_SIDE_ATOM_MARKER = "// canonical side-atoms (policy/relation-aliases.md)"
 LOGIC_POLICY_DL = POLICY_DIR / "logic-policy.dl"
 TEXT_TO_DATALOG_PROMPT = PROMPTS_DIR / "text_to_datalog.md"
 QUESTIONS_MD = POLICY_DIR / "questions.md"
@@ -304,12 +310,22 @@ def load_facts() -> list[dict[str, str]]:
     return _load_facts_from(CANDIDATES_CSV)
 
 
-def _load_accepted_facts_from(accepted_dl: Path) -> list[dict[str, str]]:
+def _load_accepted_facts_from(
+    accepted_dl: Path, include_side_atoms: bool = True
+) -> list[dict[str, str]]:
     if not accepted_dl.is_file():
         raise FactlogError("missing facts/accepted.dl; run tools/compile_facts.py first")
     rows: list[dict[str, str]] = []
     for line in accepted_dl.read_text(encoding="utf-8").splitlines():
         line = line.strip()
+        # Synthetic canonical side-atoms (#188) are real relation(...) lines but
+        # NOT human/verbatim facts. compile_facts writes them after
+        # CANONICAL_SIDE_ATOM_MARKER, so a caller rendering the confirmed-fact
+        # surface (schema_context) can stop at the marker to exclude them. The
+        # ENGINE path keeps the default (include_side_atoms=True) so the atoms are
+        # still consumed and canonical-predicate rules fire.
+        if not include_side_atoms and line == CANONICAL_SIDE_ATOM_MARKER:
+            break
         if not line or line.startswith("//"):
             continue
         try:
@@ -323,8 +339,12 @@ def _load_accepted_facts_from(accepted_dl: Path) -> list[dict[str, str]]:
     return dedup_engine_atoms(rows)
 
 
-def load_accepted_facts() -> list[dict[str, str]]:
-    return _load_accepted_facts_from(ACCEPTED_DL)
+def load_accepted_facts(include_side_atoms: bool = True) -> list[dict[str, str]]:
+    """Read accepted.dl triples. ``include_side_atoms=False`` drops the synthetic
+    canonical side-atom block (#188) so the confirmed-fact surface stays verbatim;
+    the default keeps them so the engine consumes them. Only schema_context passes
+    False — every other caller keeps today's behaviour."""
+    return _load_accepted_facts_from(ACCEPTED_DL, include_side_atoms=include_side_atoms)
 
 
 def markdown_policy_items(text: str) -> list[tuple[int, str, str]]:
@@ -1116,7 +1136,12 @@ def _canonical_relation_lines() -> list[str]:
 
 
 def schema_context() -> str:
-    accepted = load_accepted_facts()
+    # Verbatim surface for humans/LLM: exclude synthetic canonical side-atoms
+    # (#188). They live in accepted.dl for the engine, but the confirmed-fact
+    # list, entity names, and allowed-relation names must show only what a human
+    # actually stored — canonical names are surfaced separately and intentionally
+    # by _canonical_relation_lines ("Canonical relation names (prefer these):").
+    accepted = load_accepted_facts(include_side_atoms=False)
     candidates = load_facts()
     entities = sorted(entity_set(accepted))
     relations = sorted(allowed_relations(accepted))

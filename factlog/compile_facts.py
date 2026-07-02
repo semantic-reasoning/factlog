@@ -7,6 +7,7 @@ from __future__ import annotations
 import unicodedata
 
 from factlog.common import (
+    CANONICAL_SIDE_ATOM_MARKER,
     FACTS_DIR,
     corroboration_counts,
     dedup_engine_atoms,
@@ -39,8 +40,10 @@ def main() -> None:
     # policy/relation-aliases.md maps a surface variant relation to a canonical
     # name so a policy rule written against the canonical predicate can fire over
     # facts stated with the variant. These are PARALLEL indexing atoms — the
-    # original variant atom above is emitted verbatim and untouched, and the
-    # candidates path (sources / provenance) is unaffected. Absent alias file →
+    # original variant atom above is emitted verbatim and untouched. They ARE
+    # written into accepted.dl (so the engine consumes them), under the shared
+    # CANONICAL_SIDE_ATOM_MARKER so any reader rendering the verbatim/confirmed
+    # surface (schema_context) can exclude them. Absent alias file →
     # relation_aliases() returns {} and this block is a complete no-op (accepted.dl
     # stays byte-identical). A malformed alias file raises FactlogError, which
     # propagates and fails the compile loudly (no silent side-atom drop).
@@ -74,15 +77,19 @@ def main() -> None:
             )
         if side_lines:
             lines.append("")
-            lines.append("// canonical side-atoms (policy/relation-aliases.md)")
+            lines.append(CANONICAL_SIDE_ATOM_MARKER)
             lines.extend(side_lines)
 
     out = FACTS_DIR / "accepted.dl"
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
     # Distinct-source count per collapsed triple, so the compile log surfaces the
-    # multi-source provenance of a deduped atom (observability only — accepted.dl,
-    # render's `sources: N`, and provenance are unchanged). Computed on the
-    # candidates path (corroboration_counts), which is untouched by the dedup.
+    # multi-source provenance of a deduped atom (observability only). The
+    # candidates/corroboration path (`sources: N`, provenance) is unchanged by the
+    # dedup AND by the side-atom block. NOTE: accepted.dl itself DOES gain the
+    # synthetic canonical side-atoms above, so any accepted.dl-derived surface that
+    # must stay verbatim (schema_context's confirmed-fact list) excludes them via
+    # CANONICAL_SIDE_ATOM_MARKER. `engine facts: N` below counts ONLY the original
+    # accepted atoms — side-atoms are not part of this provenance log.
     source_counts = corroboration_counts(facts)
     print(f"engine facts: {len(accepted)} / {len(facts)}")
     for row in accepted:
