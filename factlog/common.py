@@ -1094,6 +1094,27 @@ def parse_relation_fact(line: str) -> tuple[str, str, str]:
     return value[0], value[1], value[2]
 
 
+def _canonical_relation_lines() -> list[str]:
+    """Optional schema section listing human-declared canonical relation names and
+    the surface variants that map to them (policy/relation-aliases.md, #188).
+
+    A query author should prefer the canonical name — a policy rule is written
+    against it, and compile_facts emits canonical side-atoms so the canonical
+    predicate matches facts stated with any variant. Absent alias file → ``{}`` →
+    empty list, so schema_context output stays byte-identical for KBs without the
+    file.
+    """
+    aliases = relation_aliases()
+    if not aliases:
+        return []
+    lines = ["Canonical relation names (prefer these):"]
+    for canonical in sorted(set(aliases.values())):
+        variants = ", ".join(sorted(surface_variants(canonical, aliases)))
+        lines.append(f"- {canonical} <- {variants}")
+    lines.append("")
+    return lines
+
+
 def schema_context() -> str:
     accepted = load_accepted_facts()
     candidates = load_facts()
@@ -1113,6 +1134,7 @@ def schema_context() -> str:
             "Allowed relation names from facts/accepted.dl:",
             ", ".join(relations) or "(none)",
             "",
+            *_canonical_relation_lines(),
             "Review facts still outside engine input:",
             str(len(review_facts(candidates))),
             "",
