@@ -153,15 +153,38 @@ def parse_ordinal(raw: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+# The engine projects an amount into a signed 64-bit integer column, so any value
+# outside this range would overflow silently. ``parse_amount`` returns ``None``
+# (untyped) rather than emit an out-of-range int — same "does not parse -> untyped"
+# contract as the other parsers.
+_INT64_MIN = -(2**63)
+_INT64_MAX = 2**63 - 1
+
+# A trailing monetary marker fused onto a scale unit (``억원`` = ``억`` + ``원``).
+# The prose ``_AMOUNT_RE`` captures the whole non-digit tail as one unit, so a
+# fused form like ``억원`` never matches the table directly. On a first-pass miss
+# we strip ONE trailing ``원`` and retry, which recovers ``억원``/``조원``/``백만원``
+# only when the stripped stem is itself a known unit. The base ``원`` unit is
+# matched on the first pass (``1,000원`` -> unit ``원``), so this retry never
+# shadows it.
+_CURRENCY_MARKER = "원"
+
+
 def parse_amount(raw: str, units: dict[str, int]) -> int | None:
     """A ``<number><unit>`` amount -> its value in the **integer base unit**, or
-    ``None`` if it does not parse / the unit is unknown. Never raises.
+    ``None`` if it does not parse / the unit is unknown / it overflows int64.
+    Never raises.
 
     Conversion is **exact**: the numeric part is parsed with ``decimal.Decimal``
     (commas stripped) and multiplied by the unit's **int** multiplier, so e.g.
     ``2.675억`` -> ``267500000`` exactly (a float ``2.675 * 1e8`` would give
     ``267499999``). An integral product is returned as-is; a sub-base-unit
     fraction is rounded to the nearest int (ROUND_HALF_UP) and documented as such.
+
+    Prose fallback: a fused currency suffix (``100억원``) is recovered by stripping
+    one trailing currency marker (``원``) and re-looking-up the stem (``억``) in
+    *units*. This applies to the caller-supplied table too, and only succeeds when
+    the stripped stem is a known unit — an unknown stem (``백만원``) stays ``None``.
 
     Scope (first cut): Korean monetary units only (the table's keys). A leading
     ``제`` (ordinal marker), a ``%``, or any unit not in *units* -> ``None``.
@@ -178,15 +201,25 @@ def parse_amount(raw: str, units: dict[str, int]) -> int | None:
         unit = m.group("unit").strip()
     multiplier = units.get(unit)
     if multiplier is None:
-        return None
+        # Prose fallback: a fused currency suffix (``억원``). Strip one trailing
+        # marker and retry against *units*. Only recover when the stem is known
+        # (no-guess contract preserved for unknown units like ``백만``).
+        if unit.endswith(_CURRENCY_MARKER) and len(unit) > len(_CURRENCY_MARKER):
+            multiplier = units.get(unit[: -len(_CURRENCY_MARKER)])
+        if multiplier is None:
+            return None
     try:
         num = Decimal(m.group("num").replace(",", ""))
     except decimal.InvalidOperation:  # pragma: no cover - guarded by the regex
         return None
     product = num * multiplier
     if product == product.to_integral_value():
-        return int(product)
-    return int(product.to_integral_value(rounding=decimal.ROUND_HALF_UP))
+        value = int(product)
+    else:
+        value = int(product.to_integral_value(rounding=decimal.ROUND_HALF_UP))
+    if value < _INT64_MIN or value > _INT64_MAX:
+        return None
+    return value
 
 
 def canonical_amount(raw: str) -> str | None:
