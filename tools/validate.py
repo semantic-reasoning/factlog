@@ -178,6 +178,20 @@ def validate(root: Path) -> list[str]:
     elif policy_source.is_file() and policy_prompt.is_file():
         errors.extend(validate_logic_policy(root))
 
+    # Relation-alias declaration format (#188). Reuse common.relation_aliases as
+    # the single source of truth for the grammar/collision rules rather than
+    # re-implementing them here: a malformed file (raw mapped to two canonicals,
+    # alias chain, self-map) raises FactlogError, surfaced here as a validation
+    # error. Absent file → relation_aliases returns {} → no-op (no error).
+    aliases_md = root / "policy" / "relation-aliases.md"
+    if aliases_md.is_file():
+        import common
+
+        try:
+            common.relation_aliases(root)
+        except common.FactlogError as exc:
+            errors.append(f"policy/{exc}")
+
     facts = root / "facts" / "candidates.csv"
     if not facts.is_file():
         errors.append("missing facts/candidates.csv")
