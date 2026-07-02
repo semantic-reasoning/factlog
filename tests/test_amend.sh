@@ -158,6 +158,91 @@ else
   ok "#220 old subject NOT revived by re-extraction"
 fi
 
+# --- #220 defect 1: tombstone must survive a merge with NO re-extraction ------
+# The old value is rewritten out of runs, so a candidates-only tombstone is lost
+# the first time a merge doesn't re-assert it (candidates.csv is rebuilt from
+# runs/*.json). The tombstone must be RUN-BACKED so a "dissolution window" merge
+# (e.g. a sync-ignored source, a bare merge_candidates re-run, an extraction that
+# produced nothing new) can't drop it and let the next re-extraction revive it.
+KB="$(mktemp -d)/wiki"
+"$PYTHON" -m factlog init --target "$KB" >/dev/null
+printf 'a\n' > "$KB/sources/a.md"
+printf '[{"subject":"Api","relation":"impl","object":"FastApi","source":"sources/a.md","status":"candidate","confidence":0.5,"note":""}]\n' \
+  > "$KB/runs/T1.json"
+"$PYTHON" "$MERGE" --wiki "$KB" >/dev/null 2>&1
+"$PYTHON" -m factlog amend Api impl FastApi --set-object FastAPI --accept --target "$KB" >/dev/null 2>&1
+# (a) a merge with NO re-extraction of the old value (only the current runs)
+"$PYTHON" "$MERGE" --wiki "$KB" >/dev/null 2>&1
+grep -q "Api,impl,FastApi,sources/a.md,superseded," "$KB/facts/candidates.csv" && ok "#220 d1: tombstone survives a merge with no re-extraction (run-backed)" || bad "#220 d1: tombstone dissolved after a plain merge: $(grep impl "$KB/facts/candidates.csv")"
+grep -q "Api,impl,FastAPI,sources/a.md,accepted," "$KB/facts/candidates.csv" && ok "#220 d1: corrected value still accepted after plain merge" || bad "#220 d1: corrected value lost: $(grep impl "$KB/facts/candidates.csv")"
+# (b) NOW the original source is re-extracted — old value must stay retired
+printf '[{"subject":"Api","relation":"impl","object":"FastApi","source":"sources/a.md","status":"candidate","confidence":0.5,"note":""}]\n' \
+  > "$KB/runs/T2.json"
+"$PYTHON" "$MERGE" --wiki "$KB" >/dev/null 2>&1
+if grep -qE "^Api,impl,FastApi,sources/a\.md,(candidate|needs_review)," "$KB/facts/candidates.csv"; then
+  bad "#220 d1: old value revived after dissolution-window merge: $(grep impl "$KB/facts/candidates.csv")"
+else
+  ok "#220 d1: old value stays retired across dissolution window + re-extraction"
+fi
+
+# --- #220 defect 2: a repeated identical amend is idempotent ------------------
+# is_old must NOT re-target its own superseded tombstone, else the 2nd amend
+# promotes the tombstone back to accepted (duplicate accepted row) and re-adds a
+# tombstone — reviving a human-retired value.
+KB="$(mktemp -d)/wiki"
+"$PYTHON" -m factlog init --target "$KB" >/dev/null
+printf 'a\n' > "$KB/sources/a.md"
+printf '[{"subject":"Lib","relation":"name","object":"Numpy","source":"sources/a.md","status":"candidate","confidence":0.5,"note":""}]\n' \
+  > "$KB/runs/T1.json"
+"$PYTHON" "$MERGE" --wiki "$KB" >/dev/null 2>&1
+"$PYTHON" -m factlog amend Lib name Numpy --set-object NumPy --accept --target "$KB" >/dev/null 2>&1
+"$PYTHON" -m factlog amend Lib name Numpy --set-object NumPy --accept --target "$KB" >/dev/null 2>&1 || true
+n_acc=$(grep -c "Lib,name,NumPy,sources/a.md,accepted," "$KB/facts/candidates.csv" || true)
+[ "$n_acc" -eq 1 ] && ok "#220 d2: repeated amend keeps exactly one accepted row (no duplicate)" || bad "#220 d2: duplicate accepted rows ($n_acc): $(grep name "$KB/facts/candidates.csv")"
+n_tomb=$(grep -c "Lib,name,Numpy,sources/a.md,superseded," "$KB/facts/candidates.csv" || true)
+[ "$n_tomb" -eq 1 ] && ok "#220 d2: exactly one tombstone kept (old value stays retired)" || bad "#220 d2: tombstone count wrong ($n_tomb): $(grep name "$KB/facts/candidates.csv")"
+if grep -qE "^Lib,name,Numpy,sources/a\.md,(candidate|needs_review|accepted)," "$KB/facts/candidates.csv"; then
+  bad "#220 d2: repeated amend revived old value as live: $(grep name "$KB/facts/candidates.csv")"
+else
+  ok "#220 d2: old value not revived by repeated amend"
+fi
+
+# --- #220 counterexample: note-only / --accept-only leave NO tombstone --------
+KB="$(mktemp -d)/wiki"; seed "$KB"
+"$PYTHON" -m factlog amend Widget codename Draft --set-note "checked" --target "$KB" >/dev/null 2>&1
+if grep -qE "Widget,codename,Draft,sources/a\.md,superseded," "$KB/facts/candidates.csv"; then
+  bad "#220 note-only edit wrongly created a tombstone: $(grep codename "$KB/facts/candidates.csv")"
+else
+  ok "#220 note-only edit (no triple change) creates no tombstone"
+fi
+KB="$(mktemp -d)/wiki"; seed "$KB"
+"$PYTHON" -m factlog amend Widget codename Draft --accept --target "$KB" >/dev/null 2>&1
+if grep -qE "Widget,codename,Draft,sources/a\.md,superseded," "$KB/facts/candidates.csv"; then
+  bad "#220 --accept-only edit wrongly created a tombstone: $(grep codename "$KB/facts/candidates.csv")"
+else
+  ok "#220 --accept-only edit (no triple change) creates no tombstone"
+fi
+
+# --- #220 multi-source: a tombstone per backing source -----------------------
+KB="$(mktemp -d)/wiki"
+"$PYTHON" -m factlog init --target "$KB" >/dev/null
+printf 'a\n' > "$KB/sources/a.md"; printf 'b\n' > "$KB/sources/b.md"
+printf '[{"subject":"Db","relation":"name","object":"Postgre","source":"sources/a.md","status":"candidate","confidence":0.5,"note":""},{"subject":"Db","relation":"name","object":"Postgre","source":"sources/b.md","status":"candidate","confidence":0.5,"note":""}]\n' \
+  > "$KB/runs/T1.json"
+"$PYTHON" "$MERGE" --wiki "$KB" >/dev/null 2>&1
+"$PYTHON" -m factlog amend Db name Postgre --set-object PostgreSQL --accept --target "$KB" >/dev/null 2>&1
+grep -q "Db,name,Postgre,sources/a.md,superseded," "$KB/facts/candidates.csv" && ok "#220 multi-source: tombstone for source a" || bad "#220 no tombstone for source a: $(grep name "$KB/facts/candidates.csv")"
+grep -q "Db,name,Postgre,sources/b.md,superseded," "$KB/facts/candidates.csv" && ok "#220 multi-source: tombstone for source b" || bad "#220 no tombstone for source b: $(grep name "$KB/facts/candidates.csv")"
+# both re-extractions stay retired after re-merge
+printf '[{"subject":"Db","relation":"name","object":"Postgre","source":"sources/a.md","status":"candidate","confidence":0.5,"note":""},{"subject":"Db","relation":"name","object":"Postgre","source":"sources/b.md","status":"candidate","confidence":0.5,"note":""}]\n' \
+  > "$KB/runs/T2.json"
+"$PYTHON" "$MERGE" --wiki "$KB" >/dev/null 2>&1
+if grep -qE "^Db,name,Postgre,sources/[ab]\.md,(candidate|needs_review)," "$KB/facts/candidates.csv"; then
+  bad "#220 multi-source: an old value revived: $(grep name "$KB/facts/candidates.csv")"
+else
+  ok "#220 multi-source: both old values stay retired across re-extraction"
+fi
+
 echo ""
 echo "========================================"
 echo "test_amend: $pass passed, $fail failed"
