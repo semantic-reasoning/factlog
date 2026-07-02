@@ -43,9 +43,34 @@ from common import (  # noqa: E402
     engine_facts,
     ensure_dirs,
     load_facts,
+    relation_aliases,
     single_valued_relations,
     typed_relations,
 )
+
+
+def _canonicalize(relation: str, aliases: dict[str, str]) -> str:
+    """Return the canonical relation name when *relation* participates in the
+    alias map; otherwise return *relation* verbatim (NFD-preserving).
+
+    Participation mirrors ``common.canonical_atoms``:
+
+    * relation is an alias **key** (raw predicate) → ``aliases[NFC(relation)]``
+    * relation **is** a canonical value (stored literally) → its NFC form
+    * relation is not in the alias map → verbatim (no normalization)
+
+    When *aliases* is empty the function short-circuits and returns *relation*
+    unchanged, preserving byte-identical behaviour for KBs without a
+    relation-aliases.md file.
+    """
+    if not aliases:
+        return relation
+    rn = unicodedata.normalize("NFC", relation)
+    if rn in aliases:
+        return aliases[rn]
+    if rn in set(aliases.values()):
+        return rn
+    return relation
 
 
 def _group_key(obj: str, spec: TypedRelSpec | None) -> tuple:
@@ -73,9 +98,10 @@ def detect_conflicts(
     facts: list[dict[str, str]],
     single_valued: set[str],
     typed: dict[str, TypedRelSpec] | None = None,
+    aliases: dict[str, str] | None = None,
 ) -> dict[tuple[str, str], list[str]]:
-    """Map (subject, relation) -> sorted distinct *display* objects, for
-    single-valued relations that hold more than one *distinct value* (a
+    """Map (subject, canonical_relation) -> sorted distinct *display* objects,
+    for single-valued relations that hold more than one *distinct value* (a
     contradiction).
 
     Distinctness is judged on the canonical grouping key (typed scalar when
@@ -85,24 +111,46 @@ def detect_conflicts(
     deterministic representative (the lexicographically smallest raw object seen
     for it). Deterministic; never raises.
 
-    The typed spec is looked up under the relation's NFC form (#210): the ``typed``
-    dict is keyed by NFC-normalized names (``typed_relations`` normalizes at
-    ``common._parse_typed_relations``), whereas facts / single-valued names are
-    loaded verbatim. Without this, a relation written in NFD (macOS) passes the
-    single-valued membership check (both NFD) but misses the typed lookup, so
-    equivalent notations (억↔조) degrade to raw comparison and false-positive.
-    Membership and reported strings stay on the original (NFD) form; only the
-    scalar-typing lookup is normalized — same boundary fix as #57 / #64."""
+    **Alias canonicalization (#227):** when *aliases* is provided (non-empty),
+    each row's relation is canonicalized via ``_canonicalize`` before the
+    single-valued membership test and before grouping.  This causes surface
+    variants that map to the same canonical name (e.g. ``게재연도`` and ``발행년도``
+    both aliased to ``published_year``) to collide under one key, so a cross-
+    variant contradiction is detected as a single conflict on the canonical
+    name.  Relations that do **not** participate in the alias map are passed
+    through verbatim (no normalization), preserving byte-identical behaviour for
+    those predicates.
+
+    When *aliases* is ``None`` or ``{}`` the function is byte-identical to the
+    pre-#227 behaviour: the raw relation string is used throughout, and an NFD-
+    authored relation name is reported exactly as written (no silent NFC coercion
+    for non-participating relations).
+
+    **Typed-spec lookup (#210):** the ``typed`` dict is keyed by NFC-normalized
+    names (``typed_relations`` normalizes at ``common._parse_typed_relations``).
+    The lookup first tries the canonical relation name (already NFC when it came
+    from the alias map), then falls back to the NFC form of the raw relation
+    string.  This ensures that an NFD-authored relation that also participates in
+    the alias map still reaches its typed spec, so equivalent notations (억↔조)
+    collapse correctly."""
     typed = typed or {}
-    # (subject, relation) -> group key -> set of raw object strings under it.
+    aliases = aliases or {}
+    # Precompute the set of canonical single-valued relation names so the
+    # per-row membership test is O(1).
+    sv = {_canonicalize(r, aliases) for r in single_valued}
+    # (subject, canonical_relation) -> group key -> set of raw object strings.
     by_key: dict[tuple[str, str], dict[tuple, set[str]]] = {}
     for row in engine_facts(facts):
         relation = row["relation"]
-        if relation not in single_valued:
+        canon = _canonicalize(relation, aliases)
+        if canon not in sv:
             continue
         obj = row["object"]
-        key = _group_key(obj, typed.get(unicodedata.normalize("NFC", relation)))
-        groups = by_key.setdefault((row["subject"], relation), {})
+        # Typed-spec lookup: try canonical name first (NFC by construction when
+        # it came from the alias map), then NFC of the raw relation (#210).
+        spec = typed.get(canon) or typed.get(unicodedata.normalize("NFC", relation))
+        key = _group_key(obj, spec)
+        groups = by_key.setdefault((row["subject"], canon), {})
         groups.setdefault(key, set()).add(obj)
     return {
         key: sorted(min(raws) for raws in groups.values())
@@ -122,15 +170,17 @@ def main(argv: list[str] | None = None) -> int:
         print("check_conflicts: no single-valued relations declared (policy/single-valued.md); nothing to check")
         return 0
 
-    conflicts = detect_conflicts(load_facts(), single_valued, typed_relations())
+    conflicts = detect_conflicts(load_facts(), single_valued, typed_relations(), relation_aliases())
     if not conflicts:
         print(f"check_conflicts: 0 conflicts across {len(single_valued)} single-valued relation(s)")
         return 0
 
     print(f"check_conflicts: {len(conflicts)} conflict(s) found", file=sys.stderr)
+    aliases = relation_aliases()
     for (subject, relation), objects in sorted(conflicts.items()):
+        suffix = " (canonical; incl. surface variants)" if aliases and relation in set(aliases.values()) else ""
         print(
-            f"  CONFLICT: single-valued '{relation}' on '{subject}' has "
+            f"  CONFLICT: single-valued '{relation}'{suffix} on '{subject}' has "
             f"{len(objects)} values: {', '.join(objects)}",
             file=sys.stderr,
         )
