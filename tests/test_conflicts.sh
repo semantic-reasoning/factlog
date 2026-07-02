@@ -117,6 +117,43 @@ if run_conflicts; then bad "NFD relation: real value difference (5000억 vs 5400
 printf '# single-valued\n\n- 주_속성\n' > "$KB/policy/single-valued.md"
 rm -f "$KB/policy/typed-relations.md"
 
+# --- #227: canonicalize single-valued conflict detection over alias variants ---
+# Set up: published_year is single-valued; 게재연도 and 발행년도 are aliases.
+printf '# single-valued\n\n- published_year\n' > "$KB/policy/single-valued.md"
+printf '# Relation aliases\n\n- `게재연도` -> `published_year`\n- `발행년도` -> `published_year`\n' > "$KB/policy/relation-aliases.md"
+printf '# x\n' > "$KB/sources/x.md"
+
+# cross-variant conflict: 게재연도/2005 + 발행년도/2007 -> ONE conflict on published_year
+csv '논문A,게재연도,2005,sources/x.md,confirmed,0.9,' '논문A,발행년도,2007,sources/x.md,confirmed,0.9,'
+if run_conflicts; then bad "#227: cross-variant conflict (2005 vs 2007) NOT detected"; else ok "#227: cross-variant conflict detected (exit non-zero)"; fi
+cout="$("$PYTHON" "$CONFLICTS" --wiki "$KB" 2>&1 || true)"
+if printf '%s' "$cout" | grep -qF "published_year"; then ok "#227: conflict reported under canonical name published_year"; else bad "#227: canonical name missing from conflict report"; fi
+if printf '%s' "$cout" | grep -qF "2005" && printf '%s' "$cout" | grep -qF "2007"; then ok "#227: both verbatim objects shown in conflict report"; else bad "#227: verbatim object values missing from conflict report"; fi
+
+# typed-equal across variants: amount(5400,"억") == amount(0.54,"조") -> NOT a conflict
+printf '# single-valued\n\n- published_year\n' > "$KB/policy/single-valued.md"
+printf -- '- `published_year` : amount as revenue\n' > "$KB/policy/typed-relations.md"
+csv '갑사,게재연도,"amount(5400,""억"")",sources/x.md,confirmed,0.9,' '갑사,발행년도,"amount(0.54,""조"")",sources/x.md,confirmed,0.9,'
+if run_conflicts; then ok "#227: typed-equal across variants (5400억 == 0.54조) not flagged"; else bad "#227: typed-equal across variants wrongly flagged"; fi
+
+# typed-different across variants: 5000억 vs 5400억 -> conflict, 2 verbatim reps
+csv '갑사,게재연도,"amount(5000,""억"")",sources/x.md,confirmed,0.9,' '갑사,발행년도,"amount(5400,""억"")",sources/x.md,confirmed,0.9,'
+if run_conflicts; then bad "#227: typed-different across variants (5000억 vs 5400억) NOT detected"; else ok "#227: typed-different across variants detected"; fi
+cout="$("$PYTHON" "$CONFLICTS" --wiki "$KB" 2>&1 || true)"
+if printf '%s' "$cout" | grep -qF 'amount(5000,"억")' && printf '%s' "$cout" | grep -qF 'amount(5400,"억")'; then ok "#227: typed-different across variants: both verbatim reps preserved"; else bad "#227: typed-different across variants: verbatim reps missing"; fi
+
+# no-alias no-op: without relation-aliases.md two raw variants are independent -> no conflict
+rm -f "$KB/policy/typed-relations.md"
+rm -f "$KB/policy/relation-aliases.md"
+printf '# single-valued\n\n- published_year\n' > "$KB/policy/single-valued.md"
+csv '논문A,게재연도,2005,sources/x.md,confirmed,0.9,' '논문A,발행년도,2007,sources/x.md,confirmed,0.9,'
+if run_conflicts; then ok "#227: no alias file -> cross-variant rows not flagged (opt-in no-op)"; else bad "#227: no alias file -> cross-variant rows wrongly flagged"; fi
+
+# restore clean state
+printf '# single-valued\n\n- 주_속성\n' > "$KB/policy/single-valued.md"
+rm -f "$KB/policy/typed-relations.md"
+rm -f "$KB/policy/relation-aliases.md"
+
 echo ""
 echo "========================================"
 echo "test_conflicts: $pass passed, $fail failed"
