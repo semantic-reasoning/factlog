@@ -925,14 +925,54 @@ def cmd_amend(args: argparse.Namespace) -> int:
     out_fields = fieldnames or list(FACT_HEADER)
     if args.accept and "status" not in out_fields:
         out_fields = [*out_fields, "status"]
+
+    # When the triple (subject/relation/object) actually changes, the ORIGINAL
+    # source text still carries the old value, so the next sync re-extracts it.
+    # Leave a `superseded` tombstone for the old triple (per source) so merge's
+    # existing_superseded_keys pass retires the re-asserted old value instead of
+    # letting it come back as a live candidate (#220). A note-only / --accept-only
+    # edit leaves the triple intact, so no tombstone is needed.
+    new_triple = (
+        sets.get("subject", old[0]),
+        sets.get("relation", old[1]),
+        sets.get("object", old[2]),
+    )
+    triple_changed = new_triple != old
+
     changed = 0
+    tombstones: list[dict[str, str]] = []
+    seen_tombstones: set[str] = set()
     for r in rows:
         if is_old(r):
+            if triple_changed:
+                # Snapshot the old triple (before rewrite) as a superseded row,
+                # once per source, skipping sources already retired.
+                src = fld(r, "source")
+                if src not in seen_tombstones:
+                    seen_tombstones.add(src)
+                    tomb = dict(r)
+                    tomb["subject"], tomb["relation"], tomb["object"] = old
+                    tomb["status"] = "superseded"
+                    tombstones.append(tomb)
             for k, v in sets.items():
                 r[k] = v
             if args.accept:
                 r["status"] = "accepted"
             changed += 1
+
+    # Don't duplicate a tombstone that already exists (e.g. amend run twice).
+    if tombstones:
+        existing = {
+            (fld(r, "subject"), fld(r, "relation"), fld(r, "object"), fld(r, "source"))
+            for r in rows
+            if (r.get("status") or "").strip() == "superseded"
+        }
+        for tomb in tombstones:
+            key = (old[0], old[1], old[2], fld(tomb, "source"))
+            if key not in existing:
+                existing.add(key)
+                rows.append(tomb)
+
     _atomic_write_csv(csv_path, rows, out_fields)
 
     # 2. runs/*.json (durability) — a value lives here; merge rebuilds from it
