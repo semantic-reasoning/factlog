@@ -20,6 +20,7 @@ has no float column, so the base-unit value MUST be an exact integer — see
 """
 from __future__ import annotations
 
+import datetime
 import decimal
 import re
 from decimal import Decimal
@@ -91,7 +92,13 @@ def parse_date(raw: str) -> int | None:
     year = int(m.group(1))
     month = int(m.group(2))
     day = int(m.group(3)) if m.group(3) is not None else 1
-    if not (1 <= month <= 12 and 1 <= day <= 31):
+    # A month-precision date (no day in the source) defaults day to 01, which is
+    # always a valid day, so this preserves ``2030.1`` -> ``20300101``. When a day
+    # IS given, ``datetime.date`` rejects calendar-impossible dates (2/30, 4/31,
+    # a non-leap 2/29): the ``day <= 31`` range check alone is not enough.
+    try:
+        datetime.date(year, month, day)
+    except ValueError:
         return None
     return year * 10000 + month * 100 + day
 
@@ -241,11 +248,18 @@ def humanize(value: str) -> str:
     text = value.strip()
     m = _DATE_COMPOUND_RE.match(text)
     if m:
+        year = int(m.group(1))
         month = int(m.group(2))
         day = int(m.group(3)) if m.group(3) is not None else None
-        if not (1 <= month <= 12 and (day is None or 1 <= day <= 31)):
+        # Reject calendar-impossible dates so we never fabricate a misleading ISO
+        # display (e.g. ``date(2024,2,30)`` stays verbatim, not ``2024-02-30``).
+        # A month-precision term (no day) only needs a valid month; probe day 01,
+        # which is always valid, to reuse the same calendar check.
+        try:
+            datetime.date(year, month, day if day is not None else 1)
+        except ValueError:
             return value
-        iso = f"{int(m.group(1)):04d}-{month:02d}"
+        iso = f"{year:04d}-{month:02d}"
         if day is not None:
             iso += f"-{day:02d}"
         return iso
