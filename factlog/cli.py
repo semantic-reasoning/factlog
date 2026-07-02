@@ -901,10 +901,19 @@ def cmd_amend(args: argparse.Namespace) -> int:
     def fld(r: dict, k: str) -> str:
         return nfc((r.get(k) or "").strip())
 
+    SUPERSEDED = "superseded"
+
     def is_old(d: dict) -> bool:
         return (fld(d, "subject"), fld(d, "relation"), fld(d, "object")) == old
 
-    matched = [r for r in rows if is_old(r)]
+    def is_live_old(d: dict) -> bool:
+        # Only live (non-superseded) rows are amendable. A prior amend leaves the
+        # old triple as a `superseded` tombstone; re-targeting it would revive the
+        # retired value and duplicate the accepted row on a repeated amend (#220
+        # defect 2), so tombstones are never touched.
+        return is_old(d) and (d.get("status") or "").strip() != SUPERSEDED
+
+    matched = [r for r in rows if is_live_old(r)]
     if not matched:
         print(f"factlog amend: no fact matches ({old[0]} / {old[1]} / {old[2]})", file=sys.stderr)
         return 1
@@ -939,43 +948,50 @@ def cmd_amend(args: argparse.Namespace) -> int:
     )
     triple_changed = new_triple != old
 
+    # Tombstones that already exist (old triple, per source) — snapshot BEFORE the
+    # rewrite so a repeated amend doesn't append a duplicate (#220 defect 2).
+    existing_tombs = {
+        (fld(r, "subject"), fld(r, "relation"), fld(r, "object"), fld(r, "source"))
+        for r in rows
+        if (r.get("status") or "").strip() == SUPERSEDED
+    }
+
     changed = 0
     tombstones: list[dict[str, str]] = []
-    seen_tombstones: set[str] = set()
+    seen_tomb_src: set[str] = set()
     for r in rows:
-        if is_old(r):
-            if triple_changed:
-                # Snapshot the old triple (before rewrite) as a superseded row,
-                # once per source, skipping sources already retired.
-                src = fld(r, "source")
-                if src not in seen_tombstones:
-                    seen_tombstones.add(src)
-                    tomb = dict(r)
-                    tomb["subject"], tomb["relation"], tomb["object"] = old
-                    tomb["status"] = "superseded"
-                    tombstones.append(tomb)
-            for k, v in sets.items():
-                r[k] = v
-            if args.accept:
-                r["status"] = "accepted"
-            changed += 1
-
-    # Don't duplicate a tombstone that already exists (e.g. amend run twice).
-    if tombstones:
-        existing = {
-            (fld(r, "subject"), fld(r, "relation"), fld(r, "object"), fld(r, "source"))
-            for r in rows
-            if (r.get("status") or "").strip() == "superseded"
-        }
-        for tomb in tombstones:
-            key = (old[0], old[1], old[2], fld(tomb, "source"))
-            if key not in existing:
-                existing.add(key)
-                rows.append(tomb)
+        if not is_live_old(r):
+            continue
+        if triple_changed:
+            # Snapshot the old triple (before rewrite) as a superseded row, once
+            # per source, skipping sources already retired.
+            src = fld(r, "source")
+            key = (old[0], old[1], old[2], src)
+            if src not in seen_tomb_src and key not in existing_tombs:
+                seen_tomb_src.add(src)
+                tomb = dict(r)
+                tomb["subject"], tomb["relation"], tomb["object"] = old
+                tomb["status"] = SUPERSEDED
+                tombstones.append(tomb)
+        for k, v in sets.items():
+            r[k] = v
+        if args.accept:
+            r["status"] = "accepted"
+        changed += 1
+    rows.extend(tombstones)
 
     _atomic_write_csv(csv_path, rows, out_fields)
 
-    # 2. runs/*.json (durability) — a value lives here; merge rebuilds from it
+    # 2. runs/*.json (durability) — a value lives here; merge rebuilds from it.
+    # For a triple change, do NOT rewrite the old run item in place: candidates.csv
+    # is rebuilt from runs/*.json every merge, so a candidates-only tombstone is
+    # lost the first time a merge doesn't re-extract the old value, and the bug
+    # comes back (#220 defect 1). Instead give the tombstone RUN BACKING — leave
+    # the old triple as a `superseded` run item (re-asserted, so merge keeps it
+    # retired every rebuild) and add the corrected triple as a separate item so
+    # the new value keeps its own run backing (engine-preservation keeps it
+    # accepted). A note-only / --accept-only edit has no triple change and is
+    # applied in place as before.
     runs_changed = 0
     runs_dir = target / "runs"
     if runs_dir.is_dir():
