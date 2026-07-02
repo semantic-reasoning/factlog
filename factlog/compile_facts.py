@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import unicodedata
+
 from factlog.common import (
     FACTS_DIR,
     corroboration_counts,
@@ -12,6 +14,7 @@ from factlog.common import (
     engine_facts,
     ensure_dirs,
     load_facts,
+    relation_aliases,
 )
 
 
@@ -31,6 +34,48 @@ def main() -> None:
     ]
     for row in accepted:
         lines.append(dl_atom(row))
+
+    # Canonical side-atoms (#188): a human-declared alias in
+    # policy/relation-aliases.md maps a surface variant relation to a canonical
+    # name so a policy rule written against the canonical predicate can fire over
+    # facts stated with the variant. These are PARALLEL indexing atoms — the
+    # original variant atom above is emitted verbatim and untouched, and the
+    # candidates path (sources / provenance) is unaffected. Absent alias file →
+    # relation_aliases() returns {} and this block is a complete no-op (accepted.dl
+    # stays byte-identical). A malformed alias file raises FactlogError, which
+    # propagates and fails the compile loudly (no silent side-atom drop).
+    aliases = relation_aliases()
+    if aliases:
+        # (b) triples already emitted directly (a canonical name may be extracted
+        # firsthand, or two variants may collapse to the same canonical triple):
+        # a side-atom is only emitted when it is NOT already an original atom, so
+        # accepted.dl never carries a duplicate triple.
+        original_triples = {
+            (row["subject"], row["relation"], row["object"]) for row in accepted
+        }
+        seen_side: set[tuple[str, str, str]] = set()  # (a) dedup side-atoms
+        side_lines: list[str] = []
+        for row in accepted:
+            canonical = aliases.get(unicodedata.normalize("NFC", row["relation"]))
+            if canonical is None:
+                continue
+            triple = (row["subject"], canonical, row["object"])
+            if triple in original_triples or triple in seen_side:
+                continue
+            seen_side.add(triple)
+            side_lines.append(
+                dl_atom(
+                    {
+                        "subject": row["subject"],
+                        "relation": canonical,
+                        "object": row["object"],
+                    }
+                )
+            )
+        if side_lines:
+            lines.append("")
+            lines.append("// canonical side-atoms (policy/relation-aliases.md)")
+            lines.extend(side_lines)
 
     out = FACTS_DIR / "accepted.dl"
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
