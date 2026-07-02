@@ -82,6 +82,7 @@ from common import (  # noqa: E402
     REVIEW_STATUSES,
     SUPERSEDED_STATUSES,
     RUNS_DIR,
+    attribute_relations,
     ensure_dirs,
     is_sync_ignored,
     is_text_source,
@@ -434,10 +435,15 @@ def write_pages(root: Path, rows: list[dict[str, str]]) -> list[str]:
     # render them on concept pages, where they would read as the current value.
     rows = [row for row in rows if row.get("status") not in SUPERSEDED_STATUSES]
 
+    # Objects of attribute (literal-valued) relations are values, not first-class
+    # entities (see common.entity_set), so they get no concept page — consistent
+    # with entity listings/path nodes and avoiding a page per free-text value.
+    literal_rels = attribute_relations()
     by_entity: dict[str, list[dict[str, str]]] = {}
     for row in rows:
         by_entity.setdefault(row["subject"], []).append(row)
-        by_entity.setdefault(row["object"], []).append(row)
+        if row["object"] and row["relation"] not in literal_rels:
+            by_entity.setdefault(row["object"], []).append(row)
 
     written: list[str] = []
     for entity, entity_rows in sorted(by_entity.items()):
