@@ -85,6 +85,36 @@ check_field "unreachable path flagged negative" validate 'path("Postgres", "Fast
 pneg="$(router render 'path("Postgres", "FastAPI")?')"
 if printf '%s' "$pneg" | grep -qF "VERIFIED — engine" && printf '%s' "$pneg" | grep -qF "verified negative"; then ok "path verified-negative renders as an engine answer (not deferred/wiki)"; else bad "path verified-negative not rendered as engine answer"; fi
 
+# --- #193: uncompiled-but-authored policy warns (no silent ignore) ---
+# ask mirrors /factlog check's detection: logic-policy.dl absent + logic-policy.md
+# defines compilable rules => policy is IGNORED, so warn (a hint, not a hard fail).
+# Baseline: the fixture's logic-policy.md is prose only (no rules) and has no
+# compiled logic-policy.dl -> the benign no-policy case must stay quiet.
+check_field "benign no-policy KB not flagged uncompiled" validate 'relation("Acme API", "uses", V)?' policy_uncompiled False
+if router render 'relation("Acme API", "uses", V)?' | grep -qF "policy is uncompiled"; then
+  bad "benign no-policy KB should not emit the uncompiled-policy warning"
+else
+  ok "benign no-policy KB stays quiet (legitimate empty policy tolerated)"
+fi
+
+# Author writes a compilable rule in logic-policy.md but never compiles it
+# (logic-policy.dl still absent). ask must now warn instead of silently ignoring.
+POLICY_MD_BAK="$(cat "$KB/policy/logic-policy.md")"
+printf '# policy\n## Rules\n- [usage_chain] 어떤 항목이 `uses` 관계를 가지면 검토(review)가 필요하다.\n' > "$KB/policy/logic-policy.md"
+
+check_field "validate flags uncompiled authored policy" validate 'relation("Acme API", "uses", V)?' policy_uncompiled True
+if router render 'relation("Acme API", "uses", V)?' | grep -qF "policy is uncompiled"; then ok "engine render warns on uncompiled authored policy"; else bad "engine render did not warn on uncompiled policy"; fi
+if router render 'relation("Acme API", "uses", "Postgres")?' | grep -qF "policy is uncompiled"; then ok "verified-negative render warns on uncompiled policy"; else bad "verified-negative render did not warn"; fi
+# the warning augments — it must NOT suppress the engine answer itself
+if router render 'relation("Acme API", "uses", V)?' | grep -qF "VERIFIED — engine"; then ok "engine answer still rendered alongside the warning"; else bad "warning suppressed the engine answer"; fi
+# wiki path: render directive carries the structured flag; wiki answer surfaces the warning
+if [ "$(router render 'relation("Nope", "uses", V)?' | field policy_uncompiled)" = "True" ]; then ok "wiki route directive carries policy_uncompiled=true"; else bad "wiki directive missing policy_uncompiled flag"; fi
+if router wiki 'Nope 관련 자료가 있나' | grep -qF "policy is uncompiled"; then ok "wiki answer warns on uncompiled policy"; else bad "wiki answer did not warn"; fi
+
+# restore the prose template so later assertions see the benign no-policy KB again
+printf '%s\n' "$POLICY_MD_BAK" > "$KB/policy/logic-policy.md"
+if router render 'relation("Acme API", "uses", V)?' | grep -qF "policy is uncompiled"; then bad "warning persisted after restoring prose-only policy"; else ok "warning clears once authored rules are removed"; fi
+
 # --- regression: an unaccepted relation name containing the fact-absence
 # phrase must route to wiki, NOT masquerade as a verified negative (exact-match) ---
 check_field "marker-collision relation name routes wiki" validate 'relation("Acme API", "does not match accepted facts", "X")?' route wiki

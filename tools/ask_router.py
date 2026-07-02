@@ -78,6 +78,7 @@ from common import (  # noqa: E402
     load_accepted_facts,
     load_facts,
     load_logic_policy,
+    logic_policy_md_has_rules,
     policy_predicates,
     run_wirelog,
 )
@@ -90,18 +91,57 @@ def _policy_program_optional() -> str:
     has not been generated yet.
 
     `/factlog ask` is interactive and must work before `/factlog check` compiles
-    `policy/logic-policy.dl`; a missing policy simply means no policy predicates.
-
-    Reading the *assembled* program (via `load_logic_policy()`, which concatenates
+    `policy/logic-policy.dl`. When the compiled `logic-policy.dl` is present,
+    reading the *assembled* program (via `load_logic_policy()`, which concatenates
     `logic-policy.extra.dl`) — not just the generated file — lets ask see and
     evaluate user-authored comparison predicates declared in
-    `logic-policy.extra.dl` (#152), matching exactly what `/factlog check`
-    evaluates. Both the classify/route path and the evaluate/render path read
-    this, so one source of truth fixes both.
+    `logic-policy.extra.dl` (#152), matching what `/factlog check` evaluates.
+    Both the classify/route path and the evaluate/render path read this, so one
+    source of truth fixes both.
+
+    LIMITATION (not yet parity with check): when `logic-policy.dl` is ABSENT this
+    short-circuits to '' — it does NOT merge a hand-authored `logic-policy.extra.dl`,
+    whereas `/factlog check` does (common._load_logic_policy_from). So an extra.dl
+    that carries the *only* policy (no compiled .dl, no rules in logic-policy.md)
+    is still silently unevaluated here. #193 closes the `logic-policy.md`-rules
+    case (see `_policy_uncompiled`, which warns on it); the extra.dl-only-when-.dl-
+    absent parity is a separate residual left for a follow-up.
     """
     if not LOGIC_POLICY_DL.is_file():
         return ""
     return load_logic_policy()
+
+
+# Greppable one-line hint shown when the author wrote policy rules but never
+# compiled them. Mirrors the remediation `/factlog check` prints on the same
+# condition (run the generator, or /factlog add), but as a warning — ask is
+# exploratory, not a verification gate.
+POLICY_UNCOMPILED_WARNING = (
+    "WARNING: policy is uncompiled — policy/logic-policy.md defines rules but "
+    "policy/logic-policy.dl is absent, so policy is being IGNORED in this answer. "
+    "Run tools/generate_logic_policy.py (or /factlog add) to compile it."
+)
+
+
+def _policy_uncompiled() -> bool:
+    """True iff the author wrote policy rules but never compiled them:
+    ``logic-policy.dl`` is absent while ``logic-policy.md`` defines >=1 compilable
+    rule.
+
+    Mirrors ``/factlog check``'s detection (``common._load_logic_policy_from``)
+    using the SAME shared helper (``logic_policy_md_has_rules``, #190), so ask and
+    check never disagree about what "has rules" means — a single source of truth.
+    Unlike check, ask stays graceful: it surfaces a warning, not a hard failure,
+    because ask must work before check compiles the policy. This closes the
+    asymmetry (#193) where ask silently ignored an uncompiled policy that check
+    caught. The benign no-policy case (empty/prose ``logic-policy.md``) yields
+    False here exactly as it does for check, so ask's legitimate no-policy
+    tolerance is unchanged — only "rules written but not compiled" warns.
+    """
+    if LOGIC_POLICY_DL.is_file():
+        return False
+    return logic_policy_md_has_rules(LOGIC_POLICY_DL.with_name("logic-policy.md"))
+
 
 def _predicate_of(draft: str) -> str:
     """Parse the predicate name the way the validator does (regex), so the router
@@ -139,6 +179,10 @@ def classify(draft: str, facts: list[dict[str, str]]) -> dict[str, object]:
         "route": route,
         "negative": negative,
         "predicate": predicate,
+        # An uncompiled-but-authored policy is silently ignored by the engine
+        # path (policy program is ''); flag it so callers surface a warning
+        # instead of presenting a policy-free answer as fully policy-checked (#193).
+        "policy_uncompiled": _policy_uncompiled(),
     }
 
 
@@ -590,28 +634,42 @@ def cmd_render(args: argparse.Namespace) -> int:
         # so it is always renderable as an engine answer — never demoted.
         if decision["negative"]:
             print(render_engine_answer(args.draft, []))
-            return 0
-        # Positive engine answer: relation, path, and policy predicates are all
-        # evaluated by the engine and rendered (0 rows -> a verified-empty result,
-        # never a wiki fallback). Answer-quality signals (sources/extraction-conf/
-        # staleness) annotate relation rows only (the (s,r,o) key is a relation
-        # triple); gate on the predicate so path/policy rows are never annotated
-        # by a coincidental 3-element shape.
-        is_relation = decision["predicate"] == "relation"
-        signals = (
-            fact_signals(load_facts(), Path(os.environ["FACTLOG_ROOT"]))
-            if is_relation and CANDIDATES_CSV.is_file()
-            else None
-        )
-        print(render_engine_answer(
-            args.draft,
-            evaluate(args.draft, facts)["rows"],
-            signals,
-            annotate_objects=is_relation,
-        ))
+        else:
+            # Positive engine answer: relation, path, and policy predicates are all
+            # evaluated by the engine and rendered (0 rows -> a verified-empty
+            # result, never a wiki fallback). Answer-quality signals (sources/
+            # extraction-conf/staleness) annotate relation rows only (the (s,r,o)
+            # key is a relation triple); gate on the predicate so path/policy rows
+            # are never annotated by a coincidental 3-element shape.
+            is_relation = decision["predicate"] == "relation"
+            signals = (
+                fact_signals(load_facts(), Path(os.environ["FACTLOG_ROOT"]))
+                if is_relation and CANDIDATES_CSV.is_file()
+                else None
+            )
+            print(render_engine_answer(
+                args.draft,
+                evaluate(args.draft, facts)["rows"],
+                signals,
+                annotate_objects=is_relation,
+            ))
+        # The engine answer is real, but if the author wrote policy rules and
+        # never compiled them, the engine had no policy to apply — say so, so a
+        # policy-free answer is not mistaken for a policy-checked one (#193).
+        if decision["policy_uncompiled"]:
+            print(POLICY_UNCOMPILED_WARNING)
         return 0
-    # route == wiki
-    print(json.dumps({"route": "wiki", "reason": decision["reason"]}, ensure_ascii=False))
+    # route == wiki: emit a machine-readable directive so the caller runs wiki
+    # exploration. Always carry policy_uncompiled (same schema as `validate`), so
+    # the caller can surface the same warning the wiki answer appends.
+    print(json.dumps(
+        {
+            "route": "wiki",
+            "reason": decision["reason"],
+            "policy_uncompiled": decision["policy_uncompiled"],
+        },
+        ensure_ascii=False,
+    ))
     return 0
 
 
@@ -628,6 +686,10 @@ def cmd_wiki(args: argparse.Namespace) -> int:
     accepted = load_accepted_facts() if ACCEPTED_DL.is_file() else []
     grounding = grounding_facts(args.text, accepted)
     print(render_wiki_answer(args.text, args.reason, results, grounding))
+    # A wiki answer is already UNVERIFIED, but an uncompiled-but-authored policy
+    # is a separate, actionable defect the author should fix — surface it (#193).
+    if _policy_uncompiled():
+        print(POLICY_UNCOMPILED_WARNING)
     return 0
 
 
