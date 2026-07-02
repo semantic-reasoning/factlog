@@ -52,3 +52,46 @@ class TestCanonicalRelationLines:
         monkeypatch.setattr(fc, "POLICY_DIR", policy)
         lines = fc._canonical_relation_lines()
         assert lines.index("- alpha <- a1") < lines.index("- zeta <- z1")
+
+
+class TestSideAtomExclusion:
+    """Synthetic canonical side-atoms (#188) live in accepted.dl for the engine
+    but must NOT surface as verbatim confirmed facts. _load_accepted_facts_from
+    with include_side_atoms=False drops everything after the shared marker; the
+    default keeps them so the engine still consumes them."""
+
+    ACCEPTED = (
+        "// generated from facts/candidates.csv\n"
+        "// only confirmed/accepted facts become engine input\n"
+        "\n"
+        'relation("논문갑", "결론", "무효").\n'
+        "\n"
+        f"{fc.CANONICAL_SIDE_ATOM_MARKER}\n"
+        'relation("논문갑", "concludes", "무효").\n'
+    )
+
+    def _write(self, tmp_path):
+        path = tmp_path / "accepted.dl"
+        path.write_text(self.ACCEPTED, encoding="utf-8")
+        return path
+
+    def test_default_includes_side_atoms_for_engine(self, tmp_path):
+        rows = fc._load_accepted_facts_from(self._write(tmp_path))
+        rels = {r["relation"] for r in rows}
+        assert "결론" in rels and "concludes" in rels  # engine sees both
+
+    def test_exclude_drops_side_atoms(self, tmp_path):
+        rows = fc._load_accepted_facts_from(
+            self._write(tmp_path), include_side_atoms=False
+        )
+        rels = {r["relation"] for r in rows}
+        assert rels == {"결론"}  # only the verbatim human fact
+        assert "concludes" not in rels
+
+    def test_exclude_no_marker_is_noop(self, tmp_path):
+        # accepted.dl with no side-atom block → exclusion changes nothing.
+        path = tmp_path / "accepted.dl"
+        path.write_text('relation("a", "b", "c").\n', encoding="utf-8")
+        assert fc._load_accepted_facts_from(path, include_side_atoms=False) == (
+            fc._load_accepted_facts_from(path, include_side_atoms=True)
+        )
