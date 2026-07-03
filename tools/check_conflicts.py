@@ -101,9 +101,9 @@ def _group_key(obj: str, spec: TypedRelSpec | None) -> tuple:
     ``amount``, where 억↔조 equivalence is the intended collapse.)
 
     **int64 divergence note (#224 C):** ``normalize`` can return a scalar wider
-    than int64 (mainly ``number`` via ``parse_number_scaled``, which has no range
-    guard — ``amount`` already degrades to raw when ``parse_amount`` overflows,
-    #205). The engine, by contrast, **skips insertion** of an out-of-int64-range
+    than int64 (mainly ``number`` via ``parse_number_scaled``, and unbounded
+    ``ordinal`` ranks — both lack a range guard; ``amount`` already degrades to raw
+    when ``parse_amount`` overflows, #205). The engine, by contrast, **skips insertion** of an out-of-int64-range
     scalar (see ``insert_typed_facts`` in ``common.py`` ~ the ``-(2**63) <= scalar
     < 2**63`` guard). So this checker may group under a scalar the engine would
     drop. That affects **grouping only** (never insertion) and is harmless: the
