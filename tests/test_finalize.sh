@@ -219,6 +219,63 @@ rc10b=0; out10b="$("$PYTHON" "$FINALIZE" --target "$KB10" 2>&1)" || rc10b=$?
 [ "$(cat "$KB10/policy/logic-policy.dl")" = "// no policy rules" ] && ok "#217: reset stub is stable on re-run (idempotent)" || bad "#217: reset stub churned on re-run"
 printf '%s' "$out10b" | grep -qF "reset to empty policy" && bad "#217: benign stub re-run wrongly reported reset" || ok "#217: benign stub re-run is silent (no reset note)"
 
+# --- #219 (gap 1): no-pyrewire `return-0` honest-summary path. When pyrewire is
+# absent, finalize skips the logic check and exits 0 with an HONEST summary —
+# "Logic check SKIPPED" (finalize.py ~236) and, for a policy that defines rules
+# but did not compile, "policy is NOT applied" (finalize.py ~254). This machine's
+# venv HAS pyrewire, so to hit that branch deterministically (independent of the
+# real environment) we SHADOW pyrewire: a pyrewire.py that raises ImportError at
+# import, prepended on PYTHONPATH, makes finalize._pyrewire_ok() (and every other
+# consumer) treat the engine as absent. Paired with an uncompilable-but-has-rules
+# policy (same `foo bar` shape as KB3/KB7), this pins the summary phrasing + rc=0.
+SHADOW="$(mktemp -d)/pyrewire-shadow"
+mkdir -p "$SHADOW"
+printf 'raise ImportError("shadowed for #219 no-pyrewire finalize test")\n' > "$SHADOW/pyrewire.py"
+# sanity: the shadow really disables pyrewire — otherwise the pins below are vacuous.
+if PYTHONPATH="$SHADOW:$PYTHONPATH" "$PYTHON" -c "import sys; sys.path.insert(0, '$PLUGIN_ROOT/tools'); import finalize; raise SystemExit(0 if not finalize._pyrewire_ok() else 1)"; then
+  ok "#219: pyrewire shadow makes _pyrewire_ok() False (no-pyrewire path armed)"
+else
+  bad "#219: pyrewire shadow did NOT disable pyrewire (no-pyrewire pins would be vacuous)"
+fi
+KB11="$(mktemp -d)/wiki"
+"$PYTHON" -m factlog init --target "$KB11" >/dev/null
+printf '# src\n\nAcme API uses FastAPI.\n' > "$KB11/sources/a.md"
+printf '[{"subject":"Acme API","relation":"uses","object":"FastAPI","source":"sources/a.md","status":"confirmed","confidence":0.95,"note":""}]' > "$KB11/runs/r1.json"
+printf '# Logic policy\n\n## Rules\n\n- [c1] flag when `foo bar` occurs\n' > "$KB11/policy/logic-policy.md"
+rc11=0; out11="$(PYTHONPATH="$SHADOW:$PYTHONPATH" "$PYTHON" "$FINALIZE" --target "$KB11" 2>&1)" || rc11=$?
+[ "$rc11" -eq 0 ] && ok "#219: no-pyrewire finalize completes with rc=0 (graceful skip)" || bad "#219: no-pyrewire finalize did not exit 0 (rc=$rc11)"
+printf '%s' "$out11" | grep -qF "Logic check SKIPPED" && ok "#219: no-pyrewire summary notes 'Logic check SKIPPED'" || bad "#219: missing 'Logic check SKIPPED' note on no-pyrewire path"
+printf '%s' "$out11" | grep -qF "policy is NOT applied" && ok "#219: no-pyrewire summary stays honest ('policy is NOT applied')" || bad "#219: missing 'policy is NOT applied' honest summary on no-pyrewire path"
+
+# --- #219 (gap 2): logic-policy.extra.dl interaction. A hand-authored typed
+# comparison predicate (#120/#152 shape: arity-2 (entity: symbol, reason: symbol)
+# head, quoted reason, scalar kept in the body) declared in logic-policy.extra.dl
+# must be evaluated by finalize's logic check and surfaced under Policy Findings —
+# and finalize must leave the hand-authored file byte-identical (it only ever
+# regenerates logic-policy.dl, never .extra.dl). Engine-gated: the finding only
+# materialises with pyrewire>=1.0.3 (the typed side-relation is projected into
+# accepted.dl and the extra.dl rule is concatenated onto the loaded policy).
+if "$PYTHON" -c "import pyrewire; raise SystemExit(0 if tuple(int(x) for x in pyrewire.__version__.split('.')[:3])>=(1,0,3) else 1)" >/dev/null 2>&1; then
+  KB12="$(mktemp -d)/wiki"
+  "$PYTHON" -m factlog init --target "$KB12" >/dev/null
+  printf '# src\n\n을서비스 정식 운영.\n' > "$KB12/sources/a.md"
+  printf '[{"subject":"을서비스","relation":"정식_운영","object":"date(2030,1)","source":"sources/a.md","status":"confirmed","confidence":0.9,"note":""}]' > "$KB12/runs/r1.json"
+  printf -- '- `정식_운영` : date as launch_date\n' > "$KB12/policy/typed-relations.md"
+  printf '%s\n%s\n' \
+    '.decl after2030(entity: symbol, reason: symbol)' \
+    'after2030(S, "launch_after_2030") :- launch_date(S, D), D >= 20300101.' \
+    > "$KB12/policy/logic-policy.extra.dl"
+  extra_before12="$($PYTHON -c "import hashlib,sys;print(hashlib.md5(open(sys.argv[1],'rb').read()).hexdigest())" "$KB12/policy/logic-policy.extra.dl")"
+  rc12=0; out12="$("$PYTHON" "$FINALIZE" --target "$KB12" 2>&1)" || rc12=$?
+  extra_after12="$($PYTHON -c "import hashlib,sys;print(hashlib.md5(open(sys.argv[1],'rb').read()).hexdigest())" "$KB12/policy/logic-policy.extra.dl")"
+  [ "$rc12" -eq 0 ] && ok "#219: finalize with a hand-authored extra.dl completes (rc=0)" || bad "#219: finalize broke on a valid logic-policy.extra.dl (rc=$rc12)"
+  [ "$extra_before12" = "$extra_after12" ] && ok "#219: logic-policy.extra.dl left byte-identical (finalize never regenerates it)" || bad "#219: finalize modified hand-authored logic-policy.extra.dl"
+  findings12="$(sed -n '/Policy Findings:/,$p' "$KB12/facts/logic_report.txt" 2>/dev/null)"
+  printf '%s' "$findings12" | grep -qF 'after2030: 을서비스 (launch_after_2030)' && ok "#219: extra.dl typed-comparison predicate is evaluated and surfaced in logic_report.txt" || bad "#219: extra.dl predicate not evaluated/surfaced under Policy Findings"
+else
+  echo "SKIP: pyrewire absent — skipping #219 extra.dl interaction (engine-gated)"
+fi
+
 echo ""
 echo "========================================"
 echo "test_finalize: $pass passed, $fail failed"
