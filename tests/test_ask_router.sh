@@ -286,6 +286,46 @@ if "$PYTHON" -c "import pyrewire; raise SystemExit(0 if tuple(int(x) for x in py
   xc="$(xrouter evaluate 'after2030(E, R)?' | "$PYTHON" -c "import json,sys; print(json.load(sys.stdin)['count'])")"
   if [ "$xc" -ge 1 ]; then ok "#198: extra.dl-only comparison predicate EVALUATES to engine rows with .dl absent ($xc)"; else bad "#198: extra.dl-only comparison predicate returned no rows — silently ignored (parity with check broken)"; fi
   if xrouter render 'after2030(E, R)?' | grep -qF "VERIFIED — engine"; then ok "#198: extra.dl-only comparison predicate renders a VERIFIED — engine answer"; else bad "#198: extra.dl-only comparison predicate not rendered as engine answer"; fi
+
+  # #198 GRACEFUL (engine-eval stage): a PRESENT-but-broken extra.dl carries the
+  # only policy (.dl absent) and now routes to engine (validate rc=0) — but engine
+  # evaluation (run_wirelog: re-loads policy + runs pyrewire) can fail loud in ways
+  # the routing-time loader guard never sees. ask must NOT hard-fail or crash
+  # (#193): render/evaluate must exit rc=0, emit no traceback, and surface a
+  # "policy is unevaluable" warning instead of faking a verified negative. Both
+  # cases below crash/rc!=0 on code that only guards _policy_program_optional.
+
+  # (b) TYPE VIOLATION: a `number` alias compared against an UNSCALED float
+  # (V >= 2.0). run_wirelog's _assert_no_unscaled_number_threshold raises a
+  # FactlogError before the engine runs (#125 scaled-×1000 contract).
+  BKB="$(mktemp -d)/wiki"
+  "$PYTHON" -m factlog init --target "$BKB" >/dev/null
+  printf 'x\n' > "$BKB/sources/a.md"
+  printf '%s\n%s\n' 'subject,relation,object,source,status,confidence,note' '앱,버전,"number(1.5)",sources/a.md,accepted,0.9,' > "$BKB/facts/candidates.csv"
+  printf -- '- `버전` : number as version_num\n' > "$BKB/policy/typed-relations.md"
+  ( cd "$PLUGIN_ROOT" && FACTLOG_ROOT="$BKB" "$PYTHON" tools/compile_facts.py >/dev/null 2>&1 )
+  printf '%s\n%s\n' '.decl after2(entity: symbol, reason: symbol)' 'after2(S, "ge2") :- version_num(S, V), V >= 2.0.' > "$BKB/policy/logic-policy.extra.dl"
+  brouter() { "$PYTHON" "$ROUTER" "$@" --target "$BKB"; }
+  if brouter validate 'after2(E, R)?' >/dev/null 2>&1; then ok "#198 (b) type-violation extra.dl — validate stays rc=0"; else bad "#198 (b) validate hard-failed on a type-violating extra.dl"; fi
+  if brouter render 'after2(E, R)?' >/dev/null 2>&1; then ok "#198 (b) type-violation extra.dl — render stays rc=0 (no crash)"; else bad "#198 (b) render hard-failed/crashed on a type-violating extra.dl (engine-eval guard missing)"; fi
+  if brouter render 'after2(E, R)?' 2>/dev/null | grep -qF "policy is unevaluable"; then ok "#198 (b) render surfaces the 'policy is unevaluable' warning"; else bad "#198 (b) render did not warn that the policy was unevaluable"; fi
+  if brouter render 'after2(E, R)?' 2>/dev/null | grep -qF "verified negative"; then bad "#198 (b) render faked a verified negative for an unevaluable policy"; else ok "#198 (b) render does not fake a verified negative"; fi
+  if brouter evaluate 'after2(E, R)?' >/dev/null 2>&1; then ok "#198 (b) type-violation extra.dl — evaluate stays rc=0"; else bad "#198 (b) evaluate hard-failed on a type-violating extra.dl"; fi
+
+  # (c) BROKEN SYNTAX: a rule body pyrewire cannot parse. run_wirelog's
+  # EasySession raises a pyrewire ParseError — NOT a FactlogError, so run_cli
+  # would not catch it and ask would crash with an uncaught traceback unless the
+  # engine-eval guard catches broad engine exceptions.
+  CKB="$(mktemp -d)/wiki"
+  "$PYTHON" -m factlog init --target "$CKB" >/dev/null
+  printf 'x\n' > "$CKB/sources/a.md"
+  printf '// t\nrelation("Acme API", "uses", "FastAPI").\n' > "$CKB/facts/accepted.dl"
+  printf '%s\n%s\n' '.decl brokenp(entity: symbol, reason: symbol)' 'brokenp(S, "x") :- relation(S, "uses", "FastAPI") @@@garbage.' > "$CKB/policy/logic-policy.extra.dl"
+  ckrouter() { "$PYTHON" "$ROUTER" "$@" --target "$CKB"; }
+  if ckrouter validate 'brokenp(E, R)?' >/dev/null 2>&1; then ok "#198 (c) syntax-broken extra.dl — validate stays rc=0"; else bad "#198 (c) validate hard-failed on a syntax-broken extra.dl"; fi
+  if ckrouter render 'brokenp(E, R)?' >/dev/null 2>&1; then ok "#198 (c) syntax-broken extra.dl — render stays rc=0 (no uncaught pyrewire traceback)"; else bad "#198 (c) render crashed on a pyrewire ParseError (non-FactlogError not caught)"; fi
+  if ckrouter render 'brokenp(E, R)?' 2>/dev/null | grep -qF "policy is unevaluable"; then ok "#198 (c) render surfaces the 'policy is unevaluable' warning"; else bad "#198 (c) render did not warn on the parse error"; fi
+  if ckrouter evaluate 'brokenp(E, R)?' >/dev/null 2>&1; then ok "#198 (c) syntax-broken extra.dl — evaluate stays rc=0"; else bad "#198 (c) evaluate crashed on a pyrewire ParseError"; fi
 else
   echo "SKIP: pyrewire unavailable — skipping policy-predicate evaluation assertions"
 fi
