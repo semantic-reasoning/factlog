@@ -1672,7 +1672,11 @@ is_variable = _is_variable
 quoted_constants = _quoted_constants
 
 
-def _relation_match_count(query: str, facts: list[dict[str, str]]) -> int:
+def _relation_match_count(
+    query: str,
+    facts: list[dict[str, str]],
+    aliases: dict[str, str] | None = None,
+) -> int:
     if query.startswith("relation"):
         args = _query_args(query)
         if len(args) != 3:
@@ -1681,10 +1685,15 @@ def _relation_match_count(query: str, facts: list[dict[str, str]]) -> int:
         # quoted canonical name (i.e. its surface_variants set is non-empty).
         # This lets a canonical query count surface-variant rows so the validator
         # returns QUERY_OK (not QUERY_FACT_ABSENT) when matching rows exist.
+        # *aliases* lets classify_query share the single relation_aliases() read
+        # it already performed for the canonical-acceptance check (#242); None
+        # keeps the original lazy per-call fetch, so the read (and its
+        # raise-on-malformed-file) stays gated to a quoted relation arg exactly
+        # as before — no new call path is exposed to that raise.
         rel_arg = args[1]
         canonical_variants: set[str] = set()
         if _is_quoted_string(rel_arg):
-            _aliases = relation_aliases()
+            _aliases = relation_aliases() if aliases is None else aliases
             canonical_variants = canonical_variants_of(_arg_value(rel_arg), _aliases)
         count = 0
         for row in facts:
@@ -1769,17 +1778,25 @@ def classify_query(
         subject, relation, object_ = args
         if not _is_variable(subject) and _arg_value(subject) not in entities:
             return False, QUERY_ENTITY_NOT_ACCEPTED, f"relation subject is not an accepted entity: {_arg_value(subject)}"
+        # Read relation_aliases() at most once per relation query and hand it to
+        # _relation_match_count below: the canonical-acceptance check here and the
+        # match count were the two sites that each re-read it per relation query
+        # (#242). The read stays gated to a quoted canonical not literally in
+        # accepted.dl, so which queries can trigger its raise-on-malformed-file is
+        # unchanged (a variable/known-variant relation never reads it here).
+        _rel_aliases: dict[str, str] | None = None
         if not _is_variable(relation) and _arg_value(relation) not in relations:
             # A declared canonical name (one whose surface_variants is non-empty)
             # counts as accepted even though the canonical itself may not appear
             # literally in accepted.dl — the stored facts use surface variants.
-            if not canonical_variants_of(_arg_value(relation), relation_aliases()):
+            _rel_aliases = relation_aliases()
+            if not canonical_variants_of(_arg_value(relation), _rel_aliases):
                 return False, QUERY_RELATION_NOT_ACCEPTED, f"relation name is not accepted: {_arg_value(relation)}"
         if not _is_variable(object_) and _canonical_value(_arg_value(object_)) not in {
             _canonical_value(v) for v in values
         }:
             return False, QUERY_ENTITY_NOT_ACCEPTED, f"relation object is not an accepted entity: {_arg_value(object_)}"
-        if _relation_match_count(query, facts) == 0:
+        if _relation_match_count(query, facts, _rel_aliases) == 0:
             return False, QUERY_FACT_ABSENT, "relation query does not match accepted facts"
         return True, QUERY_OK, "passed"
     if predicate == "path":
