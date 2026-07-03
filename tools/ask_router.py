@@ -66,6 +66,7 @@ from common import (  # noqa: E402
     LOGIC_POLICY_DL,
     QUERY_FACT_ABSENT,
     QUERY_OK,
+    FactlogError,
     arg_value,
     canonical_value,
     is_quoted_string,
@@ -90,29 +91,46 @@ from factlog import literal_types  # noqa: E402
 
 def _policy_program_optional() -> str:
     """Return the fully assembled policy text — the generated `logic-policy.dl`
-    PLUS the optional hand-authored `logic-policy.extra.dl` — or '' if the policy
-    has not been generated yet.
+    PLUS the optional hand-authored `logic-policy.extra.dl` — or '' if no usable
+    policy can be assembled yet.
 
     `/factlog ask` is interactive and must work before `/factlog check` compiles
-    `policy/logic-policy.dl`. When the compiled `logic-policy.dl` is present,
-    reading the *assembled* program (via `load_logic_policy()`, which concatenates
-    `logic-policy.extra.dl`) — not just the generated file — lets ask see and
-    evaluate user-authored comparison predicates declared in
-    `logic-policy.extra.dl` (#152), matching what `/factlog check` evaluates.
+    `policy/logic-policy.dl`. Reading the *assembled* program via the SAME loader
+    `/factlog check` uses — `load_logic_policy()` → `common._load_logic_policy_from`,
+    which merges `logic-policy.extra.dl` onto the compiled base — is the single
+    source of truth, so ask and check never drift on what the policy program IS.
+    That loader already merges `logic-policy.extra.dl` even when the compiled
+    `logic-policy.dl` is ABSENT (#190), so a hand-authored comparison predicate
+    that lives ONLY in extra.dl (no compiled .dl, no rules in logic-policy.md) is
+    now seen and evaluated here, matching check (#198 — closes the ask≠check gap
+    where extra.dl was silently ignored when the .dl was absent, #152/#120).
     Both the classify/route path and the evaluate/render path read this, so one
     source of truth fixes both.
 
-    LIMITATION (not yet parity with check): when `logic-policy.dl` is ABSENT this
-    short-circuits to '' — it does NOT merge a hand-authored `logic-policy.extra.dl`,
-    whereas `/factlog check` does (common._load_logic_policy_from). So an extra.dl
-    that carries the *only* policy (no compiled .dl, no rules in logic-policy.md)
-    is still silently unevaluated here. #193 closes the `logic-policy.md`-rules
-    case (see `_policy_uncompiled`, which warns on it); the extra.dl-only-when-.dl-
-    absent parity is a separate residual left for a follow-up.
+    NON-RAISING by contract (#193): `_load_logic_policy_from` fails loud in a few
+    cases (`logic-policy.dl` absent WHILE `logic-policy.md` defines uncompiled
+    rules; a `canonical/3` head in the policy text) — the right behavior for the
+    `check` verification gate, but ask is exploratory and must never hard-fail.
+    We reuse the whole loader and catch `FactlogError` here rather than forking
+    just its extra.dl-merge tail (which would duplicate logic and invite drift):
+    on a LOAD-STAGE failure this returns '' (no policy applied). The uncompiled-
+    but-authored `logic-policy.md` case is still surfaced separately as a warning
+    by `_policy_uncompiled` (not silently dropped), so #193's behavior is intact —
+    an empty return here + that warning, exactly as before.
+
+    Scope note: this guards only the LOAD stage. The ENGINE-EVALUATION stage
+    (`evaluate` -> `common.run_wirelog`) re-loads the policy AND runs pyrewire, so
+    a present-but-broken `logic-policy.extra.dl` (an unscaled `number` threshold,
+    or a syntax error the loader does not parse) can still fail there — including
+    with a NON-`FactlogError` pyrewire exception. That stage is guarded separately
+    at the `run_wirelog()` call in `evaluate` (degrading to a `policy_unevaluable`
+    signal the render/evaluate commands surface as POLICY_UNEVALUABLE_WARNING),
+    because it is a distinct failure surface this loader helper never reaches.
     """
-    if not LOGIC_POLICY_DL.is_file():
+    try:
+        return load_logic_policy()
+    except FactlogError:
         return ""
-    return load_logic_policy()
 
 
 # Greppable one-line hint shown when the author wrote policy rules but never
@@ -123,6 +141,19 @@ POLICY_UNCOMPILED_WARNING = (
     "WARNING: policy is uncompiled — policy/logic-policy.md defines rules but "
     "policy/logic-policy.dl is absent, so policy is being IGNORED in this answer. "
     "Run tools/generate_logic_policy.py (or /factlog add) to compile it."
+)
+
+# Greppable one-line hint shown when a hand-authored logic-policy.extra.dl is
+# PRESENT but the engine cannot evaluate it (a type-violating threshold, broken
+# .dl syntax, etc.). Distinct from POLICY_UNCOMPILED_WARNING (uncompiled
+# logic-policy.md rules) — the file and the failure mode differ. ask is graceful
+# (#193): rather than crash or fake a verified negative, it answers WITHOUT the
+# broken policy and says so; `{reason}` carries the engine/loader message so the
+# author can fix the file.
+POLICY_UNEVALUABLE_WARNING = (
+    "WARNING: policy is unevaluable — policy/logic-policy.extra.dl could not be "
+    "evaluated by the engine, so this answer was produced WITHOUT policy. Fix "
+    "policy/logic-policy.extra.dl. Reason: {reason}"
 )
 
 
@@ -296,7 +327,22 @@ def evaluate(draft: str, facts: list[dict[str, str]]) -> dict[str, object]:
             ]
         return {"rows": rows, "count": len(rows)}
     if predicate in policy_predicates(_policy_program_optional()):
-        inferred = run_wirelog()
+        # Engine evaluation of a policy predicate re-loads the policy program AND
+        # runs pyrewire (common.run_wirelog): a hand-authored logic-policy.extra.dl
+        # can make this fail loud in TWO ways the routing-time loader guard does
+        # NOT cover — a FactlogError (e.g. an unscaled `number` threshold,
+        # _assert_no_unscaled_number_threshold) or a pyrewire ParseError from
+        # broken .dl syntax (NOT a FactlogError, so run_cli would not catch it and
+        # ask would crash with a traceback). ask is exploratory and must never
+        # hard-fail (#193). Degrade to a signalled empty result the callers surface
+        # as a warning instead of a verified answer (rendering [] here would fake a
+        # verified negative). Catch broad Exception — never BaseException, so
+        # KeyboardInterrupt/SystemExit still propagate — because the engine may
+        # raise non-FactlogError types.
+        try:
+            inferred = run_wirelog()
+        except Exception as exc:  # noqa: BLE001 — engine/loader raise non-FactlogError too
+            return {"rows": [], "count": 0, "policy_unevaluable": str(exc)}
         rows = []
         for row in sorted(inferred.get(predicate, set())):
             if args and is_quoted_string(args[0]) and (not row or arg_value(args[0]) != row[0]):
@@ -662,10 +708,28 @@ def cmd_render(args: argparse.Namespace) -> int:
         else:
             # Positive engine answer: relation, path, and policy predicates are all
             # evaluated by the engine and rendered (0 rows -> a verified-empty
-            # result, never a wiki fallback). Answer-quality signals (sources/
-            # extraction-conf/staleness) annotate relation rows only (the (s,r,o)
-            # key is a relation triple); gate on the predicate so path/policy rows
-            # are never annotated by a coincidental 3-element shape.
+            # result, never a wiki fallback).
+            result = evaluate(args.draft, facts)
+            if result.get("policy_unevaluable"):
+                # A policy predicate needs the engine, but the hand-authored policy
+                # could not be evaluated (broken logic-policy.extra.dl). Do NOT
+                # render an empty engine answer — that would fake a verified
+                # negative. Degrade to a wiki directive + a warning, rc 0: ask never
+                # crashes or hard-fails on a human extra.dl mistake (#193).
+                print(json.dumps(
+                    {
+                        "route": "wiki",
+                        "reason": "policy unevaluable — logic-policy.extra.dl could not be evaluated",
+                        "policy_uncompiled": decision["policy_uncompiled"],
+                    },
+                    ensure_ascii=False,
+                ))
+                print(POLICY_UNEVALUABLE_WARNING.format(reason=result["policy_unevaluable"]))
+                return 0
+            # Answer-quality signals (sources/extraction-conf/staleness) annotate
+            # relation rows only (the (s,r,o) key is a relation triple); gate on the
+            # predicate so path/policy rows are never annotated by a coincidental
+            # 3-element shape.
             is_relation = decision["predicate"] == "relation"
             signals = (
                 fact_signals(load_facts(), Path(os.environ["FACTLOG_ROOT"]))
@@ -674,7 +738,7 @@ def cmd_render(args: argparse.Namespace) -> int:
             )
             print(render_engine_answer(
                 args.draft,
-                evaluate(args.draft, facts)["rows"],
+                result["rows"],
                 signals,
                 annotate_objects=is_relation,
             ))

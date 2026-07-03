@@ -129,15 +129,34 @@ if router render 'relation("Acme API", "uses", V)?' | grep -qF "policy is uncomp
 rm -f "$KB/policy/logic-policy.dl"
 printf '%s\n' "$POLICY_MD_BAK" > "$KB/policy/logic-policy.md"   # restore benign prose-only policy
 
-# #209 (B) / #198 (KNOWN LIMITATION, documented not endorsed): rules living ONLY in
-# logic-policy.extra.dl (with logic-policy.dl absent) do NOT trip the uncompiled
-# warning, because _policy_uncompiled inspects only logic-policy.dl + logic-policy.md.
-# ask thus answers with the extra.dl policy IGNORED and stays silent. This assertion
-# PINS the current (silent) behavior so a future partial fix can't regress it
-# unnoticed; the real parity fix belongs to #198, not here.
+# #198 (PARITY FIX): rules living ONLY in logic-policy.extra.dl (with logic-policy.dl
+# ABSENT) are now LOADED and evaluated by ask, matching /factlog check — they are no
+# longer silently ignored. _policy_program_optional reuses common.load_logic_policy()
+# (the same loader check uses, which merges extra.dl onto an empty base when the .dl
+# is absent, #190). CORE REGRESSION GUARD: routing keys on policy_predicates() over
+# _policy_program_optional(), which is pure regex over the assembled program (no
+# pyrewire), so the route=engine assertion runs everywhere and fails on pre-#198 code
+# (which short-circuited to '' when the .dl was absent -> unknown_predicate -> wiki).
+# The extra.dl-only case still does NOT trip the uncompiled-md warning: _policy_uncompiled
+# inspects logic-policy.dl + logic-policy.md only (extra.dl is a real, applied policy,
+# not an uncompiled-md defect) — so #193's benign no-md-rules tolerance is preserved.
 printf '.decl uses_fastapi(entity: symbol, reason: symbol)\nuses_fastapi(S, "uses_fastapi") :- relation(S, "uses", "FastAPI").\n' > "$KB/policy/logic-policy.extra.dl"
-check_field "extra.dl-only rules do not flag uncompiled (#198 known limitation)" validate 'relation("Acme API", "uses", V)?' policy_uncompiled False
-if router render 'relation("Acme API", "uses", V)?' | grep -qF "policy is uncompiled"; then bad "extra.dl-only KB warned uncompiled — #198 status changed; update this pin"; else ok "extra.dl-only KB stays silent (current behavior pinned; parity tracked in #198)"; fi
+check_field "extra.dl-only predicate routes engine, not ignored (#198 fix, pre-fix -> wiki)" validate 'uses_fastapi(E, R)?' route engine
+check_field "extra.dl-only predicate code=ok (#198)" validate 'uses_fastapi(E, R)?' code ok
+check_field "extra.dl-only rules do not flag uncompiled-md (#193 preserved)" validate 'relation("Acme API", "uses", V)?' policy_uncompiled False
+if router render 'relation("Acme API", "uses", V)?' | grep -qF "policy is uncompiled"; then bad "extra.dl-only KB warned uncompiled — extra.dl is an applied policy, not an uncompiled-md defect"; else ok "extra.dl-only KB emits no uncompiled-md warning (#193 preserved)"; fi
+rm -f "$KB/policy/logic-policy.extra.dl"
+
+# #198 graceful: a MALFORMED extra.dl that makes the shared loader raise
+# (_load_logic_policy_from fails loud on a canonical/3 head in the policy text —
+# the exact fail-loud check is a NEEDS for /factlog check) must NOT hard-fail ask.
+# _policy_program_optional catches FactlogError and degrades to no policy (''), so
+# the predicate is unknown -> honest wiki route, rc 0 — ask never raises (#193
+# contract). check stays loud on the same input; only ask degrades.
+printf 'canonical("x", "y", "z").\n.decl bogusp(e: symbol)\nbogusp(S) :- relation(S, "uses", "FastAPI").\n' > "$KB/policy/logic-policy.extra.dl"
+if router validate 'relation("Acme API", "uses", V)?' >/dev/null 2>&1; then ok "malformed extra.dl (canonical head) — ask validate stays graceful (rc 0)"; else bad "malformed extra.dl hard-failed ask validate (must degrade, not raise — #193)"; fi
+if router render 'bogusp(S)?' >/dev/null 2>&1; then ok "malformed extra.dl — ask render stays graceful (rc 0), predicate degrades to wiki"; else bad "malformed extra.dl hard-failed ask render"; fi
+check_field "malformed extra.dl — predicate degrades to wiki (no policy applied)" validate 'bogusp(S)?' route wiki
 rm -f "$KB/policy/logic-policy.extra.dl"
 
 # --- regression: an unaccepted relation name containing the fact-absence
@@ -235,6 +254,78 @@ if "$PYTHON" -c "import pyrewire; raise SystemExit(0 if tuple(int(x) for x in py
   rm -f "$KB/policy/logic-policy.extra.dl"
 
   rm -f "$KB/policy/logic-policy.dl" "$KB/policy/logic-policy.md"
+
+  # #198 engine-eval guard: a hand-authored TYPED-COMPARISON predicate (after2030,
+  # #120/#152 pattern) living ONLY in logic-policy.extra.dl — with logic-policy.dl
+  # ABSENT — must be evaluated by the engine (run_wirelog) via ask, matching check.
+  # Self-contained KB with a launch_date typed relation projected from candidates,
+  # NO compiled logic-policy.dl, and the comparison rule in extra.dl. Pre-#198,
+  # _policy_program_optional short-circuited to '' when the .dl was absent, so this
+  # predicate was unknown -> wiki and never evaluated (the silent-ignore bug).
+  XKB="$(mktemp -d)/wiki"
+  "$PYTHON" -m factlog init --target "$XKB" >/dev/null
+  printf 'x\n' > "$XKB/sources/a.md"
+  printf '%s\n%s\n' \
+    'subject,relation,object,source,status,confidence,note' \
+    '을서비스,정식_운영,"date(2030,1)",sources/a.md,accepted,0.9,' > "$XKB/facts/candidates.csv"
+  printf -- '- `정식_운영` : date as launch_date\n' > "$XKB/policy/typed-relations.md"
+  ( cd "$PLUGIN_ROOT" && FACTLOG_ROOT="$XKB" "$PYTHON" tools/compile_facts.py >/dev/null 2>&1 )
+  printf '%s\n%s\n' \
+    '.decl after2030(entity: symbol, reason: symbol)' \
+    'after2030(S, "launch_after_2030") :- launch_date(S, D), D >= 20300101.' \
+    > "$XKB/policy/logic-policy.extra.dl"
+  # logic-policy.dl intentionally absent here — this is the #198 case.
+  [ -f "$XKB/policy/logic-policy.dl" ] && bad "#198 guard setup: logic-policy.dl must be absent" || ok "#198 guard: logic-policy.dl absent (extra.dl carries the only policy)"
+  xrouter() { "$PYTHON" "$ROUTER" "$@" --target "$XKB"; }
+  check_field_x() {  # like check_field but targets XKB
+    local desc="$1" sub="$2" draft="$3" key="$4" expected="$5"
+    local got; got="$(xrouter "$sub" "$draft" | field "$key")"
+    if [ "$got" = "$expected" ]; then ok "$desc ($key=$got)"; else bad "$desc — expected $key=$expected, got $got"; fi
+  }
+  check_field_x "#198: extra.dl-only comparison predicate routes engine (.dl absent)" validate 'after2030(E, R)?' route engine
+  xc="$(xrouter evaluate 'after2030(E, R)?' | "$PYTHON" -c "import json,sys; print(json.load(sys.stdin)['count'])")"
+  if [ "$xc" -ge 1 ]; then ok "#198: extra.dl-only comparison predicate EVALUATES to engine rows with .dl absent ($xc)"; else bad "#198: extra.dl-only comparison predicate returned no rows — silently ignored (parity with check broken)"; fi
+  if xrouter render 'after2030(E, R)?' | grep -qF "VERIFIED — engine"; then ok "#198: extra.dl-only comparison predicate renders a VERIFIED — engine answer"; else bad "#198: extra.dl-only comparison predicate not rendered as engine answer"; fi
+
+  # #198 GRACEFUL (engine-eval stage): a PRESENT-but-broken extra.dl carries the
+  # only policy (.dl absent) and now routes to engine (validate rc=0) — but engine
+  # evaluation (run_wirelog: re-loads policy + runs pyrewire) can fail loud in ways
+  # the routing-time loader guard never sees. ask must NOT hard-fail or crash
+  # (#193): render/evaluate must exit rc=0, emit no traceback, and surface a
+  # "policy is unevaluable" warning instead of faking a verified negative. Both
+  # cases below crash/rc!=0 on code that only guards _policy_program_optional.
+
+  # (b) TYPE VIOLATION: a `number` alias compared against an UNSCALED float
+  # (V >= 2.0). run_wirelog's _assert_no_unscaled_number_threshold raises a
+  # FactlogError before the engine runs (#125 scaled-×1000 contract).
+  BKB="$(mktemp -d)/wiki"
+  "$PYTHON" -m factlog init --target "$BKB" >/dev/null
+  printf 'x\n' > "$BKB/sources/a.md"
+  printf '%s\n%s\n' 'subject,relation,object,source,status,confidence,note' '앱,버전,"number(1.5)",sources/a.md,accepted,0.9,' > "$BKB/facts/candidates.csv"
+  printf -- '- `버전` : number as version_num\n' > "$BKB/policy/typed-relations.md"
+  ( cd "$PLUGIN_ROOT" && FACTLOG_ROOT="$BKB" "$PYTHON" tools/compile_facts.py >/dev/null 2>&1 )
+  printf '%s\n%s\n' '.decl after2(entity: symbol, reason: symbol)' 'after2(S, "ge2") :- version_num(S, V), V >= 2.0.' > "$BKB/policy/logic-policy.extra.dl"
+  brouter() { "$PYTHON" "$ROUTER" "$@" --target "$BKB"; }
+  if brouter validate 'after2(E, R)?' >/dev/null 2>&1; then ok "#198 (b) type-violation extra.dl — validate stays rc=0"; else bad "#198 (b) validate hard-failed on a type-violating extra.dl"; fi
+  if brouter render 'after2(E, R)?' >/dev/null 2>&1; then ok "#198 (b) type-violation extra.dl — render stays rc=0 (no crash)"; else bad "#198 (b) render hard-failed/crashed on a type-violating extra.dl (engine-eval guard missing)"; fi
+  if brouter render 'after2(E, R)?' 2>/dev/null | grep -qF "policy is unevaluable"; then ok "#198 (b) render surfaces the 'policy is unevaluable' warning"; else bad "#198 (b) render did not warn that the policy was unevaluable"; fi
+  if brouter render 'after2(E, R)?' 2>/dev/null | grep -qF "verified negative"; then bad "#198 (b) render faked a verified negative for an unevaluable policy"; else ok "#198 (b) render does not fake a verified negative"; fi
+  if brouter evaluate 'after2(E, R)?' >/dev/null 2>&1; then ok "#198 (b) type-violation extra.dl — evaluate stays rc=0"; else bad "#198 (b) evaluate hard-failed on a type-violating extra.dl"; fi
+
+  # (c) BROKEN SYNTAX: a rule body pyrewire cannot parse. run_wirelog's
+  # EasySession raises a pyrewire ParseError — NOT a FactlogError, so run_cli
+  # would not catch it and ask would crash with an uncaught traceback unless the
+  # engine-eval guard catches broad engine exceptions.
+  CKB="$(mktemp -d)/wiki"
+  "$PYTHON" -m factlog init --target "$CKB" >/dev/null
+  printf 'x\n' > "$CKB/sources/a.md"
+  printf '// t\nrelation("Acme API", "uses", "FastAPI").\n' > "$CKB/facts/accepted.dl"
+  printf '%s\n%s\n' '.decl brokenp(entity: symbol, reason: symbol)' 'brokenp(S, "x") :- relation(S, "uses", "FastAPI") @@@garbage.' > "$CKB/policy/logic-policy.extra.dl"
+  ckrouter() { "$PYTHON" "$ROUTER" "$@" --target "$CKB"; }
+  if ckrouter validate 'brokenp(E, R)?' >/dev/null 2>&1; then ok "#198 (c) syntax-broken extra.dl — validate stays rc=0"; else bad "#198 (c) validate hard-failed on a syntax-broken extra.dl"; fi
+  if ckrouter render 'brokenp(E, R)?' >/dev/null 2>&1; then ok "#198 (c) syntax-broken extra.dl — render stays rc=0 (no uncaught pyrewire traceback)"; else bad "#198 (c) render crashed on a pyrewire ParseError (non-FactlogError not caught)"; fi
+  if ckrouter render 'brokenp(E, R)?' 2>/dev/null | grep -qF "policy is unevaluable"; then ok "#198 (c) render surfaces the 'policy is unevaluable' warning"; else bad "#198 (c) render did not warn on the parse error"; fi
+  if ckrouter evaluate 'brokenp(E, R)?' >/dev/null 2>&1; then ok "#198 (c) syntax-broken extra.dl — evaluate stays rc=0"; else bad "#198 (c) evaluate crashed on a pyrewire ParseError"; fi
 else
   echo "SKIP: pyrewire unavailable — skipping policy-predicate evaluation assertions"
 fi
