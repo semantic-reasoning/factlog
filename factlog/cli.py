@@ -1860,7 +1860,17 @@ def cmd_ingest(args: argparse.Namespace) -> int:
                 print(f"    - {ref}", file=sys.stderr)
     if not work:
         if args.scan:
-            print("factlog ingest --scan: no binary source files to convert")
+            # Even with nothing to convert, report the ignored counts so the
+            # summary arithmetic (converted+skipped+failed+ignored == discovered)
+            # holds when every discovered conversion target was set aside (#215):
+            # a per-file warning above is not a count line.
+            tail = []
+            if scan_nonbinary_refs:
+                tail.append(f"{len(scan_nonbinary_refs)} ignored (binary extension, non-binary content)")
+            if scan_empty_refs:
+                tail.append(f"{len(scan_empty_refs)} ignored (empty file)")
+            note = (" (" + ", ".join(tail) + ")") if tail else ""
+            print(f"factlog ingest --scan: no binary source files to convert{note}")
             return 0
         print("factlog ingest: no input files (give file paths or --scan)", file=sys.stderr)
         return 2
