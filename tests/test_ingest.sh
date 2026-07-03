@@ -309,6 +309,62 @@ printf '%s' "$scanout" | grep -qF "notes.txt" \
   && bad "#215 --scan wrongly flagged a legit plain .txt source" \
   || ok "#215 --scan leaves a legit plain-text source unflagged (no false positive)"
 
+# 8b. #215 (first acceptance criterion): the --scan summary arithmetic must
+#     balance — converted + skipped + failed + ignored == discovered conversion
+#     targets. Sum the counts from the summary line(s) and compare to the number
+#     of recognized-extension originals. Covers BOTH a mixed KB (a real summary
+#     line) and an all-ignored KB (the early-return "no ... to convert" note),
+#     so neither path can silently lose a file's contribution to the total.
+#
+# extract_ignored: total files reported "ignored" across both ignore classes.
+extract_ignored() {  # extract_ignored <output>  -> echoes the summed ignored count
+  local total=0 n
+  while read -r n; do
+    [ -n "$n" ] && total=$((total + n))
+  done < <(printf '%s' "$1" \
+    | grep -oE "[0-9]+ ignored \((binary extension, non-binary content|empty file)\)" \
+    | grep -oE "^[0-9]+")
+  echo "$total"
+}
+
+# Mixed KB: 1 real binary + 1 non-binary (.hwpx-ext plaintext) + 1 zero-byte.
+MIXKB="$(mktemp -d)/wiki"
+"${FACTLOG[@]}" init --target "$MIXKB" >/dev/null
+make_hwpx "$MIXKB/sources/real.hwpx" "real body"
+printf 'plain text pretending to be hwpx\n' > "$MIXKB/sources/fake.hwpx"
+: > "$MIXKB/sources/zero.hwpx"
+mixout="$("${FACTLOG[@]}" ingest --scan --target "$MIXKB" 2>&1)"
+mixline="$(printf '%s' "$mixout" | grep -E "^factlog ingest: [0-9]+ converted")"
+m_conv="$(printf '%s' "$mixline"  | grep -oE "[0-9]+ converted"  | grep -oE "^[0-9]+")"
+m_skip="$(printf '%s' "$mixline"  | grep -oE "[0-9]+ skipped"    | grep -oE "^[0-9]+")"
+m_fail="$(printf '%s' "$mixline"  | grep -oE "[0-9]+ failed"     | grep -oE "^[0-9]+")"
+m_ign="$(extract_ignored "$mixline")"
+m_sum=$(( m_conv + m_skip + m_fail + m_ign ))
+[ "$m_conv" = "1" ] && ok "#215 mixed KB: the real binary is counted as converted" \
+  || bad "#215 mixed KB: real binary not converted (got '$mixline')"
+[ "$m_ign" = "2" ] && ok "#215 mixed KB: fake + zero counted as ignored (2)" \
+  || bad "#215 mixed KB: ignored count wrong (got $m_ign; line: '$mixline')"
+[ "$m_sum" = "3" ] \
+  && ok "#215 mixed KB: summary arithmetic balances (converted+skipped+failed+ignored == 3 discovered)" \
+  || bad "#215 mixed KB: summary arithmetic off (sum=$m_sum, expected 3; line: '$mixline')"
+
+# All-ignored KB: no convertible binary → the early-return note must still carry
+# the ignored counts (INFO 1) so the arithmetic (0 converted + 2 ignored == 2)
+# is visible, not just per-file warnings.
+ALLKB="$(mktemp -d)/wiki"
+"${FACTLOG[@]}" init --target "$ALLKB" >/dev/null
+printf 'plain\n' > "$ALLKB/sources/fake.hwpx"
+: > "$ALLKB/sources/zero.hwpx"
+allout="$("${FACTLOG[@]}" ingest --scan --target "$ALLKB" 2>&1)"
+allnote="$(printf '%s' "$allout" | grep -E "no binary source files to convert")"
+printf '%s' "$allnote" | grep -qE "ignored" \
+  && ok "#215 all-ignored KB: the no-convert summary line carries the ignored counts (INFO 1)" \
+  || bad "#215 all-ignored KB: no-convert line lost the ignored counts (got '$allnote')"
+a_ign="$(extract_ignored "$allnote")"
+[ "$a_ign" = "2" ] \
+  && ok "#215 all-ignored KB: summary arithmetic balances (0 converted + 2 ignored == 2 discovered)" \
+  || bad "#215 all-ignored KB: ignored count wrong (got $a_ign; line: '$allnote')"
+
 # ---------------------------------------------------------------------------
 # 9. #229: a conversion whose body is only the provenance header (a scanned/
 #    image PDF -> pdftotext exits 0 with empty text) is counted as
