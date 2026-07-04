@@ -700,6 +700,16 @@ and carry no extraction confidence by construction. The verdict stays binary in
 every case. For an out-of-band trace (any fact, full or partial triple, all
 statuses), use `factlog provenance <subject> [relation] [object]`.
 
+A verified-negative relation query may additionally carry an informational
+`note: ... (possible predicate mismatch): ...` line (#189). It appears **only**
+when the queried subject is an accepted entity that has **no** fact under the
+queried relation yet **does** carry fact(s) under other relations — so a user can
+tell a *predicate mismatch* ("I asked the wrong relation") from an *honest
+absence* ("there really is no such fact"). It is purely observational: the
+verdict, routing, storage, and provenance are unchanged, and no hint is emitted
+for a genuine absence (subject has zero facts) or an object mismatch (subject has
+the relation, just not that object). Show it verbatim beneath the verdict block.
+
 ### Step 3b — Wiki exploration (UNVERIFIED)
 
 ```bash

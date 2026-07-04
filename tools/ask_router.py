@@ -253,6 +253,105 @@ def evaluate_relation(draft: str, facts: list[dict[str, str]]) -> list[list[str]
     return rows
 
 
+def coverage_hint(
+    draft: str,
+    facts: list[dict[str, str]],
+    max_relations: int = 6,
+) -> str | None:
+    """Informational coverage hint for a verified-negative relation query (#189).
+
+    When ``relation("S", "R", O)?`` is a VERIFIED NEGATIVE (0 rows) yet the subject
+    ``S`` is an accepted entity that carries fact(s) under OTHER relations, return a
+    single informational line naming those relations — so a user can tell a
+    *predicate mismatch* ("I asked the wrong relation") apart from an *honest
+    absence* ("there really is no such fact"). Deterministic and in-memory: reads
+    only the accepted facts already loaded by the caller; writes nothing; never
+    changes the verdict, routing, storage, or provenance — it is an ADDED line.
+
+    Returns None (no hint) in every case that could produce a false positive:
+      - the query is NOT a VERIFIED NEGATIVE (``classify`` route != engine OR
+        negative == False) — e.g. an accepted subject with an UNACCEPTED object
+        routes to wiki, and a wiki/positive answer must never carry this hint.
+        This is the SAME gate ``cmd_render`` applies (``decision["negative"]``),
+        reused via ``classify`` so render and evaluate never drift on scope;
+      - predicate is not ``relation`` (path/count/policy carry no predicate
+        mismatch), or the query is not a 3-arg relation;
+      - the subject or relation argument is a variable (no concrete predicate to
+        point at — a predicate-mismatch hint would be meaningless);
+      - the subject is NOT an accepted entity (an unknown subject is already
+        wiki-routed; never fabricate a hint for it);
+      - the subject DOES have fact(s) under the queried relation R (then the empty
+        result is an OBJECT mismatch, not a predicate mismatch — no hint);
+      - the subject has NO fact under any other relation either (a genuine
+        verified negative — the honest-absence value we must preserve).
+
+    Relation names are compared canonically (matching ``evaluate_relation``), and
+    the queried relation's declared surface variants are treated as the same
+    predicate, so an alias never masquerades as an "other" relation. The listed
+    relations are sorted deterministically and capped at *max_relations*.
+    """
+    if _predicate_of(draft) != "relation":
+        return None
+    args = query_args(draft)
+    if len(args) != 3:
+        return None
+    s_arg, r_arg, _o_arg = args
+    # A predicate-mismatch hint only makes sense for a concrete subject AND a
+    # concrete queried predicate; a variable in either position has nothing to
+    # compare against.
+    if not (is_quoted_string(s_arg) and is_quoted_string(r_arg)):
+        return None
+    # SCOPE GATE (single source of truth with cmd_render): the hint is defined only
+    # for a VERIFIED NEGATIVE engine answer. Reuse classify — exactly what render
+    # branches on via decision["negative"] — so an accepted subject with an
+    # unaccepted object (route=wiki, negative=False) or a positive answer never
+    # emits the hint, keeping the machine (evaluate) and human (render) outputs on
+    # the same contract with no drift.
+    decision = classify(draft, facts)
+    if decision["route"] != "engine" or not decision["negative"]:
+        return None
+    subject = arg_value(s_arg)
+    # A verified negative already guarantees the subject is accepted; this canonical
+    # membership check is a defensive guard (never fabricate a hint for an unknown
+    # subject) aligned with the canonical counting below — so an amount/date
+    # compound subject is matched consistently, not by raw string.
+    accepted_entities_c = {canonical_value(e) for e in entity_set(facts)}
+    if canonical_value(subject) not in accepted_entities_c:
+        return None
+    subject_c = canonical_value(subject)
+    queried_rels = {canonical_value(arg_value(r_arg))} | {
+        canonical_value(v) for v in canonical_variants_of(arg_value(r_arg), relation_aliases())
+    }
+    other_relations: set[str] = set()
+    other_facts = 0
+    queried_facts = 0
+    for row in facts:
+        if canonical_value(row["subject"]) != subject_c:
+            continue
+        if canonical_value(row["relation"]) in queried_rels:
+            queried_facts += 1
+        else:
+            other_facts += 1
+            other_relations.add(row["relation"])
+    # The subject HAS the queried relation (just not this object): an object
+    # mismatch, not a predicate mismatch — no hint.
+    if queried_facts:
+        return None
+    # Honest verified negative: the subject has no fact under any other relation
+    # either. Preserve the "verified absence" value — emit nothing.
+    if not other_relations:
+        return None
+    shown = sorted(other_relations)[:max_relations]
+    listing = ", ".join(shown)
+    if len(other_relations) > len(shown):
+        listing += ", ..."
+    return (
+        f"note: no verified '{arg_value(r_arg)}' for '{subject}', but '{subject}' has "
+        f"{other_facts} fact(s) under other relations (possible predicate mismatch): "
+        f"{listing}"
+    )
+
+
 def _reachable_pairs(facts: list[dict[str, str]]) -> set[tuple[str, str]]:
     """Transitive closure of edge(S,O) :- relation(S, _, O), pure-python.
 
@@ -291,7 +390,14 @@ def evaluate(draft: str, facts: list[dict[str, str]]) -> dict[str, object]:
     args = query_args(draft)
     if predicate == "relation":
         rows = evaluate_relation(draft, facts)
-        return {"rows": rows, "count": len(rows)}
+        result: dict[str, object] = {"rows": rows, "count": len(rows)}
+        # Optional, additive coverage hint (#189) for a verified-negative relation
+        # query — never changes rows/count, only appended when informative.
+        if not rows:
+            hint = coverage_hint(draft, facts)
+            if hint:
+                result["coverage_hint"] = hint
+        return result
     if predicate == "count":
         # count(subject, relation)? -> number of distinct objects (a verified
         # aggregate; 0 is a real answer). Rendered as a single value row.
@@ -702,6 +808,13 @@ def cmd_render(args: argparse.Namespace) -> int:
         # so it is always renderable as an engine answer — never demoted.
         if decision["negative"]:
             print(render_engine_answer(args.draft, []))
+            # Additive coverage hint (#189): if this verified-negative relation
+            # query has an accepted subject that carries fact(s) under OTHER
+            # relations, surface a predicate-mismatch note. The verdict block above
+            # is untouched — this is an extra line, not a change to the answer.
+            hint = coverage_hint(args.draft, facts)
+            if hint:
+                print(hint)
         else:
             # Positive engine answer: relation, path, and policy predicates are all
             # evaluated by the engine and rendered (0 rows -> a verified-empty
