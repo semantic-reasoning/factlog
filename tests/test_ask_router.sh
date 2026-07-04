@@ -556,6 +556,78 @@ if [ "$collision_count" = "3" ]; then ok "#227 collision: relation canonical+var
 collision_cnt_val="$(crouter evaluate 'count(S, "published_year")?' | "$PYTHON" -c "import json,sys; print(json.load(sys.stdin)['rows'][0][0])")"
 if [ "$collision_cnt_val" = "3" ]; then ok "#227 collision count: count(S, published_year) = 3 distinct objects (no double-count)"; else bad "#227 collision count: expected 3, got $collision_cnt_val"; fi
 
+# --- #189: coverage hint on verified-negative relation (predicate mismatch) ---
+# A verified-negative relation query whose SUBJECT is an accepted entity carrying
+# fact(s) under OTHER relations must surface an informational hint distinguishing a
+# predicate mismatch from an honest absence — WITHOUT changing the verdict.
+HKB="$(mktemp -d)/wiki"
+"$PYTHON" -m factlog init --target "$HKB" >/dev/null
+# 갑기업: 3 facts under 설립연도/대표/본사, none under 게재연도.
+# 게재연도 IS an accepted relation (used by 논문A) -> the query is a verified
+# negative (accepted vocabulary, fact absent), not a wiki route.
+# 고아엔티티: an accepted entity ONLY as the object of 인용 -> 0 subject facts.
+printf '// t\n%s\n%s\n%s\n%s\n%s\n' \
+  'relation("갑기업", "설립연도", "1998").' \
+  'relation("갑기업", "대표", "김철수").' \
+  'relation("갑기업", "본사", "서울").' \
+  'relation("논문A", "게재연도", "2005").' \
+  'relation("논문A", "인용", "고아엔티티").' \
+  > "$HKB/facts/accepted.dl"
+hrouter() { "$PYTHON" "$ROUTER" "$@" --target "$HKB"; }
+HACCEPTED_BEFORE="$(cat "$HKB/facts/accepted.dl")"
+
+# routing/verdict unchanged: still a verified negative, engine route.
+check_field_h() {
+  local desc="$1" sub="$2" draft="$3" key="$4" expected="$5"
+  local got; got="$(hrouter "$sub" "$draft" | field "$key")"
+  if [ "$got" = "$expected" ]; then ok "$desc ($key=$got)"; else bad "$desc — expected $key=$expected, got $got"; fi
+}
+check_field_h "#189: predicate-mismatch query stays a verified negative (engine)" validate 'relation("갑기업", "게재연도", O)?' negative True
+check_field_h "#189: predicate-mismatch query code=fact_absent" validate 'relation("갑기업", "게재연도", O)?' code fact_absent
+
+hpos="$(hrouter render 'relation("갑기업", "게재연도", O)?')"
+# verdict block untouched: still VERIFIED — engine + verified negative.
+if printf '%s' "$hpos" | grep -qF "VERIFIED — engine" && printf '%s' "$hpos" | grep -qF "verified negative"; then ok "#189: verified-negative verdict block preserved alongside the hint"; else bad "#189: hint disturbed the verified-negative verdict block"; fi
+# the hint line: predicate-mismatch note naming the OTHER relations, sorted.
+if printf '%s' "$hpos" | grep -qF "possible predicate mismatch"; then ok "#189: predicate-mismatch hint appears"; else bad "#189: predicate-mismatch hint missing"; fi
+if printf '%s' "$hpos" | grep -qF "3 fact(s) under other relations"; then ok "#189: hint reports the correct other-relation fact count (3)"; else bad "#189: hint fact count wrong"; fi
+if printf '%s' "$hpos" | grep -qF "대표, 본사, 설립연도"; then ok "#189: hint lists the OTHER relations sorted deterministically"; else bad "#189: hint relation listing wrong/unsorted"; fi
+# the hint must NOT name the queried relation as an 'other' relation.
+if printf '%s' "$hpos" | grep -qE "other relations[^:]*게재연도"; then bad "#189: queried relation leaked into the 'other relations' listing"; else ok "#189: queried relation excluded from the 'other relations' listing"; fi
+# evaluate JSON carries the optional coverage_hint field (rows/count unchanged).
+check_field_h "#189: evaluate keeps count=0 (field is additive)" evaluate 'relation("갑기업", "게재연도", O)?' count 0
+if hrouter evaluate 'relation("갑기업", "게재연도", O)?' | grep -qF "coverage_hint"; then ok "#189: evaluate JSON exposes the optional coverage_hint field"; else bad "#189: evaluate JSON missing coverage_hint"; fi
+
+# EVALUATE SCOPE PIN: the hint is defined ONLY for a verified negative. An accepted
+# subject with an UNACCEPTED object routes to wiki (negative=False) — evaluate must
+# NOT leak coverage_hint there (machine output honors the same gate as render).
+# Mutation guard: removing the verified-negative gate re-leaks the hint here.
+check_field_h "#189 scope: accepted subject + unaccepted object routes wiki" validate 'relation("갑기업", "게재연도", "새로운값999")?' route wiki
+check_field_h "#189 scope: wiki-routed query is not a verified negative" validate 'relation("갑기업", "게재연도", "새로운값999")?' negative False
+if hrouter evaluate 'relation("갑기업", "게재연도", "새로운값999")?' | grep -qF "coverage_hint"; then bad "#189 scope: evaluate leaked coverage_hint on a wiki-routed (non-verified-negative) query"; else ok "#189 scope: evaluate omits coverage_hint on a wiki-routed query (verified-negative gate honored)"; fi
+
+# NO FALSE POSITIVE: an accepted entity (object-only) with 0 subject facts -> no hint.
+hneg="$(hrouter render 'relation("고아엔티티", "게재연도", O)?')"
+if printf '%s' "$hneg" | grep -qF "VERIFIED — engine" && printf '%s' "$hneg" | grep -qF "verified negative"; then ok "#189: honest-absence subject still a verified negative"; else bad "#189: honest-absence verdict wrong"; fi
+if printf '%s' "$hneg" | grep -qF "possible predicate mismatch"; then bad "#189: false-positive hint on a subject with zero facts (honest absence violated)"; else ok "#189: no hint for a subject with zero facts (honest absence preserved)"; fi
+if hrouter evaluate 'relation("고아엔티티", "게재연도", O)?' | grep -qF "coverage_hint"; then bad "#189: evaluate emitted coverage_hint for an honest absence"; else ok "#189: evaluate omits coverage_hint for an honest absence"; fi
+
+# OBJECT MISMATCH (not predicate mismatch): subject HAS the queried relation, just
+# not this object -> no predicate-mismatch hint (the relation is present).
+# Object "2005" is an accepted value (게재연도 of 논문A) so the query is a verified
+# negative (not an unaccepted-object wiki route); 갑기업 HAS 설립연도 (=1998).
+hobj="$(hrouter render 'relation("갑기업", "설립연도", "2005")?')"
+if printf '%s' "$hobj" | grep -qF "verified negative"; then ok "#189: object-mismatch query is a verified negative"; else bad "#189: object-mismatch not a verified negative"; fi
+if printf '%s' "$hobj" | grep -qF "possible predicate mismatch"; then bad "#189: predicate-mismatch hint fired on an OBJECT mismatch (subject has the relation)"; else ok "#189: no predicate-mismatch hint when the subject has the queried relation (object mismatch)"; fi
+
+# UNKNOWN ENTITY: a non-accepted subject routes to wiki and carries no hint.
+check_field_h "#189: unknown subject still routes wiki (unchanged)" validate 'relation("존재안함", "게재연도", O)?' route wiki
+if hrouter render 'relation("존재안함", "게재연도", O)?' | grep -qF "possible predicate mismatch"; then bad "#189: hint appeared for an unknown (wiki-routed) subject"; else ok "#189: no hint for an unknown, wiki-routed subject"; fi
+
+# read-only invariant preserved by the hint path.
+if [ -f "$HKB/facts/query.dl" ]; then bad "#189: coverage-hint path wrote facts/query.dl"; else ok "#189: coverage-hint path never writes facts/query.dl"; fi
+if [ "$(cat "$HKB/facts/accepted.dl")" = "$HACCEPTED_BEFORE" ]; then ok "#189: coverage-hint path leaves accepted.dl unchanged"; else bad "#189: coverage-hint path mutated accepted.dl"; fi
+
 echo ""
 echo "========================================"
 echo "test_ask_router: $pass passed, $fail failed"
