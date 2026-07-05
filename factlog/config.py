@@ -28,6 +28,21 @@ def config_path() -> Path:
     return Path(base) / "factlog" / "config.json"
 
 
+def _write_config(cfg: Path, data: dict) -> None:
+    """Serialise *data* to *cfg* atomically (temp file + ``os.replace``).
+
+    A direct ``write_text`` can leave a truncated config if the process is killed
+    mid-write, and a corrupt config silently degrades root resolution to cwd. The
+    temp+replace pattern makes the swap atomic on POSIX and Windows, keeping this
+    module free of third-party imports.
+    """
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+    tmp = cfg.with_name(cfg.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, cfg)
+
+
 def _read_config() -> dict:
     """Return the parsed config object, or {} for a missing/malformed file.
 
@@ -81,10 +96,9 @@ def write_root(path: str | os.PathLike) -> Path:
     already set.
     """
     cfg = config_path()
-    cfg.parent.mkdir(parents=True, exist_ok=True)
     data = _read_config()
     data["root"] = str(Path(path).expanduser().resolve())
-    cfg.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _write_config(cfg, data)
     return cfg
 
 
@@ -97,14 +111,13 @@ def write_lang(code: str | None) -> Path:
     re-emitted untouched so setting a language never disturbs the active KB.
     """
     cfg = config_path()
-    cfg.parent.mkdir(parents=True, exist_ok=True)
     data = _read_config()
     normalized = code.strip() if isinstance(code, str) else ""
     if normalized:
         data["lang"] = normalized
     else:
         data.pop("lang", None)
-    cfg.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _write_config(cfg, data)
     return cfg
 
 

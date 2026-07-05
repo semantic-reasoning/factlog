@@ -109,3 +109,36 @@ class TestLangConfig:
         cfg.parent.mkdir(parents=True, exist_ok=True)
         cfg.write_text('{"root": "/x", "lang": 42}\n', encoding="utf-8")
         assert factlog_config.read_lang() is None
+
+
+class TestNormalizeLang:
+    """The shared `--lang` contract used by lang / use --lang / setup --lang (#269).
+
+    A single validator means every entry point accepts/rejects identically, so
+    these pin the boundary the three commands share.
+    """
+
+    def test_trims_and_accepts(self):
+        from factlog.cli import _normalize_lang
+
+        assert _normalize_lang("  ko ") == ("ko", None)
+
+    def test_empty_means_clear_not_error(self):
+        from factlog.cli import _normalize_lang
+
+        # Empty / whitespace normalises to "" (clear), never an error.
+        assert _normalize_lang("") == ("", None)
+        assert _normalize_lang("   ") == ("", None)
+
+    def test_at_limit_accepts(self):
+        from factlog.cli import _normalize_lang
+
+        code = "x" * 32
+        assert _normalize_lang(code) == (code, None)
+
+    def test_over_limit_rejects(self):
+        from factlog.cli import _normalize_lang
+
+        normalized, error = _normalize_lang("x" * 33)
+        assert normalized is None
+        assert error is not None and "too long" in error

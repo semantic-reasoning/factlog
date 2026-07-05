@@ -568,6 +568,41 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+_LANG_MAX_LEN = 32
+
+
+def _normalize_lang(code: str) -> tuple[str | None, str | None]:
+    """Validate a narration-language value the same way for every entry point.
+
+    Shared by `factlog lang`, `factlog use --lang`, and `factlog setup --lang` so
+    a single contract governs what is accepted, rather than each command re-deciding
+    (the asymmetry #269 review flagged). Returns ``(normalized, error)``:
+
+    * ``normalized`` is the trimmed code, or ``""`` to mean *clear* — an empty or
+      whitespace-only value removes the setting and reverts to conversation-language
+      auto-detection (a legitimate "unset" action, not an error).
+    * ``error`` is a message string when the value is invalid (too long); when set,
+      ``normalized`` is ``None`` and the caller rejects with exit code 2.
+    """
+    normalized = code.strip()
+    if len(normalized) > _LANG_MAX_LEN:
+        return None, (
+            f"language code too long (max {_LANG_MAX_LEN} chars); give a short code "
+            "such as 'ko' or 'en', or an empty value to clear it."
+        )
+    return normalized, None
+
+
+def _apply_lang(normalized: str) -> str:
+    """Persist an already-validated *normalized* language and return the one-line
+    confirmation phrase. An empty string clears the setting. Centralised so all
+    three entry points word the set/clear outcome identically."""
+    factlog_config.write_lang(normalized or None)
+    if normalized:
+        return f"narration language set to {normalized}"
+    return "narration language cleared"
+
+
 def cmd_use(args: argparse.Namespace) -> int:
     from pathlib import Path
 
@@ -575,17 +610,27 @@ def cmd_use(args: argparse.Namespace) -> int:
     if not target.is_dir():
         print(f"factlog use: {target} does not exist. Run 'factlog init --target {args.target}' first.", file=sys.stderr)
         return 1
-    factlog_config.write_root(target)
-    # --lang, when given, is set alongside the root in the same config file; when
-    # omitted the existing language (if any) is preserved by write_root, so `use`
-    # never silently drops a configured narration language.
+    # Validate --lang BEFORE writing the root, so an invalid value never leaves a
+    # half-applied config (root changed, lang rejected). Same contract/rc as
+    # `factlog lang`.
     lang = getattr(args, "lang", None)
+    normalized: str | None = None
     if lang is not None:
-        factlog_config.write_lang(lang)
+        normalized, error = _normalize_lang(lang)
+        if error is not None:
+            print(f"factlog use: {error}", file=sys.stderr)
+            return 2
+    factlog_config.write_root(target)
+    # --lang, when given, is set (or cleared) alongside the root in the same config
+    # file; when omitted the existing language is preserved by write_root, so `use`
+    # never silently drops a configured narration language.
+    phrase: str | None = None
+    if normalized is not None:
+        phrase = _apply_lang(normalized)
     note = "" if (target / "sources").is_dir() else "  (warning: no sources/ — not a factlog KB yet; run 'factlog init')"
     print(f"factlog use: active KB set to {target}{note}")
-    if lang is not None:
-        print(f"  narration language: {lang}")
+    if phrase is not None:
+        print(f"  {phrase}")
     print(f"  config: {factlog_config.config_path()}")
     return 0
 
@@ -600,24 +645,21 @@ def cmd_lang(args: argparse.Namespace) -> int:
     summaries, 'needs review' framing); engine reports, CLI stdout, and fact data
     stay verbatim in their source language.
 
-    With a CODE: store it (validated leniently — any non-empty, short token such as
-    `ko` or `en`) in the active-KB config, leaving the root untouched, then confirm.
+    With a CODE: store it (validated via `_normalize_lang`, the shared contract) in
+    the active-KB config, leaving the root untouched, then confirm. An empty/blank
+    CODE clears the setting (reverts to conversation-language auto-detection).
     """
     code = getattr(args, "code", None)
     if code is None:
         # Query mode: one line, no label (empty line when unset).
         print(factlog_config.read_lang() or "")
         return 0
-    normalized = code.strip()
-    if not normalized or len(normalized) > 32:
-        print(
-            "factlog lang: give a short language code (e.g. 'ko' or 'en'); "
-            "run `factlog lang` with no argument to see the current setting.",
-            file=sys.stderr,
-        )
+    normalized, error = _normalize_lang(code)
+    if error is not None:
+        print(f"factlog lang: {error}", file=sys.stderr)
         return 2
-    factlog_config.write_lang(normalized)
-    print(f"factlog lang: narration language set to {normalized}")
+    phrase = _apply_lang(normalized)
+    print(f"factlog lang: {phrase}")
     print(f"  config: {factlog_config.config_path()}")
     return 0
 
@@ -1706,6 +1748,16 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
     actions: list[str] = []
 
+    # Validate --lang up front (same contract/rc as `factlog lang`) so an invalid
+    # value fails fast, before any install / KB scaffolding side effects.
+    lang = getattr(args, "lang", None)
+    lang_normalized: str | None = None
+    if lang is not None:
+        lang_normalized, error = _normalize_lang(lang)
+        if error is not None:
+            print(f"factlog setup: {error}", file=sys.stderr)
+            return 2
+
     print("=== factlog setup: initial environment check ===")
     _run_doctor_checks()
 
@@ -1738,13 +1790,13 @@ def cmd_setup(args: argparse.Namespace) -> int:
     else:
         actions.append(f"KB already present at {target}")
     actions.append(f"set active KB to {target} (ingest/ask/sync default here from any directory)")
-    # Optional narration language: set only when --lang is given, so an existing
+    # Optional narration language: applied only when --lang is given, so an existing
     # language survives a re-run of setup that omits the flag (write_root above
-    # already preserves it).
-    lang = getattr(args, "lang", None)
-    if lang is not None:
-        factlog_config.write_lang(lang)
-        actions.append(f"set narration language to {lang} (assistant prose only)")
+    # already preserves it). Uses the shared validate/apply path, so an empty value
+    # clears the setting with the same wording as `factlog lang`.
+    if lang_normalized is not None:
+        phrase = _apply_lang(lang_normalized)
+        actions.append(f"{phrase} (assistant prose only)")
 
     print("\n=== factlog setup: final environment check ===")
     # gate="setup": a missing git is reported but does not fail setup, whose
