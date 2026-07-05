@@ -110,8 +110,9 @@ Decide with a **two-step precedence** (explicit setting wins):
    UI language from the language of the KB's facts; data language ≠ UI language.
 
 Set it with `factlog lang <code>` (or `factlog use <kb> --lang <code>` /
-`factlog setup --lang <code>`). `factlog lang` with no argument is a porcelain
-contract — parse exactly that one line, do not scrape prose.
+`factlog setup --lang <code>`); an empty value (`factlog lang ""`) clears it and
+returns to step 2. `factlog lang` with no argument is a porcelain contract —
+parse exactly that one line, do not scrape prose.
 
 **Boundary — this changes ONLY your own prose. It does NOT change evidence:**
 
