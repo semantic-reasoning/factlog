@@ -455,6 +455,17 @@ def write_pages(root: Path, rows: list[dict[str, str]]) -> list[str]:
             continue
 
         source_lines = sorted({f"- {row['source']}" for row in entity_rows})
+        # A source may carry a #anchor (sources/a.md#s1, sources/a.md#s2 = same doc),
+        # so count distinct FILE paths with the anchor stripped and NFC-normalized —
+        # the same anchor-strip primitive fact_signals/status keys use. (An original
+        # under sources/ and its runs/sources/ conversion are counted as two paths;
+        # in practice facts cite only the conversion, so this is a rare over-count and
+        # a benign, human-visible one — never data loss.)
+        doc_keys = {
+            unicodedata.normalize("NFC", row["source"].partition("#")[0])
+            for row in entity_rows
+            if row["source"]
+        }
         relation_lines: list[str] = []
         review_lines: list[str] = []
 
@@ -475,10 +486,17 @@ def write_pages(root: Path, rows: list[dict[str, str]]) -> list[str]:
                     f" (confidence={row['confidence']}): {row['note']}"
                 )
 
+        sources_block = "\n".join(source_lines or ["- 확인된 source가 없습니다."])
+        if len(doc_keys) >= 2:
+            sources_block = (
+                f"- 참고: 서로 다른 문서 {len(doc_keys)}개에서 수집된 사실입니다 "
+                f"(동음이의어 병합 가능성 확인 필요).\n"
+            ) + sources_block
+
         text = render_page(
             template,
             entity,
-            "\n".join(source_lines or ["- 확인된 source가 없습니다."]),
+            sources_block,
             "\n".join(relation_lines or ["- 확인된 관계가 없습니다."]),
             "\n".join(review_lines or ["- 현재 추출 결과에서 별도 검토 항목이 없습니다."]),
         )
