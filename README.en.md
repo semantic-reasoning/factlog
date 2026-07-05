@@ -423,6 +423,22 @@ factlog enforces freshness through two distinct mechanisms:
 
 These two levels are complementary: the hook closes the deterministic gap; the SKILL discipline covers the narration layer where engineering enforcement is not possible.
 
+### Scale & performance
+
+**You don't need to empty the KB for performance.** The logic-check cost depends
+less on the total number of facts than on the number of **entity-to-entity
+relations** (edges where the object of A→B becomes a subject again), because the
+engine computes reachability (paths). An attribute-heavy KB — where objects are
+mostly literals — scales cheaply to tens or hundreds of thousands of facts, while
+a dense entity graph (citation/dependency networks, etc.) can get heavy sooner.
+So the metric to watch is not the total fact count but the **entity↔entity edge
+count**.
+
+If it does get heavy, the answer is not to "empty" it. Adjust the relation
+modeling and manage recurring cost with `factlog ignore` (exclude from
+re-extraction) and idempotent ingest. Correctness and de-duplication hold
+regardless of scale.
+
 ## License
 
 Apache-2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
