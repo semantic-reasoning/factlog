@@ -5,8 +5,9 @@
 ## Requirements
 
 - Python **3.11+** (required by the engine dependency `pyrewire`)
-- **pyrewire 1.0.1+** (`pip install -r requirements.txt`)
+- **pyrewire 1.0.3+** (`pip install -r requirements.txt`)
 - Claude Code CLI
+- **git** — the marketplace install uses `git clone` under the hood. On Windows, install **Git for Windows**.
 
 ## Install
 
@@ -45,7 +46,7 @@ To develop against a local clone, register the working tree as the marketplace i
 `setup` collapses the previously-separate post-install steps into a single command. Equivalently, by hand:
 
 ```bash
-pip install -r ~/git/semantic-reasoning/factlog/requirements.txt   # pyrewire>=1.0.1,<2.0
+pip install -r ~/git/semantic-reasoning/factlog/requirements.txt   # pyrewire>=1.0.3,<2.0
 python3 -m factlog doctor          # checks Python 3.11+ and pyrewire
 python3 -m factlog init --target ~/wiki   # scaffold the KB layout
 ```

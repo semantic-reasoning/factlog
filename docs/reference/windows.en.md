@@ -4,6 +4,10 @@
 
 ## Windows Python executable
 
+On Windows, factlog's `.sh`/Bash tools (e.g. `factlog_python.sh`) run under Git
+Bash. Installing **Git for Windows** provides Git Bash, and factlog's bundled
+`.sh` scripts run on top of it.
+
 On Windows, the `python3` command can point to the Microsoft Store stub instead
 of a real Python executable. In that state, `python` or `py` may work while the
 plugin's bundled scripts fail.
