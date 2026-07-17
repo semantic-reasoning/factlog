@@ -64,3 +64,33 @@ pip install -r ~/git/semantic-reasoning/factlog/requirements.txt   # pyrewire>=1
 python3 -m factlog doctor          # checks Python 3.11+ and pyrewire
 python3 -m factlog init --target ~/wiki   # scaffold the KB layout
 ```
+
+## 설치 실패 모드 — 증상 → 원인 → 해결
+
+대부분의 설치 문제는 `factlog doctor` 가 이미 진단하고 있습니다. doctor는 각 점검을
+`OK` / `INFO` / `WARN` / `FAIL` 중 하나로 출력하고, 문제가 있으면 `→` 로 시작하는
+해결 안내를 함께 붙입니다. 아래 표는 그 출력을 증상별로 정리한 것입니다.
+
+| 증상 | 원인 | 해결 |
+|------|------|------|
+| 설치 후에도 `/factlog …` 명령이 없음 | 현재 세션에 새 명령이 아직 로드되지 않음 | `/reload-plugins` 를 실행한 뒤 `/factlog setup` |
+| doctor: `FAIL  Python 3.x < 3.11 필요` | Python이 최소 버전 미만 | Python 3.11 이상을 설치한 뒤 다시 실행 |
+| doctor: `FAIL  pyrewire not installed` 또는 `FAIL  pyrewire X < 1.0.3` | 엔진 의존성 미설치/구버전 | `pip install -r requirements.txt` (또는 `/factlog setup` 재실행) |
+| `setup`: `이 Python은 외부 관리(PEP 668)` 안내와 함께 pip이 거부 | 배포판이 관리하는 시스템 Python (PEP 668) | venv를 만들어 활성화한 뒤 `setup` 재실행. factlog는 `--break-system-packages` 로 강행하지 않습니다 |
+| doctor: `WARN  Python 3.x (Store stub: …\WindowsApps\…)` | Windows의 Microsoft Store Python stub | python.org 정식 배포판 설치를 권장. 또는 `$FACTLOG_PYTHON` 으로 쓸 Python을 지정 |
+| doctor: `FAIL  git이 없습니다` | git 미설치 — 마켓플레이스 설치가 `git clone` 을 사용 | macOS는 `xcode-select --install`, 그 외는 패키지 매니저(예: `apt install git`), Windows는 **Git for Windows** |
+| doctor: `WARN  FACTLOG_PYTHON = … (경로 없음)` | `$FACTLOG_PYTHON` 이 없는 경로를 가리킴 | 경로를 고치거나 `unset FACTLOG_PYTHON` |
+| doctor: `WARN  이 폴더에 factlog/ 폴더가 있어 패키지를 가릴 수 있습니다` | 현재 디렉터리의 `factlog/` 폴더가 설치된 패키지를 가림 | 다른 위치에서 실행하거나 그 폴더 이름을 변경 |
+| `[factlog] FACTLOG_PYTHON is set but is not a usable Python 3.11+` (종료 코드 127) | `$FACTLOG_PYTHON` 이 가리키는 실행 파일이 Python 3.11+ 가 아님 | 경로를 고치거나 `unset FACTLOG_PYTHON`. `$FACTLOG_PYTHON` 이 설정돼 있으면 `python3`/`python`/`py` 로 **폴백하지 않고 즉시 실패**합니다 |
+
+> **git FAIL은 `setup` 을 막지 않습니다.** doctor 단독 실행은 git이 없으면 실패
+> (종료 코드 1)하지만, `setup` 의 실제 작업(pip 설치 + KB 스캐폴딩)은 git을 쓰지
+> 않으므로 git FAIL이 `setup` 의 종료 코드를 뒤집지 않습니다. 다만 마켓플레이스
+> 설치 자체는 `git clone` 을 쓰므로, 그 단계에는 여전히 git이 필요합니다.
+
+`WARN` 과 `INFO` 는 종료 코드에 영향을 주지 않습니다 — 오직 `FAIL` 만 셉니다. doctor
+요약줄은 `결과: 이상 없음` 또는 `결과: FAIL N개.` 형태로 끝납니다.
+
+Windows의 Python 실행 파일 문제는 상세 레퍼런스의
+[Windows Python 실행 파일](../reference/windows.md#windows-python-실행-파일) 절에
+전체 절차가 있습니다.
