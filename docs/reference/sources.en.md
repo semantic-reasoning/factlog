@@ -22,12 +22,29 @@ no facts on its own.
 
 `factlog ingest` writes the converted text into the KB's **`runs/sources/`**
 directory (alongside the other generated run artifacts) — **never into
-`sources/`**, which stays the user's originals. A nested original mirrors its
-subdirectory (`sources/sub/report.pdf` → `runs/sources/sub/report.md`), so
-same-stem files in different folders never collide. The original is left
+`sources/`**, which stays the user's originals. A conversion is named by the
+original's **full filename (extension included) + the converter's suffix**
+(`report.hwpx` → `runs/sources/report.hwpx.md`, `report.pptx` →
+`runs/sources/report.pptx.md`), so two originals in one folder that share a stem
+and differ only in extension never **collide on one conversion and lose the
+loser**. A nested original mirrors its subdirectory
+(`sources/sub/report.pdf` → `runs/sources/sub/report.pdf.md`), so same-name
+files in different folders never collide either. The original is left
 untouched and the conversion carries a provenance header (source, converter,
 date). Both `sources/` and `runs/sources/` are valid source roots that
 extraction reads.
+
+> **Upgrading (#213):** the conversion filename rule changed. It used to use the
+> original's **stem** only (`report.pdf` → `runs/sources/report.md`); it now uses
+> the original's **full name** (`runs/sources/report.pdf.md`), so `report.hwpx`
+> and `report.pptx` in one folder are each preserved as their own conversion.
+> A legacy stem-named conversion (`runs/sources/report.md`) in an already-ingested
+> KB is **still paired with its original through a stem-based fallback** by
+> `factlog sources` / `coverage` / `status`, so it is not silently lost. To move
+> to the new layout, re-run `factlog ingest --scan --force` (then clean up any
+> leftover legacy conversions with `factlog eject --orphans`). A KB whose stems
+> collided in particular must be re-ingested to restore the originals that were
+> being lost.
 
 > **Upgrading:** subdirectory mirroring is newer than the original flat layout.
 > A KB ingested earlier has flat conversions (`runs/sources/report.md`) for
@@ -37,7 +54,7 @@ extraction reads.
 > Top-level (non-nested) sources are unaffected.
 
 ```bash
-factlog ingest report.docx --target ~/wiki   # → ~/wiki/runs/sources/report.md (pandoc)
+factlog ingest report.docx --target ~/wiki   # → ~/wiki/runs/sources/report.docx.md (pandoc)
 factlog ingest --scan --target ~/wiki        # auto-convert every binary under sources/
 ```
 
