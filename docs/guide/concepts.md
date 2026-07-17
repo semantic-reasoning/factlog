@@ -59,6 +59,73 @@ Windows `C:\Users\<이름>`), `--target <경로>` 로 원하는 위치를 고를
 > factlog가 채우고 관리합니다. `.docx`·`.pdf` 같은 바이너리도 `sources/` 에 두면
 > `/factlog sync` 가 자동으로 텍스트로 변환합니다(→ `runs/sources/`).
 
+### 처음 한 바퀴 — 내 파일은 어디로 가고, factlog는 무엇을 만드나
+
+`/factlog setup` 직후의 KB는 **거의 비어 있습니다.** setup이 만드는 것은 위 폴더들과
+`policy/` 아래의 설정 파일 몇 개, 그리고 `templates/pages.md` 뿐입니다. `facts/` 는
+**빈 폴더로** 시작합니다 — `candidates.csv` 도 `accepted.dl` 도 아직 없습니다.
+
+```text
+<KB>/
+├── sources/                              ← 비어 있음. 여기서부터 시작합니다
+├── facts/                                ← 비어 있음 (아직 사실이 없음)
+├── policy/
+│   ├── questions.md                      ← 검토 질문 (편집 가능)
+│   ├── logic-policy.md                   ← 정책 규칙 (편집 가능)
+│   ├── attribute-relations.md            ← 리터럴 값 관계 선언 (편집 가능)
+│   ├── typed-relations.md                ← 비교 가능한 리터럴 관계 선언 (편집 가능)
+│   ├── sync-ignore.md                    ← sync에서 제외할 glob 패턴 (편집 가능)
+│   └── prompts/                          ← 추출·쿼리 프롬프트 4종
+├── pages/ · decisions/                   ← 비어 있음
+├── runs/sources/                         ← 비어 있음 (변환본이 놓일 자리)
+└── templates/pages.md
+```
+
+이제 검증하고 싶은 문서를 `sources/` 에 넣습니다. 폴더를 나눠도 됩니다.
+
+```text
+<KB>/sources/
+├── 2026-q1-report.docx      ← 내가 넣은 파일
+├── notes.md                 ← 내가 넣은 파일
+└── research/
+    └── paper.pdf            ← 내가 넣은 파일 (하위 폴더도 그대로 인식)
+```
+
+`/factlog sync` 를 한 번 돌리면 factlog가 나머지를 채웁니다. **`sources/` 는 그대로
+남습니다** — 변환본조차 여기에 쓰지 않습니다.
+
+```text
+<KB>/
+├── sources/                             ← 손대지 않음. 내 원본 그대로
+├── runs/
+│   ├── sources/
+│   │   ├── 2026-q1-report.docx.md       ← (생성) 변환본. 원본 전체 이름 + .md
+│   │   └── research/paper.pdf.txt       ← (생성) 하위 구조를 그대로 미러링
+│   └── <추출 실행 기록>.json             ← (생성) 사실의 원본이 사는 곳
+├── facts/
+│   ├── candidates.csv                   ← (생성) 후보 사실 — 검토 대상
+│   └── accepted.dl                      ← (생성) 확정된 사실만. 엔진 입력
+└── pages/ · decisions/                  ← (생성) 손대지 않음
+```
+
+정리하면 이렇습니다.
+
+| 경로 | 누가 씁니까 | 편집해도 됩니까 |
+|------|-------------|-----------------|
+| `sources/` | **나** | 예 — 여기가 내 자리입니다 |
+| `policy/` | setup이 뼈대만, 이후 **나** | 예 — 질문·정책·관계 선언 |
+| `runs/sources/` | factlog (`ingest`) | 아니요 — 다음 sync가 다시 만듭니다 |
+| `runs/*.json` | factlog (추출) | 아니요 — `factlog amend` 를 쓰세요 |
+| `facts/candidates.csv` | factlog (merge) | 직접 편집 대신 `accept`/`reject`/`amend` |
+| `facts/accepted.dl` | factlog (컴파일) | 아니요 — `candidates.csv` 에서 생성됩니다 |
+| `pages/`, `decisions/` | factlog | 아니요 |
+
+`runs/*.json` 이 “사실의 원본”이라는 점이 중요합니다. merge가 매번 그로부터
+`candidates.csv` 를 다시 만들기 때문에, `candidates.csv` 를 손으로 고치면 다음
+`/factlog sync` 에 덮여 사라집니다. 그래서 값 교정은 양쪽을 함께 갱신하는
+[`factlog amend`](../reference/review.md#사실-검토-factlog-review--accept--reject) 를
+씁니다.
+
 ## candidate vs accepted — 신뢰 경계
 
 factlog에는 두 종류의 사실이 있습니다.

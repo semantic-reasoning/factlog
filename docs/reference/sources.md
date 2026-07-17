@@ -20,6 +20,61 @@
 | `.pptx` (PowerPoint) | **자동 변환** | 내장 추출기(외부 도구 불필요) — zip 내부 `ppt/slides/slideN.xml` 의 슬라이드 텍스트를 순서대로 읽고, 슬라이드당 한 블록으로 변환. 발표자 노트는 제외, 표 셀은 셀당 한 줄로 펼쳐짐(행/열 그룹 구조는 보존 안 됨). |
 | `.xlsx`, 이미지 | **변환 안 됨** | 내장 변환기 없음 — 안내 메시지와 함께 보고. 수동 변환 필요. |
 
+### 형식별 변환기와 사전 요구사항
+
+위 표의 “자동 변환”이 실제로 무엇을 요구하는지는 형식마다 다릅니다. 각 확장자에는
+**변환기 체인**이 있고, factlog는 그 체인을 순서대로 훑어 **처음으로 사용 가능한**
+변환기를 고릅니다(내장 변환기는 항상 사용 가능, 외부 도구는 PATH에 있을 때만).
+
+| 형식 | 변환기 체인 (순서대로) | 필요한 설치 | 출력 |
+|------|------------------------|-------------|------|
+| `.docx`, `.odt` | pandoc → textutil | pandoc, 또는 macOS의 textutil | `.md` (pandoc) / `.txt` (textutil) |
+| `.html`, `.htm` | pandoc → textutil | pandoc, 또는 macOS의 textutil | `.md` / `.txt` |
+| `.epub` | pandoc | pandoc | `.md` |
+| `.rtf` | textutil | **macOS 전용** — textutil은 macOS에 기본 포함 | `.txt` |
+| `.pdf` | pdftotext | poppler (`pdftotext`) | `.txt` |
+| `.hwpx` | `factlog-hwpx` (내장) | 없음 — 표준 라이브러리만 사용 | `.md` |
+| `.pptx` | `factlog-pptx` (내장) | 없음 — 표준 라이브러리만 사용 | `.md` |
+| `.hwp` | `factlog-hwp` (내장, 외부 도구 오케스트레이션) | `hwp5html`(`pip install pyhwp`) **와** pandoc 둘 다 | `.md` |
+| `.xlsx`, `.png`, `.jpg`, `.jpeg` | 없음 | — | 변환 안 됨 |
+
+설치 안내는 도구별로 이렇게 안내됩니다 — pandoc은 `brew install pandoc`(또는
+<https://pandoc.org>), pdftotext는 poppler(`brew install poppler`), textutil은
+macOS에 기본 포함됩니다.
+
+`.docx`·`.odt`·`.html`·`.htm` 에 **폴백 체인**이 있다는 점이 중요합니다. pandoc이
+없어도 macOS라면 textutil이 대신 처리합니다(대신 마크다운이 아니라 평문 `.txt` 로
+떨어져 표 구조가 보존되지 않습니다). 반면 `.epub`·`.rtf`·`.pdf` 는 체인이 하나뿐이라
+그 도구가 없으면 변환되지 않습니다.
+
+### 변환기가 없을 때의 동작
+
+변환기를 찾지 못했을 때 `ingest` 가 실패로 처리할지 아닐지는 **파일을 어떻게
+지정했는지**에 달려 있습니다.
+
+| 상황 | `--scan` (자동 발견) | 명시적 `ingest <파일>` |
+|------|----------------------|------------------------|
+| 체인의 도구가 PATH에 없음 (예: pandoc 없이 `.docx`) | `skipped` 로 집계, **실행은 성공**(종료 코드 0) | `failed` 로 집계, **종료 코드 1** |
+| 변환기가 아예 없는 형식 (`.xlsx`, 이미지) | `skipped`, 종료 코드 0 | `failed`, 종료 코드 1 |
+| 내장 변환기가 외부 도구를 못 찾음 (`.hwp` 에 pyhwp/pandoc 없음) | `skipped`, 종료 코드 0 | `failed`, 종료 코드 1 |
+
+어느 쪽이든 **이유는 항상 stderr에 출력**되므로 조용히 넘어가지 않습니다.
+
+```text
+factlog ingest: no converter on PATH for .pdf (tried: pdftotext). install poppler (e.g. `brew install poppler`)
+factlog ingest: skip y.xlsx (.xlsx): no built-in converter; export sheets to .csv and place those in sources/
+factlog ingest: 0 converted, 2 skipped, 0 failed
+```
+
+이 비대칭은 의도된 것입니다. `--scan` 은 `/factlog sync` 의 사전 단계로 돌기 때문에,
+변환할 수 없는 파일 하나가 sync 전체를 실패시키면 안 됩니다. 반대로 사용자가 파일을
+직접 지목했다면 그것은 처리해 달라는 요청이므로, 처리하지 못했다면 실패입니다.
+
+`--scan` 은 이 밖에도 두 가지 경우를 따로 집계해 드러냅니다 — **확장자는 변환
+대상이지만 내용이 바이너리가 아닌 파일**(예: 평문 `.hwpx`)과 **0바이트 파일**입니다.
+둘 다 변환하지 않고 `ignored` 로 보고합니다(전자는 sync가 유효한 소스라면 텍스트로
+직접 읽습니다).
+
 `factlog ingest` 는 변환된 텍스트를 KB의 **`runs/sources/`** 디렉터리(다른 생성
 런 아티팩트와 같은 위치)에 기록합니다 — 사용자의 원본이 그대로 남아 있어야 하는
 **`sources/` 에는 결코 쓰지 않습니다**. 변환본 파일명은 **원본의 전체 파일명(확장자
