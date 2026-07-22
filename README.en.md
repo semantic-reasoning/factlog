@@ -7,9 +7,9 @@
 >
 > factlog is a [Claude Code](https://code.claude.com) **plugin**. Inside a session you
 > use it through `/factlog ...` slash commands; human gates like review and approval you
-> run yourself in the terminal through the Python CLI (`python3 -m factlog ...`). Both
-> entry points call the same deterministic engine — slash command · Python CLI ·
-> verification engine are one tool.
+> run yourself in that same session by prefixing `!` to the Python CLI
+> (`!python3 -m factlog ...`). Both entry points call the same deterministic engine —
+> slash command · Python CLI · verification engine are one tool.
 
 ![How factlog works: Claude proposes, the engine verifies, a human confirms](docs/how-it-works.svg)
 
