@@ -9,12 +9,14 @@
 > Once reports, papers, and slide decks pile up, you hit questions like "where did
 > this number come from?" and "last month's document says something different from
 > this year's." factlog pulls the claims out of your documents, **attaches the file
-> and section each one came from**, and checks the ones you approved for
+> and section each one came from**, and checks the approved ones for
 > contradictions.
 >
-> The key idea: **nothing becomes a fact until a human approves it.** Everything the
-> AI extracts is a *candidate*; only what a person reviews and accepts becomes
-> grounds for verification.
+> factlog does not take the AI's word for it. Facts that need a judgement call go
+> into a review queue, and a human has to approve them with `factlog accept` before
+> they become input to the verification engine. See
+> [candidate vs accepted — the trust boundary](docs/guide/concepts.en.md) for the
+> full distinction.
 
 ![How factlog works: Claude proposes, the engine verifies, a human confirms](docs/how-it-works.svg)
 
@@ -26,19 +28,28 @@ Say a document you put in `sources/` contains this sentence:
 Claude Code is a command-line tool developed by Anthropic ...
 ```
 
-`/factlog sync` extracts a **candidate fact** from it, with the source tracked down
-to the file and section:
+`/factlog sync` extracts facts from it, with the source tracked down to the file and
+section. Anything that needs a human judgement call lands in the review queue as
+`needs_review`:
 
 ```csv
-subject,relation,object,source,status
-Claude Code,developed_by,Anthropic,sources/example.md#what-is-claude-code,confirmed
+subject,relation,object,source,status,confidence,note
+Anthropic,develops,Claude Code,sources/example.md#what-is-claude-code,needs_review,0.90,inferred from developed_by relation
 ```
 
-Once you approve it in the terminal with `factlog accept`, and only then, it becomes
-input to the verification engine:
+Approve it in the terminal, and it becomes input to the verification engine:
 
-```prolog
-relation("Claude Code", "developed_by", "Anthropic").
+```console
+$ factlog accept "Anthropic" develops "Claude Code"    # or: python3 -m factlog accept ...
+  Anthropic / develops / Claude Code  [needs_review → accepted]  ← sources/example.md#what-is-claude-code
+factlog accept: 1 row(s) → accepted; accepted.dl recompiled
+```
+
+Approved facts are written to the engine input file `facts/accepted.dl` as Datalog
+facts:
+
+```datalog
+relation("Anthropic", "develops", "Claude Code").
 ```
 
 Now you can answer questions grounded in that fact, or check it against the others
@@ -54,16 +65,24 @@ whatever needs converting to text. Your original files are never modified.
 |---|---|---|
 | **Read directly** | `.md` · `.txt` · `.csv` · `.rst` · `.org` · source code | nothing |
 | **Auto-converted (built in)** | `.hwp` · `.hwpx` (Hangul) · `.pptx` (PowerPoint) | nothing — except `.hwp`, which needs `pyhwp` + pandoc |
-| **Auto-converted (external tool)** | `.pdf` · `.docx` · `.odt` · `.html` · `.epub` · `.rtf` | pandoc / poppler / textutil, depending on the format |
+| **Auto-converted (external tool)** | `.pdf` · `.docx` · `.odt` · `.html` · `.epub` · `.rtf` | pandoc (`.docx` `.odt` `.html` `.epub`) · poppler (`.pdf`) · textutil (`.rtf` — **macOS only**) |
 
-`.xlsx` and images are not converted (export sheets to `.csv` instead). For the
-per-format converter chains, how to install them, and what happens when a converter
-is missing, see [source file formats](docs/reference/sources.en.md).
+`.xlsx` and images are not converted (export sheets to `.csv` instead). The table
+omits extension aliases that share a chain (`.htm`, `.markdown`). For the per-format
+converter chains and fallbacks, how to install them, and what happens when a
+converter is missing, see [source file formats](docs/reference/sources.en.md).
 
 ## Install
 
-factlog is a [Claude Code](https://code.claude.com) **plugin**. Install it from this
-repo's marketplace in a Claude Code session:
+factlog is a [Claude Code](https://code.claude.com) **plugin**. Before you start, you
+need the following in place:
+
+- Python **3.11+** (required by the engine dependency `pyrewire`)
+- **pyrewire 1.0.3+** (`pip install -r requirements.txt`)
+- Claude Code CLI
+- **git** — the marketplace install uses `git clone` under the hood. On Windows, install **Git for Windows**.
+
+Then install it from this repo's marketplace in a Claude Code session:
 
 ```
 /plugin marketplace add https://github.com/semantic-reasoning/factlog
@@ -80,13 +99,6 @@ After a successful install, the new `/factlog ...` commands may not be loaded in
 the current session yet. Run `/reload-plugins` after `/plugin install`, then run
 `/factlog setup`.
 
-You need the following in place beforehand:
-
-- Python **3.11+** (required by the engine dependency `pyrewire`)
-- **pyrewire 1.0.3+** (`pip install -r requirements.txt`)
-- Claude Code CLI
-- **git** — the marketplace install uses `git clone` under the hood. On Windows, install **Git for Windows**.
-
 For the local install (development), what `/factlog setup` does, PEP 668 venv
 guidance, and the Windows Python executable, see the
 [install guide](docs/guide/install.en.md).
@@ -99,8 +111,10 @@ like review and approval you run yourself in the terminal through the Python CLI
 slash command · Python CLI · verification engine are one tool.
 
 The LLM (Claude, inside the session) handles extraction and drafting queries; a
-**deterministic engine** handles verification. That means the same input always
-yields the same verification result. For what is and is not guaranteed, see
+**deterministic engine** built on Datalog/wirelog handles verification. The same set
+of accepted facts and the same query always yield the same verification result. The
+extraction step, by contrast, is non-deterministic — run it again and you may get
+different facts. For what is and is not guaranteed, see
 [determinism & limitations](docs/guide/determinism.en.md).
 
 ## Quick start
