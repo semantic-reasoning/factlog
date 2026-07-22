@@ -2,27 +2,68 @@
 
 > 🌐 **English** | [한국어](README.md)
 
-> facts + logic — a tool that turns markdown sources into **verifiable, source-backed facts**.
-> The LLM extracts; a deterministic Datalog/wirelog engine verifies.
+> facts + logic — a tool that turns the claims written in your documents into
+> **facts with sources attached**, then mechanically finds the places where those
+> facts contradict each other.
 >
-> factlog is a [Claude Code](https://code.claude.com) **plugin**. Inside a session you
-> use it through `/factlog ...` slash commands; human gates like review and approval you
-> run yourself in the terminal through the Python CLI (`python3 -m factlog ...`). Both
-> entry points call the same deterministic engine — slash command · Python CLI ·
-> verification engine are one tool.
+> Once reports, papers, and slide decks pile up, you hit questions like "where did
+> this number come from?" and "last month's document says something different from
+> this year's." factlog pulls the claims out of your documents, **attaches the file
+> and section each one came from**, and checks the ones you approved for
+> contradictions.
+>
+> The key idea: **nothing becomes a fact until a human approves it.** Everything the
+> AI extracts is a *candidate*; only what a person reviews and accepts becomes
+> grounds for verification.
 
 ![How factlog works: Claude proposes, the engine verifies, a human confirms](docs/how-it-works.svg)
 
-## Requirements
+## Example — what one line of a document turns into
 
-- Python **3.11+** (required by the engine dependency `pyrewire`)
-- **pyrewire 1.0.3+** (`pip install -r requirements.txt`)
-- Claude Code CLI
-- **git** — the marketplace install uses `git clone` under the hood. On Windows, install **Git for Windows**.
+Say a document you put in `sources/` contains this sentence:
+
+```text
+Claude Code is a command-line tool developed by Anthropic ...
+```
+
+`/factlog sync` extracts a **candidate fact** from it, with the source tracked down
+to the file and section:
+
+```csv
+subject,relation,object,source,status
+Claude Code,developed_by,Anthropic,sources/example.md#what-is-claude-code,confirmed
+```
+
+Once you approve it in the terminal with `factlog accept`, and only then, it becomes
+input to the verification engine:
+
+```prolog
+relation("Claude Code", "developed_by", "Anthropic").
+```
+
+Now you can answer questions grounded in that fact, or check it against the others
+for contradictions. To walk the whole flow yourself, see the
+[quick-start tutorial](examples/sample-kb/README.md).
+
+## What documents can you feed it
+
+Not just markdown. Drop the originals into `sources/` and `/factlog sync` converts
+whatever needs converting to text. Your original files are never modified.
+
+| | Formats | What you need |
+|---|---|---|
+| **Read directly** | `.md` · `.txt` · `.csv` · `.rst` · `.org` · source code | nothing |
+| **Auto-converted (built in)** | `.hwp` · `.hwpx` (Hangul) · `.pptx` (PowerPoint) | nothing — except `.hwp`, which needs `pyhwp` + pandoc |
+| **Auto-converted (external tool)** | `.pdf` · `.docx` · `.odt` · `.html` · `.epub` · `.rtf` | pandoc / poppler / textutil, depending on the format |
+
+`.xlsx` and images are not converted (export sheets to `.csv` instead). For the
+per-format converter chains, how to install them, and what happens when a converter
+is missing, see [source file formats](docs/reference/sources.en.md).
 
 ## Install
 
-factlog is a **Claude Code plugin**. Install it from this repo's marketplace in a Claude Code session:
+factlog is a [Claude Code](https://code.claude.com) **plugin**. Install it from this
+repo's marketplace in a Claude Code session:
 
 ```
 /plugin marketplace add https://github.com/semantic-reasoning/factlog
@@ -39,9 +80,28 @@ After a successful install, the new `/factlog ...` commands may not be loaded in
 the current session yet. Run `/reload-plugins` after `/plugin install`, then run
 `/factlog setup`.
 
+You need the following in place beforehand:
+
+- Python **3.11+** (required by the engine dependency `pyrewire`)
+- **pyrewire 1.0.3+** (`pip install -r requirements.txt`)
+- Claude Code CLI
+- **git** — the marketplace install uses `git clone` under the hood. On Windows, install **Git for Windows**.
+
 For the local install (development), what `/factlog setup` does, PEP 668 venv
 guidance, and the Windows Python executable, see the
 [install guide](docs/guide/install.en.md).
+
+## Two entry points — slash command and CLI
+
+Inside a session you use factlog through `/factlog ...` slash commands; human gates
+like review and approval you run yourself in the terminal through the Python CLI
+(`python3 -m factlog ...`). Both entry points call the same deterministic engine —
+slash command · Python CLI · verification engine are one tool.
+
+The LLM (Claude, inside the session) handles extraction and drafting queries; a
+**deterministic engine** handles verification. That means the same input always
+yields the same verification result. For what is and is not guaranteed, see
+[determinism & limitations](docs/guide/determinism.en.md).
 
 ## Quick start
 
@@ -56,8 +116,9 @@ The detailed documentation lives in [`docs/`](docs/README.en.md).
 - [Concepts](docs/guide/concepts.en.md) — overview, KB folder layout, the candidate vs accepted trust boundary, commands at a glance
 - [Install](docs/guide/install.en.md) — requirements, marketplace and local install, `/factlog setup`
 - [Use cases](docs/guide/use-cases.en.md) — common workflows for reports, slides, papers, and wikis
+- [Source file formats](docs/reference/sources.en.md) — supported formats, converter chains, behaviour when conversion fails
 - [Determinism & limitations](docs/guide/determinism.en.md) — what is guaranteed and what is not
-- [Slash command usage](docs/reference/slash-commands.en.md) · [Source file formats](docs/reference/sources.en.md) · [Reviewing facts](docs/reference/review.en.md) — detailed reference
+- [Slash command usage](docs/reference/slash-commands.en.md) · [Reviewing facts](docs/reference/review.en.md) — detailed reference
 
 ## License
 
