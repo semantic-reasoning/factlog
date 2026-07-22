@@ -22,10 +22,11 @@ walks the whole flow through once without your own data.
 
 **Checking the claims and evidence in slides (PPT)**
 
-- Put the `.pptx` file itself in the KB's `sources/` (a built-in converter turns it into text — it reads on-slide body text only, skips presenter notes, and flattens tables to one line per cell; see [source file formats](../reference/sources.en.md))
+- Put the `.pptx` file itself in the KB's `sources/` (a built-in converter turns it into text)
 - (run in Claude Code) `/factlog sync` to pull the slides' claims out as candidate facts
 - (run in the terminal) `factlog review` to review them, and `factlog accept` to approve only the claims with clear evidence
 - (run in Claude Code) `/factlog ask` to check that the approved claims do not contradict each other
+- Mind the conversion limits for slides — it reads only the text shown on the slides, skips presenter notes, and **flattens tables to one line per cell, losing the row/column association** (check the original table when reviewing numeric evidence). Legacy `.ppt` has no converter, so save it as `.pptx` first. See [source file formats](../reference/sources.en.md) for details
 
 **Organizing the core claims of a paper or technical document**
 
