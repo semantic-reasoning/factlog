@@ -1,0 +1,43 @@
+Logic Check Report
+==================
+engine: wirelog / pyrewire
+input: facts/accepted.dl
+policy: policy/logic-policy.dl
+engine facts: 13
+review facts outside engine input: 0
+policy findings: 16
+errors: 0
+warnings: 1
+
+Policy Findings:
+- conflict: Ledger (market_cap_band_2jo)
+- conflict: Orbit (date_band_20310201)
+- conflict: Orbit (headcount_band_120k)
+- conflict: Orbit (rank_band_3)
+- conflict: Orbit (valuation_band_100eok)
+- conflict: Vault (load_factor_band_1001)
+- entity_extent: Aria (entity_node)
+- entity_extent: Beacon (entity_node)
+- entity_extent: Bran (entity_node)
+- entity_extent: Cyra (entity_node)
+- entity_extent: Ledger (entity_node)
+- entity_extent: Orbit (entity_node)
+- entity_extent: Vault (entity_node)
+- requires_review: Beacon (alias_check)
+- requires_review: Orbit (alias_check)
+- requires_review: Orbit (maintainer_check)
+
+Warnings:
+- query path argument is not an accepted entity: 2031-02-01
+
+Policy evaluation:
+- conflict: 6 rows
+- entity_extent: 7 rows
+- requires_review: 3 rows
+
+Query evaluation:
+- path Orbit -> Vault: Orbit -> Beacon -> Ledger -> Vault
+- path Orbit -> 2031-02-01: (not evaluated — not an accepted entity: 2031-02-01)
+- count results (query: count("Orbit", "depends_on")?): 1 (distinct objects)
+- relation results: 1 rows; Beacon, owned_by, Cyra
+- conflict results: 6 rows; X=Ledger, Y=market_cap_band_2jo; X=Orbit, Y=date_band_20310201; X=Orbit, Y=headcount_band_120k; X=Orbit, Y=rank_band_3; X=Orbit, Y=valuation_band_100eok; X=Vault, Y=load_factor_band_1001
