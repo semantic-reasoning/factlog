@@ -1,27 +1,37 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 # factlog PreToolUse gate — deny writes to engine inputs when logic_report.txt
-# is absent or stale, EXCEPT for the first (bootstrap) creation of an input.
+# is absent, stale, or records a run the engine never completed, EXCEPT for the
+# first (bootstrap) creation of an input.
 #
 # Fires BEFORE Write|Edit. If the tool is about to touch facts/accepted.dl or
-# facts/query.dl, this script checks that facts/logic_report.txt exists and is
-# newer than both files. If the predicate fails it exits 2, which Claude Code
-# interprets as a permissionDecision=deny and blocks the tool call.
+# facts/query.dl, this script checks that facts/logic_report.txt exists, records
+# a completed engine run, and is newer than both files. If the predicate fails
+# it exits 2, which Claude Code interprets as a permissionDecision=deny and
+# blocks the tool call.
 #
-# FALSIFIABLE predicate (per CRITIC M4 + bootstrap fix):
+# FALSIFIABLE predicate (per CRITIC M4 + bootstrap fix + #338):
 #   Let TARGET be the tool target path. TARGET is an "engine input" iff it
 #   resolves to <KB_ROOT>/facts/accepted.dl OR <KB_ROOT>/facts/query.dl.
 #
+#   Call a report FAILED iff it contains the whole line
+#   `status: engine-did-not-run` — the line run_logic_check.py writes when the
+#   engine could not run at all (pyrewire missing, facts/accepted.dl absent, a
+#   program the engine refuses). Such a report states the cause and NOTHING
+#   about the KB, so for this predicate it counts as no report at all.
+#
 #   ALLOW (exit 0) iff any of:
 #     A. TARGET is not an engine input; OR
-#     B. BOOTSTRAP: facts/logic_report.txt does NOT exist AND TARGET does NOT
-#        yet exist on disk (this is the first creation of an engine input in a
-#        fresh KB, where no report can possibly exist yet); OR
-#     C. FRESH: facts/logic_report.txt EXISTS and is newer than (>=) the most
-#        recently modified existing engine input (accepted.dl / query.dl).
+#     B. BOOTSTRAP: facts/logic_report.txt does NOT exist, or exists and is
+#        FAILED, AND TARGET does NOT yet exist on disk (this is the first
+#        creation of an engine input in a fresh KB, where no report of a
+#        completed run can possibly exist yet); OR
+#     C. FRESH: facts/logic_report.txt EXISTS, is NOT FAILED, and is newer than
+#        (>=) the most recently modified existing engine input (accepted.dl /
+#        query.dl).
 #
 #   DENY (exit 2) otherwise, i.e. TARGET is an engine input AND NOT bootstrap
-#   AND (report absent OR report stale).
+#   AND (report absent OR report FAILED OR report stale).
 #
 #   TARGET itself is read from the hook payload; when it cannot be read at all
 #   the predicate above is undefined, and the narrow fail-closed rule described
@@ -29,11 +39,22 @@
 #
 # This predicate is falsifiable in both directions:
 #   - Bootstrap is allowed: creating facts/query.dl in a freshly `factlog init`
-#     KB (no logic_report.txt, no pre-existing query.dl) returns exit 0.
+#     KB (no logic_report.txt, no pre-existing query.dl) returns exit 0. It stays
+#     allowed after a failed /factlog check in that same KB: the failure report
+#     that run now writes must not turn the first creation of an input into a
+#     deny it never was (#338).
 #   - Stale-guard still denies: once a logic_report.txt exists, any edit that
 #     would supersede it (report absent due to deletion, or report older than
 #     an existing input) returns exit 2. Running /factlog check (which calls
 #     run_logic_check.py and writes a fresh logic_report.txt) re-satisfies (C).
+#   - A failed check does NOT open the gate: /factlog check writes a report even
+#     when the engine cannot run, and that report is fresh by mtime, so on the
+#     mtime test alone it would satisfy (C) and hand out edit rights on engine
+#     inputs precisely when the engine is broken. FAILED is what keeps the deny;
+#     what changes is that the deny now names the cause instead of pointing at
+#     the command that just failed. There is deliberately no escape hatch — the
+#     Write|Edit matcher leaves Bash open, and docs/guide/determinism.md walks
+#     through the recovery.
 #
 # KB root resolution: FACTLOG_ROOT > active-KB config > cwd. This matches the
 # engine/CLI resolver (factlog.config.resolve_root(None)) so the gate guards the
@@ -742,23 +763,166 @@ report="${KB_ROOT}/facts/logic_report.txt"
 accepted="${KB_ROOT}/facts/accepted.dl"
 query="${KB_ROOT}/facts/query.dl"
 
-# BOOTSTRAP (predicate branch B): a fresh KB has neither facts/logic_report.txt
-# nor the engine input being created. `factlog init` seeds neither file, so the
-# FIRST creation of facts/query.dl (or facts/accepted.dl) cannot possibly be
-# preceded by a report. Allow it; the stale-guard takes over once a report
-# exists. We test the on-disk existence of the *target* (not the path string)
-# so this only relaxes the genuine first-write case.
-if [ ! -f "$report" ] && [ ! -e "$abs_target" ]; then
+# A report of a run in which THE ENGINE NEVER RAN (#338). run_logic_check.py
+# writes one when it cannot reach the engine, so that a previous run's report is
+# not left on disk to be read as this run's result. Such a report carries no
+# finding about the KB, so this gate treats it as no report: it neither
+# satisfies freshness nor cancels bootstrap.
+#
+# The match is on the WHOLE line, fixed-string (`-qxF`), against the constant
+# run_logic_check.ENGINE_FAILED_STATUS_LINE. `grep -q` returns 1 for no match
+# and 2 for an unreadable file; both mean "do not treat this as failed", which
+# is the permissive answer — but a file that cannot be read has already failed
+# `-f` at the call sites below, or is about to fail the mtime branch, so this
+# opens nothing the freshness predicate does not already close.
+#
+# WHOLE line, not substring: the report interpolates KB text, and a value that
+# merely CONTAINS the marker must not deny — `grep -qF` here would let any KB
+# whose data mentions the marker lock its own engine inputs.
+#
+# Trailing CRs are stripped first, because this predicate fails OPEN on a
+# mismatch. A report written with CRLF endings — which is what text-mode writing
+# produces on Windows — did not match, so the gate returned 0 and handed out
+# edit rights on engine inputs at the moment the engine was broken.
+# run_logic_check now pins LF on the writing side; this is the other half, so a
+# report from either side reads the same. Measured: with CRLF, exit 0 before
+# this line and 2 after.
+#
+# TRAILING only, and identical to cli.py's rule — see _records_engine_failure.
+# The two readers must agree on every report, so "close enough" is the one thing
+# this cannot be.
+# THREE-VALUED, and the third value is the point:
+#   0 — the report records a run in which the engine never ran
+#   1 — it does not
+#   2 — CANNOT JUDGE; every caller must treat this as deny.
+#
+# It used to be two-valued, `sed | grep`, and "cannot judge" collapsed into "no
+# marker" — which is the ALLOW side. One NUL byte anywhere in the report was
+# enough: BSD sed aborts on it, and under `set -euo pipefail` the pipeline is
+# non-zero EVEN WHEN GREP MATCHED, so the gate concluded there was no marker,
+# fell through to the mtime branch, found the report fresh and permitted a write
+# that origin/main refused. An unreadable report (chmod 000) did the same, and
+# the old comment's defence — that such a file was already caught by `-f` or
+# would be caught by the mtime branch — is false when measured: `-f` does not
+# test readability and `stat` still answers. Blocker 2 forged the marker; this
+# erased it. Both end with the gate wrong about the same file.
+#
+# Judged in PYTHON, not sed/grep, for three reasons:
+#   - it is the only way to tell "no marker" from "could not look", which is the
+#     whole fix; grep's exit 2 does not survive a pipeline and `set -o pipefail`
+#     cannot distinguish which stage failed;
+#   - the comparison is then byte-for-byte the same operation factlog/cli.py
+#     performs — same split, same rstrip, same equality — so the two readers
+#     agree by construction rather than by two texts being kept in sync;
+#   - this hook already REQUIRES Python 3.11+ and denies without it (fail-closed
+#     branch 1 above), so it adds no dependency. Nothing here imports factlog:
+#     it is stdlib only, so a broken package cannot turn the judgement into a
+#     crash. (Sharing one predicate with cli.py is #364, deliberately not here.)
+#
+# The verdict is read from STDOUT, not from the exit status, because Python
+# exits 1 on an uncaught traceback and 1 is a verdict — "no marker", the allow
+# side. A token that must be printed cannot be produced by a crash.
+_records_engine_failure() {
+  local out status=0
+  out=$(FACTLOG_GATE_REPORT="$1" "${PYTHON_RUNNER[@]}" -c '
+import os, sys
+try:
+    raw = open(os.environ["FACTLOG_GATE_REPORT"], "rb").read()
+except Exception:
+    sys.exit(3)
+marker = b"status: engine-did-not-run"
+hit = any(line.rstrip(b"\r") == marker for line in raw.split(b"\n"))
+print("factlog-report-failed" if hit else "factlog-report-ok")
+' 2>/dev/null) || status=$?
+  if [ "$status" -ne 0 ]; then
+    return 2
+  fi
+  case "$out" in
+    factlog-report-failed) return 0 ;;
+    factlog-report-ok)     return 1 ;;
+    *)                     return 2 ;;
+  esac
+}
+
+# Bytes, and TRAILING CRs only — identical to factlog/cli.py's rule.
+# `tr -d '\r'` deleted every CR anywhere, and that is not a weaker version of the
+# same rule but a different one: it MANUFACTURES the marker out of a line that is
+# not the marker. A report line reading "sta<CR>tus: engine-did-not-run" matched
+# here and did not in cli.py — the gate denying a completed run while status
+# called the same file normal.
+#
+# Reading `rb` and comparing bytes also means no decoding step can change the
+# verdict: undecodable bytes are simply unequal to the marker, where a decoder
+# told to ignore errors would delete them and could make a non-marker line into
+# one.
+report_verdict=0
+if [ -f "$report" ]; then
+  _records_engine_failure "$report" || report_verdict=$?
+fi
+
+# BOOTSTRAP (predicate branch B): a fresh KB has no report of a completed engine
+# run, and does not yet have the engine input being created. `factlog init`
+# seeds neither file, so the FIRST creation of facts/query.dl (or
+# facts/accepted.dl) cannot possibly be preceded by such a report. Allow it; the
+# stale-guard takes over once a real report exists. We test the on-disk
+# existence of the *target* (not the path string) so this only relaxes the
+# genuine first-write case.
+#
+# A FAILED report does not count as a report here. Without that, running
+# /factlog check in a fresh KB — which fails, because facts/accepted.dl does not
+# exist yet — would drop a report into facts/ and thereby DENY the very first
+# creation of facts/query.dl, a write this gate has always allowed.
+# Verdict 2 (cannot judge) deliberately does NOT satisfy this branch: a report we
+# could not read is not evidence that this is a fresh KB, so the call falls
+# through to the deny below rather than being waved past as a first write.
+if { [ ! -f "$report" ] || [ "$report_verdict" -eq 0 ]; } && [ ! -e "$abs_target" ]; then
   _allow
 fi
 
-# Predicate: report must exist and be newer than the most recently modified
-# engine input file (accepted.dl or query.dl).
+# Predicate: report must exist, record a completed engine run, and be newer than
+# the most recently modified engine input file (accepted.dl or query.dl).
 if [ ! -f "$report" ]; then
   echo "[factlog GATE] DENIED: facts/logic_report.txt does not exist." >&2
   echo "  An engine input already exists but no report supersedes it." >&2
   echo "  Run /factlog check (\"\${CLAUDE_PLUGIN_ROOT}\"/tools/factlog_python.sh \"\${CLAUDE_PLUGIN_ROOT}\"/tools/run_logic_check.py)" >&2
   echo "  to produce a fresh report before editing engine inputs." >&2
+  exit 2
+fi
+
+# FAILED report (#338) — checked BEFORE the mtime comparison, because this
+# report IS fresh: /factlog check has just written it. Re-running the check
+# cannot produce a fresh one until the cause is fixed, so "stale" would be both
+# untrue and useless advice, and the deny message must carry the cause instead.
+if [ "$report_verdict" -eq 0 ]; then
+  echo "[factlog GATE] DENIED: the last logic check could not run the engine." >&2
+  echo "  facts/logic_report.txt records the failure, not a result — so it does" >&2
+  echo "  not supersede facts/accepted.dl or facts/query.dl." >&2
+  # 2>/dev/null and `|| true`: this is a courtesy line, and the deny above does
+  # not depend on it. sed aborts on the same NUL-bearing input that used to break
+  # the predicate, and under `set -e` that would take the whole script down
+  # BEFORE the exit 2 below — turning a deny into a crash on exactly the input
+  # this branch was hardened against.
+  # Redirect order matters: `>&2` first duplicates the REAL stderr onto stdout,
+  # then `2>/dev/null` silences sed's own errors. Written the other way round,
+  # `>&2` would inherit the already-silenced fd 2 and the reason would vanish
+  # into /dev/null.
+  sed -n 's/^reason: /  reason: /p' "$report" >&2 2>/dev/null || true
+  echo "  Fix that cause and re-run /factlog check; re-running it unchanged will" >&2
+  echo "  fail the same way. Recovery for a KB that cannot produce a report at" >&2
+  echo "  all is in docs/guide/determinism.md (Bash is not gated)." >&2
+  exit 2
+fi
+
+# CANNOT JUDGE — deny, and say so honestly rather than guessing. Reaching here
+# means the report exists but could not be read or produced no verdict
+# (unreadable, or an interpreter that died). The old code called that "no
+# marker", which is the ALLOW side of a guard whose entire job is to withhold
+# write access when the KB's state is unknown.
+if [ "$report_verdict" -ne 1 ]; then
+  echo "[factlog GATE] DENIED: facts/logic_report.txt could not be judged." >&2
+  echo "  The file exists but the gate could not read a verdict from it, so it" >&2
+  echo "  cannot be treated as a report of a completed run." >&2
+  echo "  Check that it is readable and is text; re-run /factlog check to rewrite it." >&2
   exit 2
 fi
 

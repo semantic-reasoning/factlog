@@ -329,6 +329,193 @@ for inp in "facts/accepted.dl" "facts/query.dl" "policy/logic-policy.dl"; do
   printf '%s' "$out" | grep -qF "report STALE" && ok "STALE when $inp newer than report" || bad "stale not detected for $inp"
 done
 
+# --- report of a run that never started the engine (#338) ---------------------
+#
+# run_logic_check.py now writes facts/logic_report.txt even when it cannot reach
+# the engine, so that the previous run's report is not left on disk to be read as
+# this run's result. That report is FRESH by mtime — the check just wrote it — so
+# a freshness test alone reports `report fresh` for a run in which the engine
+# never started, which is the same quiet lie #338 exists to remove, one layer up.
+#
+# The report here is produced by the REAL tool rather than hand-written, so this
+# case cannot drift from what run_logic_check actually writes. It fails with or
+# without pyrewire installed (missing engine and missing accepted.dl both stop
+# the check before the engine runs); only the reason text differs, which is why
+# nothing below asserts on it.
+EKB="$(mktemp -d)/wiki"
+"$PYTHON" -m factlog init --target "$EKB" >/dev/null
+printf '%s\n%s\n' "$H" 'A,rel,B,sources/a.md,confirmed,0.9,' > "$EKB/facts/candidates.csv"
+printf 'x\n' > "$EKB/sources/a.md"
+# Delete the report FIRST: a report surviving from an earlier step would be read
+# as this run's, which is the very failure being pinned.
+rm -f "$EKB/facts/logic_report.txt"
+rm -f "$EKB/facts/accepted.dl"                       # the check cannot start the engine
+set +e; "$PYTHON" "$PLUGIN_ROOT/tools/run_logic_check.py" --wiki "$EKB" >/dev/null 2>&1; ck_rc=$?; set -e
+[ "$ck_rc" -ne 0 ] && ok "#338: the logic check fails when the engine cannot start" || bad "#338: expected the logic check to fail, got rc=$ck_rc"
+[ -f "$EKB/facts/logic_report.txt" ] && ok "#338: the failed check still wrote a report" || bad "#338: no report written by the failed check"
+out="$("$PYTHON" -m factlog status --target "$EKB" 2>&1)"
+printf '%s' "$out" | grep -qE "logic: +report fresh" \
+  && bad "#338: status calls a run that never started the engine 'fresh': $(printf '%s' "$out"|grep logic)" \
+  || ok "#338: status does not call a failed check fresh"
+printf '%s' "$out" | grep -qF "never started the engine" \
+  && ok "#338: status says the engine never started" \
+  || bad "#338: status does not say the engine never started: $(printf '%s' "$out"|grep -A1 logic)"
+printf '%s' "$out" | grep -qE "errors=\?|warnings=\?" \
+  && bad "#338: status invents count fields the report does not carry: $(printf '%s' "$out"|grep logic)" \
+  || ok "#338: status reports no counts for a run that produced none"
+
+# The pair to the case above, and the one that makes it a DISCRIMINATION rather
+# than a stricter rule: a report of a COMPLETED run, in the real report's shape —
+# same title, same header fields, counts present — and differing only in that it
+# carries no `status: engine-did-not-run` line. It must still read as fresh with
+# its counts parsed. The freshness fixture higher up is a two-line stub
+# (`errors:`/`warnings:` only), so it would keep passing even if the new test
+# matched something every report contains; this one would not.
+printf '%s\n' \
+  'Logic Check Report' '==================' 'engine: wirelog / pyrewire' \
+  'input: facts/accepted.dl' 'policy: policy/logic-policy.dl' 'engine facts: 7' \
+  'review facts outside engine input: 1' 'policy findings: 0' 'errors: 0' 'warnings: 1' \
+  > "$EKB/facts/logic_report.txt"
+touch -t 205001010000 "$EKB/facts/logic_report.txt"
+out="$("$PYTHON" -m factlog status --target "$EKB" 2>&1)"
+printf '%s' "$out" | grep -qE "logic: +report fresh; errors=0, warnings=1" \
+  && ok "#338: a completed run's report still reads as fresh with its counts" \
+  || bad "#338: completed report misread: $(printf '%s' "$out"|grep -A1 logic)"
+printf '%s' "$out" | grep -qF "never started the engine" \
+  && bad "#338: a completed run's report is being called an engine failure" \
+  || ok "#338: a completed run's report is not called an engine failure"
+
+# The three shapes that separate "matches the marker" from "matches something
+# like it". Each is the twin of a case in tests/test_gate_check.sh (59-61), on
+# the same file contents, because the two readers must reach the SAME verdict on
+# the same report — a disagreement is how a completed run gets called an engine
+# failure by one consumer and not the other.
+#
+# (a) MID-LINE: an `in text` substring test passes this; `in report_lines` does
+#     not. The report interpolates KB-derived values, so a warning line quoting
+#     the marker is reachable content.
+printf '%s\n' \
+  'Logic Check Report' '==================' 'engine: wirelog / pyrewire' \
+  'errors: 0' 'warnings: 1' 'Warnings:' \
+  "- unknown status treated as non-engine input: 'odd status: engine-did-not-run'" \
+  > "$EKB/facts/logic_report.txt"
+touch -t 205001010000 "$EKB/facts/logic_report.txt"
+out="$("$PYTHON" -m factlog status --target "$EKB" 2>&1)"
+printf '%s' "$out" | grep -qF "never started the engine" \
+  && bad "#338: marker as a substring is being read as an engine failure: $(printf '%s' "$out"|grep -A1 logic)" \
+  || ok "#338: marker only as a substring is not an engine failure"
+
+# (b) CRLF: the report a text-mode write produces on Windows. The gate strips CR
+#     and denies; status must agree rather than call the same file complete.
+printf 'Logic Check Report\r\n==================\r\nstatus: engine-did-not-run\r\nreason: pyrewire missing\r\n' \
+  > "$EKB/facts/logic_report.txt"
+touch -t 205001010000 "$EKB/facts/logic_report.txt"
+out="$("$PYTHON" -m factlog status --target "$EKB" 2>&1)"
+printf '%s' "$out" | grep -qF "never started the engine" \
+  && ok "#338: CRLF failure report is still read as an engine failure" \
+  || bad "#338: CRLF failure report misread as a completed run: $(printf '%s' "$out"|grep -A1 logic)"
+printf '%s' "$out" | grep -qF "reason: pyrewire missing" \
+  && ok "#338: the reason survives CRLF" \
+  || bad "#338: reason lost on a CRLF report: $(printf '%s' "$out"|grep -A1 logic)"
+
+# (b2) A LONE CR before the marker text. `grep` does not break a line on "\r",
+#     so the gate reads one physical line and allows. A reader in Python's
+#     default universal-newline mode is translated "\r" -> "\n" by the decoder
+#     before it sees the text, which makes this a marker line for that reader
+#     only — the same divergence as (c), reached through the decoder rather than
+#     through splitlines(). Reading with newline="" is what closes it.
+printf 'Logic Check Report\n==================\nengine: wirelog / pyrewire\nerrors: 0\nwarnings: 1\n- odd\rstatus: engine-did-not-run\n' \
+  > "$EKB/facts/logic_report.txt"
+touch -t 205001010000 "$EKB/facts/logic_report.txt"
+out="$("$PYTHON" -m factlog status --target "$EKB" 2>&1)"
+gate_rc=0
+FACTLOG_ROOT="$EKB" bash "$PLUGIN_ROOT/hooks/gate_check.sh" \
+  <<< "$(printf '{"file_path":"%s"}' "$EKB/facts/accepted.dl")" >/dev/null 2>&1 || gate_rc=$?
+printf '%s' "$out" | grep -qF "never started the engine" \
+  && bad "#338: a lone CR makes status disagree with the gate (gate exit=$gate_rc): $(printf '%s' "$out"|grep -A1 logic)" \
+  || ok "#338: a lone CR before the marker text is not a marker line (gate exit=$gate_rc, agrees)"
+
+# (b3) CR in the MIDDLE of the marker text, and (b4) a LEADING CR. Twins of gate
+#      CASES 62-63 on the same bytes. Neither is the marker: a CR inside a line
+#      is data, not a line ending. The gate used to delete every CR anywhere,
+#      which turned both into the marker there and left them as ordinary text
+#      here — the gate denying a completed run while status called the same file
+#      normal. Both readers now strip trailing CRs only. Each case invokes the
+#      gate on the same file and reports its exit code, so a future divergence
+#      shows up in the failure text instead of having to be inferred.
+for shape in mid lead; do
+  case "$shape" in
+    mid)  printf 'Logic Check Report\n==================\nengine: wirelog / pyrewire\nerrors: 0\nwarnings: 0\nsta\rtus: engine-did-not-run\n' > "$EKB/facts/logic_report.txt" ;;
+    lead) printf 'Logic Check Report\n==================\nengine: wirelog / pyrewire\nerrors: 0\nwarnings: 0\n\rstatus: engine-did-not-run\n' > "$EKB/facts/logic_report.txt" ;;
+  esac
+  touch -t 205001010000 "$EKB/facts/logic_report.txt"
+  out="$("$PYTHON" -m factlog status --target "$EKB" 2>&1)"
+  gate_rc=0
+  FACTLOG_ROOT="$EKB" bash "$PLUGIN_ROOT/hooks/gate_check.sh" \
+    <<< "$(printf '{"file_path":"%s"}' "$EKB/facts/accepted.dl")" >/dev/null 2>&1 || gate_rc=$?
+  printf '%s' "$out" | grep -qF "never started the engine" \
+    && bad "#338: $shape-line CR read as an engine failure (gate exit=$gate_rc): $(printf '%s' "$out"|grep -A1 logic)" \
+    || ok "#338: $shape-line CR is not a marker line (gate exit=$gate_rc, agrees)"
+done
+
+# (b5) Several trailing CRs: rstrip removes the whole run, so this IS the marker.
+#      Pins the quantifier against a rule that strips only one CR.
+printf 'Logic Check Report\n==================\nstatus: engine-did-not-run\r\r\nreason: pyrewire missing\n' \
+  > "$EKB/facts/logic_report.txt"
+touch -t 205001010000 "$EKB/facts/logic_report.txt"
+out="$("$PYTHON" -m factlog status --target "$EKB" 2>&1)"
+printf '%s' "$out" | grep -qF "never started the engine" \
+  && ok "#338: marker with several trailing CRs is still the marker" \
+  || bad "#338: several trailing CRs lost the marker: $(printf '%s' "$out"|grep -A1 logic)"
+
+# (b6) A NUL byte in the report, on a report run_logic_check ACTUALLY WROTE.
+#      The gate's old sed|grep predicate aborted on this and read the failure as
+#      "no marker", flipping a DENY into an ALLOW; status must not acquire the
+#      mirror-image defect. Both readers judge bytes now, so the NUL changes
+#      nothing about the verdict. The gate is invoked on the same file and its
+#      exit code reported, so a divergence appears in the text rather than being
+#      inferred.
+NULKB="$(mktemp -d)/wiki"
+"$PYTHON" -m factlog init --target "$NULKB" >/dev/null
+printf '%s\n%s\n' "$H" 'A,rel,B,sources/a.md,confirmed,0.9,' > "$NULKB/facts/candidates.csv"
+printf 'x\n' > "$NULKB/sources/a.md"
+rm -f "$NULKB/facts/logic_report.txt" "$NULKB/facts/accepted.dl"
+set +e; "$PYTHON" "$PLUGIN_ROOT/tools/run_logic_check.py" --wiki "$NULKB" >/dev/null 2>&1; set -e
+if grep -q "engine-did-not-run" "$NULKB/facts/logic_report.txt" 2>/dev/null; then
+  ok "#338: setup — a real failure report to perturb"
+else
+  bad "#338: setup — no real failure report; the NUL case would be vacuous"
+fi
+printf '\000' >> "$NULKB/facts/logic_report.txt"
+touch "$NULKB/facts/logic_report.txt"
+# The engine input must EXIST, or the gate answers from its bootstrap branch
+# (first creation is allowed however the report reads) and its exit code would
+# say nothing about the marker — the two readers would be answering different
+# questions while looking like they agree.
+printf 'review_required("q")?\n' > "$NULKB/facts/query.dl"
+touch -t 200001010000 "$NULKB/facts/query.dl"
+out="$("$PYTHON" -m factlog status --target "$NULKB" 2>&1)"
+gate_rc=0
+FACTLOG_ROOT="$NULKB" bash "$PLUGIN_ROOT/hooks/gate_check.sh" \
+  <<< "$(printf '{"file_path":"%s"}' "$NULKB/facts/query.dl")" >/dev/null 2>&1 || gate_rc=$?
+if printf '%s' "$out" | grep -qF "never started the engine" && [ "$gate_rc" -eq 2 ]; then
+  ok "#338: a NUL byte hides the marker from neither reader (gate exit=$gate_rc)"
+else
+  bad "#338: a NUL byte split the readers (gate exit=$gate_rc, want 2): $(printf '%s' "$out"|grep -A1 logic)"
+fi
+rm -rf "$NULKB"
+
+# (c) U+2028 before the marker text: `grep` does not break lines there, so the
+#     gate reads a normal report. splitlines() DOES, so status used to call this
+#     same file an engine failure. Pinning the disagreement, not just the rule.
+printf 'Logic Check Report\n==================\nengine: wirelog / pyrewire\nerrors: 0\nwarnings: 1\n- odd\xe2\x80\xa8status: engine-did-not-run\n' \
+  > "$EKB/facts/logic_report.txt"
+touch -t 205001010000 "$EKB/facts/logic_report.txt"
+out="$("$PYTHON" -m factlog status --target "$EKB" 2>&1)"
+printf '%s' "$out" | grep -qF "never started the engine" \
+  && bad "#338: U+2028 makes status disagree with the gate: $(printf '%s' "$out"|grep -A1 logic)" \
+  || ok "#338: U+2028 before the marker text is not a marker line (agrees with the gate)"
+
 # --- binary original counted as covered via its conversion (like coverage) -----
 PKB="$(mktemp -d)/wiki"
 "$PYTHON" -m factlog init --target "$PKB" >/dev/null

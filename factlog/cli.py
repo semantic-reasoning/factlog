@@ -1717,6 +1717,16 @@ def cmd_vocab(args: argparse.Namespace) -> int:
     return 0
 
 
+# The whole line run_logic_check.py writes into facts/logic_report.txt when the
+# engine never ran (#338). Matched byte for byte against a whole line, the same
+# way hooks/gate_check.sh matches it (`grep -qxF`); the constant is also spelled
+# out in tools/run_logic_check.py as ENGINE_FAILED_STATUS_LINE. All three are one
+# vocabulary and change together. Its natural home is factlog/common.py, next to
+# the other shared report vocabulary — worth hoisting when something else needs
+# it, and not worth a third reader having to rediscover the coupling meanwhile.
+ENGINE_FAILED_STATUS_LINE = "status: engine-did-not-run"
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     """Summarise the active KB's state: sources, facts by status, vocabulary,
     conflicts, logic-report freshness, and engine availability."""
@@ -1951,17 +1961,60 @@ def cmd_status(args: argparse.Namespace) -> int:
     # Logic report freshness
     report = ctx.facts_dir / "logic_report.txt"
     if report.is_file():
-        text = report.read_text(encoding="utf-8", errors="ignore")
-        # Lower-case `errors:`/`warnings:` are the summary lines in
-        # run_logic_check's report (the `Errors:`/`Warnings:` headers are capitalised).
-        errors = next((ln.split(":", 1)[1].strip() for ln in text.splitlines() if ln.startswith("errors:")), "?")
-        warnings = next((ln.split(":", 1)[1].strip() for ln in text.splitlines() if ln.startswith("warnings:")), "?")
-        rep_mtime = report.stat().st_mtime
-        # The report is a function of all three run_logic_check inputs.
-        inputs = [p for p in (ctx.accepted_dl, ctx.facts_dir / "query.dl", ctx.logic_policy_dl) if p.is_file()]
-        stale = any(p.stat().st_mtime > rep_mtime for p in inputs)
-        fresh = "STALE (inputs changed since last check — run /factlog check)" if stale else "fresh"
-        print(f"  logic:      report {fresh}; errors={errors}, warnings={warnings}")
+        # The VERDICT is computed on BYTES, and hooks/gate_check.sh performs the
+        # identical operation on the identical bytes: split on b"\n", rstrip
+        # b"\r", compare to the marker. Every part is load-bearing, and each was
+        # a divergence before it was:
+        #
+        #   - splitlines() also breaks on U+2028/U+2029/U+0085; the gate does
+        #     not. U+2028 is routine in text pasted from PDFs, so a value
+        #     carrying one opened a line here that is not a line there.
+        #   - read_text()'s universal-newline mode turns "\r\n" AND a lone "\r"
+        #     into "\n" before this code sees anything, re-creating that
+        #     divergence one layer down.
+        #   - TRAILING CRs only, and all of them, matching the gate.
+        #   - and DECODING cannot be part of the verdict at all: with
+        #     errors="ignore" an undecodable byte is deleted, so a line that is
+        #     not the marker becomes one — the same "manufacture a marker out of
+        #     a non-marker line" defect that `tr -d '\r'` had, with the readers
+        #     swapped. Bytes have no such failure mode; a byte that decodes to
+        #     nothing is simply unequal to the marker.
+        #
+        # Decoding happens only for what is DISPLAYED, with errors="replace" so
+        # an unreadable byte is visible as U+FFFD instead of silently vanishing.
+        raw = report.read_bytes()
+        report_byte_lines = [ln.rstrip(b"\r") for ln in raw.split(b"\n")]
+        report_lines = [
+            ln.decode("utf-8", errors="replace") for ln in report_byte_lines
+        ]
+        if ENGINE_FAILED_STATUS_LINE.encode("utf-8") in report_byte_lines:
+            # A report of a run in which THE ENGINE NEVER RAN is not a result, and
+            # freshness is the wrong question to ask of it: /factlog check has just
+            # written it, so it IS fresh by mtime, and reporting that would say a
+            # run that never started the engine is up to date. It also carries no
+            # `errors:`/`warnings:` lines at all — deliberately, since 0 would mean
+            # the engine ran and found nothing — so the `?` fallbacks below would
+            # print two count fields for counts that were never obtained (#338).
+            reason = next(
+                (ln.split(":", 1)[1].strip() for ln in report_lines if ln.startswith("reason: ")),
+                "(not recorded)",
+            )
+            print(f"  logic:      report records a run that never started the engine; reason: {reason}")
+            print(
+                "              ⚠ the counts a completed check reports are absent, not 0"
+                " — fix the cause above, then run /factlog check"
+            )
+        else:
+            # Lower-case `errors:`/`warnings:` are the summary lines in
+            # run_logic_check's report (the `Errors:`/`Warnings:` headers are capitalised).
+            errors = next((ln.split(":", 1)[1].strip() for ln in report_lines if ln.startswith("errors:")), "?")
+            warnings = next((ln.split(":", 1)[1].strip() for ln in report_lines if ln.startswith("warnings:")), "?")
+            rep_mtime = report.stat().st_mtime
+            # The report is a function of all three run_logic_check inputs.
+            inputs = [p for p in (ctx.accepted_dl, ctx.facts_dir / "query.dl", ctx.logic_policy_dl) if p.is_file()]
+            stale = any(p.stat().st_mtime > rep_mtime for p in inputs)
+            fresh = "STALE (inputs changed since last check — run /factlog check)" if stale else "fresh"
+            print(f"  logic:      report {fresh}; errors={errors}, warnings={warnings}")
     else:
         print("  logic:      no logic_report.txt yet (run /factlog check)")
     return 0

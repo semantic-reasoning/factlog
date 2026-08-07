@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 _TOOLS_DIR = Path(__file__).resolve().parent
@@ -74,8 +75,14 @@ def path_endpoints(line: str) -> list[str]:
 
 def display_value(value: str) -> str:
     """A value as it should read in the report. The empty string is rendered
-    `""` so `path 갑봇 -> "" ` does not print as a dangling arrow."""
-    return value if value else '""'
+    `""` so `path 갑봇 -> "" ` does not print as a dangling arrow.
+
+    ``one_line`` because this is the rendering helper for values DECODED out of
+    a query: ``arg_value`` is ``json.loads``, so ``"a\\nstatus: ..."`` in
+    facts/query.dl — one physical line, the escape written as two ordinary
+    characters — decodes to a real newline. Every caller that renders a decoded
+    query value goes through here or is wrapped at its own call site."""
+    return one_line(value) if value else '""'
 
 
 # Query parsing is delegated to common's string-aware parsers
@@ -192,7 +199,9 @@ def validate_query(
             return errors, warnings
         args = query_args(line)
         if is_quoted_string(args[0]) and arg_value(args[0]) not in entities:
-            warnings.append(f"query references non-engine entity: {arg_value(args[0])}")
+            warnings.append(
+                f"query references non-engine entity: {one_line(arg_value(args[0]))}"
+            )
         return errors, warnings
     if predicate == "count":
         # count(subject, relation)? — engine-verified aggregate (see evaluate_queries).
@@ -232,7 +241,9 @@ def validate_query(
                     )
     for constant in quoted_constants(line):
         if constant and constant not in entities and constant not in {"S", "R", "O", "X", "Q"}:
-            warnings.append(f"query references non-engine entity or relation: {constant}")
+            warnings.append(
+                f"query references non-engine entity or relation: {one_line(constant)}"
+            )
     return errors, warnings
 
 
@@ -348,8 +359,8 @@ def policy_result_line(predicate: str, line: str, inferred: dict[str, set[tuple[
             # string, so is_quoted_string is exactly "not a variable" — the
             # predicate policy_row_matches already uses, said the same way.
             if not is_quoted_string(arg):
-                bindings.append(f"{arg}={value}")
-        values.append(", ".join(bindings) if bindings else ", ".join(row))
+                bindings.append(f"{arg}={one_line(value)}")
+        values.append(", ".join(bindings) if bindings else ", ".join(one_line(v) for v in row))
     suffix = "; " + "; ".join(values) if values else ""
     echo = f" (query: {line})" if any(is_quoted_string(arg) for arg in args) else ""
     return f"{predicate} results{echo}: {len(rows)} rows{suffix}"
@@ -414,7 +425,16 @@ def evaluate_queries(
                     trace = dependency_path(facts, constants[0], constants[1], attribute_rels)
                 else:
                     trace = []
-                value = " -> ".join(trace) if trace else "(not found)"
+                # one_line here because the trace nodes come from
+                # dependency_path over the facts and are rendered directly. `head`
+                # needs no wrapping at THIS site because it is built from
+                # display_value, which applies one_line itself — not because a
+                # query-derived value is safe. It is not: path_endpoints goes
+                # through arg_value, which is json.loads, so an escape in
+                # facts/query.dl decodes to a real newline inside a single
+                # physical line. That is what put the escaping into display_value
+                # in the first place.
+                value = " -> ".join(one_line(node) for node in trace) if trace else "(not found)"
                 results.append(f"{head}: {value}")
         elif predicate == "relation":
             if query_error("relation", line) is not None:
@@ -426,8 +446,11 @@ def evaluate_queries(
                 bindings = []
                 for arg, value in zip(args, [subject, relation, object_], strict=True):
                     if not is_quoted_string(arg):
-                        bindings.append(f"{arg}={value}")
-                result_values.append(", ".join(bindings) if bindings else f"{subject}, {relation}, {object_}")
+                        bindings.append(f"{arg}={one_line(value)}")
+                result_values.append(
+                    ", ".join(bindings) if bindings
+                    else f"{one_line(subject)}, {one_line(relation)}, {one_line(object_)}"
+                )
             suffix = "; " + "; ".join(result_values) if result_values else ""
             results.append(f"relation results: {len(rows)} rows{suffix}")
         elif predicate == "count":
@@ -460,13 +483,277 @@ def evaluate_queries(
             results.append(f"count results (query: {line}): {len(objects)} (distinct objects)")
         elif predicate == "review_required":
             constants = quoted_constants(line)
-            question = constants[0] if constants else "(missing question)"
+            question = one_line(constants[0]) if constants else "(missing question)"
             results.append(f"review_required: {question}")
     return results
 
 
+# The line that tells a reader — and hooks/gate_check.sh — that this report
+# describes a run in which THE ENGINE NEVER RAN. It is the whole discriminator
+# between "engine ran and found nothing" and "there is nothing to find out from
+# here", so it is matched as a whole line, byte for byte, on both sides. Change
+# it in one place only together with the other (`grep -qxF` in the gate).
+#
+# The marker is NEGATIVE — a successful report carries no status line at all —
+# for one reason: the success report's text is a published contract
+# (tests/golden/logic_report.txt, examples/sample-kb/facts/logic_report.txt, and
+# every report already sitting in a user's KB), and a positive `status: ok`
+# marker would make every one of those read as unrecognised.
+#
+# A negative marker only works while "carries the marker" and "written by the
+# failure path" are the same set, and that is NOT free. This report interpolates
+# KB-derived text, and KB text reaches it through TWO decoders, each of which can
+# deliver a newline the file itself does not show:
+#
+#   - facts/candidates.csv — a quoted CSV field may span physical lines, so a
+#     hand-edited status of "odd\nstatus: engine-did-not-run" arrives as a value
+#     containing a real newline;
+#   - facts/query.dl — `arg_value` is `json.loads`, so `"a\nstatus: ..."` written
+#     as ONE physical line, with the escape as two ordinary characters, decodes
+#     to the same thing. Splitting the file into lines cannot see it. This is the
+#     worst carrier of the three: query.dl is an engine input this very gate
+#     guards, and `/factlog query` writes it;
+#   - facts/accepted.dl — `common.parse_relation_fact` is `json.loads` too, so a
+#     compiled fact carries escapes exactly like a query does, and reaches here
+#     through the ordinary pipeline: compile_facts renders a candidates value into
+#     dl_string form and this report decodes it back. Covered by display_value and
+#     the result renderers, which one_line every value they print.
+#
+# Whichever the carrier, the run SUCCEEDS, the report carries real counts, and
+# both readers then call it an engine failure with `reason: (not recorded)` — the
+# deadlock #338 removes, rebuilt out of KB content, and since the status fix
+# repeated by two consumers rather than one.
+#
+# `one_line` is what keeps the two sets equal, and it has to be at every site
+# where a DECODED value reaches a report line — the csv-side sites alone left
+# query.dl wide open. The claim to be careful with is the one this comment used
+# to make: not "no interpolated value can open a line" as a property of the
+# design, but "these call sites are wrapped", which is a property of a list and
+# stays true only while the list is complete. tests/unit pins one carrier per
+# decoder for that reason; a new interpolation site needs its own.
+#
+# The cost of the negative marker is also that a report truncated inside its
+# first three lines would lose it and read as a success; _write_report closes
+# that by replacing the file atomically.
+ENGINE_FAILED_STATUS_LINE = "status: engine-did-not-run"
+
+# Characters that may not appear inside a report line. Two families, and the
+# second was learned the hard way:
+#
+#   - LINE BREAKS: every character str.splitlines() breaks on, which is wider
+#     than "\n" because it is what a READER may split on (cli.py's splitlines()
+#     did). A value carrying one opens a line for one reader and not for another.
+#     U+2028 is routine in text pasted from PDFs — see factlog/common.py's
+#     line-break handling.
+#   - OTHER C0/C1 CONTROLS, above all NUL. A report line is judged by tools that
+#     are not all Python, and a NUL made BSD sed abort mid-pipeline; because the
+#     gate read that pipeline's status as "no marker", ONE NUL byte in the report
+#     turned a DENY into an ALLOW. That is this whole change in reverse — not
+#     forging the marker but erasing the reader's ability to see it — so no value
+#     reaching a report line may carry one. ESC belongs here too: this report is
+#     printed to a terminal.
+#
+# Pinned per family in tests/unit (newline, NUL, U+2028). Narrowing the set to
+# "\n" alone used to leave every suite green.
+_LINE_BREAKS = "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
+# TAB is deliberately NOT here, and it is the only C0 character excluded. It
+# cannot break a line, cannot end a reader, and cannot drive a terminal — it is
+# the one control character people actually type into a KB — so escaping it would
+# change the report's text for benign input while defending nothing. Measured:
+# with TAB in the set, a tab-bearing status value renders differently from
+# origin/main; without it, the report stays byte-identical.
+_FORBIDDEN_IN_LINE = frozenset(
+    _LINE_BREAKS
+    + "".join(chr(c) for c in range(0x00, 0x20) if c != 0x09)
+    + "\x7f"
+    + "".join(chr(c) for c in range(0x80, 0xA0))
+)
+
+
+def one_line(value: object) -> str:
+    """*value* as report text that cannot become more than one line, nor blind a
+    reader of it.
+
+    Values carrying none of _FORBIDDEN_IN_LINE — every ordinary status, entity
+    and literal — are returned UNCHANGED, so the report stays byte-identical to
+    what it has always written (tests/golden/logic_report.txt pins that). Only a
+    value that would break or corrupt the line is escaped, via ``repr``, which
+    keeps it readable and visible rather than silently dropping the offending
+    part: a hand-edited status of ``odd\\nstatus: engine-did-not-run`` reports as
+    ``'odd\\nstatus: engine-did-not-run'``, on one line, still naming what is
+    wrong with the row.
+    """
+    text = str(value)
+    return repr(text) if any(ch in _FORBIDDEN_IN_LINE for ch in text) else text
+
+
+def _write_report(text: str) -> None:
+    """Put *text* in facts/logic_report.txt, atomically and with LF endings.
+
+    temp + os.replace, not write_text: the gate reads this file to decide
+    whether editing engine inputs is allowed, and a write interrupted after the
+    header but before ENGINE_FAILED_STATUS_LINE would leave a file that is
+    neither report yet passes the gate as one.
+
+    ``newline="\\n"`` is load-bearing, not tidiness. Text mode translates "\\n" to
+    os.linesep, so on Windows every line of this report would be written CRLF —
+    and the gate's whole-line match then stops matching, which fails OPEN: it
+    hands out edit rights on engine inputs at the moment the engine is broken.
+    Measured here by writing a CRLF report by hand (gate exit 0 where LF gives
+    2); that Windows *produces* one is read off the io.TextIOWrapper contract,
+    not measured, since neither this lane nor the review could run Windows. The
+    gate strips CR as well, so a report from either side reads correctly.
+
+    NOT common._atomic_write_text: same temp+replace shape, but that one writes
+    in default text mode. Reusing it would reintroduce exactly the translation
+    this pins against; the duplication is the difference.
+    """
+    out = FACTS_DIR / "logic_report.txt"
+    # A per-run temp name, not a fixed "<name>.tmp": two checks running against
+    # one KB would otherwise write the SAME temp file and each replace it, so a
+    # reader could be handed a file mixing both runs. Atomicity against
+    # truncation held with the fixed name; atomicity against a concurrent run did
+    # not. The finally-unlink keeps a failed replace from leaving the temp behind.
+    fd, tmp_name = tempfile.mkstemp(dir=str(out.parent), prefix=out.name + ".", suffix=".tmp")
+    os.close(fd)
+    tmp = Path(tmp_name)
+    try:
+        tmp.write_text(text, encoding="utf-8", newline="\n")
+        os.replace(tmp, out)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+
+def engine_failure_report(exc: BaseException) -> str:
+    """The report for a run that could not run the engine (#338).
+
+    Until this existed, an engine that could not start — pyrewire missing or too
+    old, facts/accepted.dl absent, a policy program the engine refuses — left
+    facts/logic_report.txt *untouched*. Two things followed, and the second is
+    the reason this function reports failure rather than staying silent:
+
+    - the previous run's report survived on disk and read as this run's result.
+      A reader (and `/factlog check`'s output) had nothing to tell the two
+      apart, so a report describing facts that are no longer compiled looked
+      current;
+    - the gate's freshness predicate had nothing to compare against, so it
+      denied every edit to an engine input and pointed at `/factlog check`,
+      which is the command that had just failed.
+
+    What this report may and may not say:
+
+    - It states the CAUSE and nothing about the KB. Every count a successful
+      report carries (engine facts, policy findings, errors, warnings) is
+      OMITTED rather than written as 0 — `engine facts: 0` is a claim that the
+      engine ran over an empty KB, which is exactly the sentence this report
+      must not produce.
+    - It does NOT satisfy the gate. A report of a run that did not happen is not
+      evidence that editing facts/accepted.dl or facts/query.dl is safe, so
+      ENGINE_FAILED_STATUS_LINE keeps the deny in place — the gate's message
+      just changes from "run /factlog check" to the actual cause. Recovery is
+      the Bash route in docs/guide/determinism.md, which the hook's Write|Edit
+      matcher deliberately leaves open.
+    - It does not change the exit code. main re-raises, so `/factlog check`
+      still fails and still prints the error on stderr; this file is a side
+      effect of failing, never a sign of success.
+
+    *reason* is collapsed to a single line and then escaped like any other
+    KB-derived value: the format is line-oriented and judged whole-line on the
+    other side, and an engine ParseError's message spans several lines.
+
+    THE REASON LINE IS A CARRIER, and the one the carrier list above did not
+    name — it is very nearly the only place KB text enters a FAILURE report. A
+    line of facts/accepted.dl the engine refuses goes into the exception message
+    verbatim, so whatever that line holds lands here. ``" ".join(split())``
+    collapses Python whitespace only, so a NUL rode it into the report intact and
+    blinded the gate's reader; ``one_line`` is what closes that, and it is the
+    same grade of escaping every other interpolation gets.
+    """
+    reason = one_line(" ".join(str(exc).split())) or exc.__class__.__name__
+    accepted = FACTS_DIR / "accepted.dl"
+    query = FACTS_DIR / "query.dl"
+    return "\n".join(
+        [
+            "Logic Check Report",
+            "==================",
+            ENGINE_FAILED_STATUS_LINE,
+            "engine: wirelog / pyrewire",
+            "input: facts/accepted.dl",
+            f"reason: {reason}",
+            f"reason type: {type(exc).__name__}",
+            f"facts/accepted.dl: {'present' if accepted.is_file() else 'MISSING'}",
+            f"facts/query.dl: {'present' if query.is_file() else 'absent'}",
+            "",
+            "The engine did not run, so this report says NOTHING about the KB.",
+            "The counts a successful report carries — engine facts, policy",
+            "findings, errors, warnings — are missing above rather than 0,",
+            "because 0 would mean the engine ran and found nothing.",
+            "",
+            "Any earlier report has been replaced, so nothing here can be read as",
+            "an older run's result. While this status line is present, EDITS to",
+            "facts/accepted.dl and facts/query.dl stay denied — creating either",
+            "for the first time in this KB is still allowed, as it is when no",
+            "report exists at all.",
+            "",
+            "Recovery: fix the cause above and re-run the logic check. When the",
+            "check cannot run at all, see the Bash recovery in",
+            "docs/guide/determinism.md — the gate's Write|Edit matcher leaves it",
+            "open on purpose.",
+            "",
+        ]
+    )
+
+
 def main() -> None:
     ensure_dirs()
+    try:
+        text = build_report_text()
+    except Exception as exc:
+        # Report the failure, then let it propagate untouched: run_cli prints a
+        # FactlogError on stderr and exits 1, anything else keeps its traceback.
+        # ensure_dirs is deliberately OUTSIDE this — "not a factlog KB root" has
+        # no facts/ to write into, and is not a statement about the engine.
+        #
+        # THE GUARANTEE IS "an exception out of build_report_text", NOT "any run
+        # in which the engine could not start". A run that dies before reaching
+        # this try still leaves the previous report standing, and one such path
+        # is a real engine failure rather than a hypothetical: `common` guards
+        # its `import pyrewire` with `except ImportError` ONLY, so an engine
+        # whose import fails some other way — a broken native extension raising
+        # OSError from dlopen — propagates out of the `from common import ...`
+        # above, at module import time, where no handler here can run. Measured:
+        # no report is written, and the traceback is the only output. Widening
+        # that guard belongs next to it in factlog/common.py, not here; catching
+        # it at this module's import would mean rebuilding FACTS_DIR without the
+        # module that defines it.
+        #
+        # BEST EFFORT, because reporting the failure must not REPLACE it. With
+        # facts/ read-only, writing raised PermissionError from inside this
+        # handler and that became the program's output: the operator got a
+        # traceback about the report instead of the one clean line naming the
+        # actual cause, which origin/main gave them. A report we could not write
+        # is not worth the diagnosis we already have.
+        try:
+            _write_report(engine_failure_report(exc))
+        except Exception as write_exc:  # noqa: BLE001 - never mask *exc*
+            print(
+                f"warning: could not write facts/logic_report.txt: {write_exc}",
+                file=sys.stderr,
+            )
+        raise
+    _write_report(text)
+    print(text)
+
+
+def build_report_text() -> str:
+    """The report for a run that reached the engine, byte-identical to what this
+    module has always written (tests/golden/logic_report.txt pins it).
+
+    It is a separate function only so main can tell a report it could build from
+    one it could not: everything here presumes ``run_wirelog`` returned, and the
+    one caller turns any exception raised below into ``engine_failure_report``.
+    """
     facts = load_accepted_facts()
     candidates = load_facts()
     inferred = run_wirelog()
@@ -488,11 +775,16 @@ def main() -> None:
         if not row["subject"] or not row["relation"] or not row["object"]:
             errors.append(f"incomplete fact row: {row}")
         if row["status"] not in KNOWN_STATUSES:
-            warnings.append(f"unknown status treated as non-engine input: {row['status']}")
+            # one_line: this is the report's most direct path from a hand-edited
+            # CSV cell to a report line, and a quoted CSV field may contain a
+            # newline. Unescaped, a status of "odd\nstatus: engine-did-not-run"
+            # put ENGINE_FAILED_STATUS_LINE into a SUCCESSFUL report and both
+            # readers then called a completed run an engine failure.
+            warnings.append(f"unknown status treated as non-engine input: {one_line(row['status'])}")
 
     for predicate in sorted(policy_query_predicates):
         for target, reason in sorted(inferred[predicate]):
-            policy_findings.append(f"{predicate}: {target} ({reason})")
+            policy_findings.append(f"{one_line(predicate)}: {one_line(target)} ({one_line(reason)})")
 
     for line in query_lines():
         query_errors, query_warnings = validate_query(line, entities, policy_query_predicates, path_nodes)
@@ -547,10 +839,7 @@ def main() -> None:
         # no result line, because a path result names its two endpoints.
         report.append("- no answerable queries in facts/query.dl (see Errors)")
 
-    text = "\n".join(report) + "\n"
-    out = FACTS_DIR / "logic_report.txt"
-    out.write_text(text, encoding="utf-8")
-    print(text)
+    return "\n".join(report) + "\n"
 
 
 if __name__ == "__main__":
