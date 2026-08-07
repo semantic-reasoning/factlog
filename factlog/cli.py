@@ -588,13 +588,329 @@ def _init_kb(target) -> bool:
     return False
 
 
-def cmd_init(args: argparse.Namespace) -> int:
+_DEFAULT_KB = "~/wiki"
+
+
+def _resolve_kb_target(cli_value: str | None, command: str):
+    """Resolve the KB root `init`/`setup` will scaffold, announcing an implicit one.
+
+    ``--target`` defaulted to the literal string ``"~/wiki"`` in the parser, which
+    made these the only two commands that ignored factlog's documented root
+    precedence: with ``$FACTLOG_ROOT`` exported, or a KB already active, a bare
+    ``factlog init`` still scaffolded a stray ``~/wiki`` — and then, before the
+    activation rule above, made that invented directory the global default (#356).
+
+    Same order as every other command, minus the cwd fallback: a bare ``init``
+    scattering a KB layout across whatever directory the user happens to stand in
+    would be a worse default than the one it replaces, so ``~/wiki`` stays the
+    last resort. A target that was not spelled out is printed with its source —
+    an implicit target is only safe if the user can see which one it was.
+    """
+    import os
+    from pathlib import Path
+    from factlog.common import FactlogError
+
+    if cli_value is not None and not cli_value.strip():
+        # Folding "" into "no --target given" made the next line print a claim
+        # that was simply false, and then scaffolded somewhere the user had not
+        # named. An empty value is a mistake worth reporting, not a synonym.
+        raise FactlogError(f"{command}: --target was given but empty. Pass a path, or omit the flag.")
+    if cli_value:
+        return Path(cli_value).expanduser().resolve()
+
+    env = os.environ.get("FACTLOG_ROOT")
+    configured = factlog_config.read_root()
+    if env:
+        target, source = Path(env).expanduser().resolve(), "$FACTLOG_ROOT"
+    elif configured:
+        target, source = Path(configured), "the active-KB config"
+    else:
+        target, source = Path(_DEFAULT_KB).expanduser().resolve(), f"the default {_DEFAULT_KB}"
+
+    # Keeping cwd out of the *chain* was not enough to keep it out of the
+    # outcome. `factlog where --porcelain` prints cwd when nothing is configured
+    # (config.py `resolve_root`), and SKILL.md tells every flow to export that
+    # into $FACTLOG_ROOT — so a bare `init` in a directory of unrelated files
+    # scattered a KB layout across it, which is the exact default the chain
+    # excludes as worse. On main the hard-coded `~/wiki` made it impossible.
+    #
+    # Narrow on purpose: only when the target was *not* named on the command
+    # line, resolves to the current directory, that directory already holds
+    # something, and it is not already a KB. An empty directory loses nothing,
+    # and re-scaffolding a real KB you happen to be standing in is idempotent.
+    if target == Path.cwd().resolve() and not (target / "sources").is_dir() and any(target.iterdir()):
+        raise FactlogError(
+            f"{command}: refusing to scaffold a KB into the current directory ({target}), "
+            "which already holds other files and is not a factlog KB. It was chosen "
+            f"implicitly (from {source}), not named on the command line — pass "
+            f"--target {target} if that is really what you want."
+        )
+    print(f"{command}: no --target given; using {target} (from {source})")
+    return target
+
+
+class Activation(NamedTuple):
+    """What ``init``/``setup`` decided about the active-KB config, and what to say.
+
+    Deliberately *only* the config question. An earlier version also carried a
+    ``recorded`` flag that ``setup``'s closing line consulted to decide whether a
+    flagless flow would reach the new KB — but that is a different question, and
+    the config cannot answer it: ``$FACTLOG_ROOT`` outranks the config, so a KB
+    the config does not record is still what every flagless command reaches when
+    the environment names it. The closing line asks ``resolve_root`` instead (see
+    ``_reach_note``), and this type no longer offers a flag that invites the
+    wrong question.
+    """
+
+    write: bool
+    summary: str
+    hint: str | None
+
+
+def _activated_line(target) -> str:
+    """Confirm the write, promising the default-here behaviour only when it holds.
+
+    The parenthetical is a claim about what flagless commands will do, and it is
+    false while ``$FACTLOG_ROOT`` names something else — the config was written,
+    but rank 2 still wins. In ``init`` the notes underneath corrected it; in
+    ``setup`` the same string also goes out alone as a summary ``done:`` line,
+    with nothing beside it. So the promise is dropped when it is not true, and
+    the notes say where flagless commands actually go.
+    """
+    if factlog_config.resolve_root()[0] == str(target):
+        return f"active-KB config set to {target} (ingest/ask/sync default here from any directory)"
+    return f"active-KB config set to {target}"
+
+
+def _switch_hint(target) -> str:
+    """How to make the config record *target*.
+
+    Says "record" rather than "work in": with ``$FACTLOG_ROOT`` naming the target,
+    the user can already work in it, and "to work in it: factlog use <target>"
+    then told them to go where they already were. What ``use`` adds in that state
+    is durability, not access.
+    """
+    return f"to record it in the config: factlog use {target}   (or re-run with --activate)"
+
+
+def _not_active_lines(current: str | None, target) -> tuple[str, str]:
+    """The summary + hint printed when the KB is created but not recorded.
+
+    The old value is always named, because the failure mode this replaces was
+    losing it with nothing on screen to restore it from. Every line here is about
+    the config file only — which KB is actually in force also depends on
+    ``$FACTLOG_ROOT`` (see ``_env_override_note`` and ``_reach_note``). Claiming
+    the target "is NOT active" while ``factlog where`` reports it as active would
+    make this line contradict the one output the skill machine-reads.
+    """
+    if current:
+        summary = f"active-KB root unchanged: {current} — {target} is not recorded in the config"
+    else:
+        summary = f"the config records no active KB — {target} is not recorded in it either"
+    return summary, _switch_hint(target)
+
+
+def _unreadable_lines(target) -> tuple[str, str]:
+    """Said when the config exists but cannot be parsed, so it is left alone.
+
+    Refusing here is the point: the unreadable bytes may be a truncated write of
+    the user's real root — and ``write_root`` rebuilds the file from a failed
+    read, so writing would replace both that root and any ``lang`` with nothing.
+    """
+    return (
+        f"active-KB config at {factlog_config.config_path()} could not be read — "
+        f"leaving its bytes untouched; {target} is not recorded in it",
+        f"repair that file, or overwrite it deliberately: factlog use {target}",
+    )
+
+
+def _env_override_note() -> str | None:
+    """Warn when ``$FACTLOG_ROOT`` outranks whatever the config now says.
+
+    The config is what these commands write, but it is only rank 3 of the
+    precedence, and ``SKILL.md`` tells every flow to export ``$FACTLOG_ROOT``
+    first — so "exported" is the recommended state, not an edge case. Without
+    this line, a message about the config reads as a claim about the active KB
+    and contradicts ``factlog where --porcelain`` in the same session.
+
+    The comparison is env against the **config**, which is the only pair whose
+    disagreement this line is about. Comparing env against the *target* instead —
+    as the first version did — was wrong in both directions: it fired when env
+    and config agreed and only the target differed (nothing is being overridden,
+    so the note was a false alarm), and stayed silent when env genuinely
+    outranked a different config root that happened to equal the target (the case
+    where the user most needs to know the config is not what is in force). Call
+    this *after* any write, so "what the config now says" is current.
+    """
+    import os
     from pathlib import Path
 
-    target = Path(args.target).expanduser().resolve()
+    env = os.environ.get("FACTLOG_ROOT")
+    if not env:
+        return None
+    resolved = str(Path(env).expanduser().resolve())
+    if resolved == factlog_config.read_root():
+        return None
+    return f"note: $FACTLOG_ROOT={resolved} outranks the config in this session (factlog where)"
+
+
+def _reach_note(target, *, quiet_when: str | None = None) -> str | None:
+    """Say where a flagless command would actually go, when it is not *target*.
+
+    ``setup``'s closing line used to ask the ``Activation`` whether the config
+    recorded the target, and phrase the next step accordingly. That is the wrong
+    question: what the user is about to do is run a flagless ``/factlog sync``,
+    and where that lands is ``resolve_root``'s answer — ``$FACTLOG_ROOT`` first,
+    then the config, then cwd. With the environment naming the new KB, the
+    config-based answer produced a closing line that was simply false.
+
+    Returns None when a flagless command already reaches *target*, so the common
+    path keeps the plain "next step" wording. Otherwise it names the KB that
+    would be reached, where that came from, and both ways to redirect — including
+    the fact that ``factlog use`` alone does not help while the environment wins.
+
+    *quiet_when* suppresses the line for one resolution source. Callers that have
+    already printed the same fact pass ``"config"``: beside a summary reading
+    "root unchanged: /wiki — /scratch is not recorded in the config" and a hint reading
+    "factlog use /scratch", a third line saying a flagless command would reach
+    /wiki from the config is pure restatement — and that is #356's own
+    reproduction path, so it is the case most readers meet. The closing line
+    passes nothing, because there the fact has not been said yet.
+    """
+    effective, source = factlog_config.resolve_root()
+    if effective == str(target) or source == quiet_when:
+        return None
+    label = {"env": "$FACTLOG_ROOT", "config": "the active-KB config", "cwd": "the current directory"}
+    origin = label.get(source, source)
+    fix = f"pass --target {target}"
+    if source == "env":
+        fix += f", or point $FACTLOG_ROOT at {target}"
+    else:
+        fix += f", or record it: factlog use {target}"
+    return f"a flagless command would target {effective} (from {origin}), not {target} — {fix}"
+
+
+def _write_root_or_explain(command: str, target) -> None:
+    """``write_root``, but a filesystem refusal becomes an actionable message.
+
+    The contract this branch added is "a damaged config always has a way out",
+    and both advertised exits — ``init --activate`` and ``factlog use`` — go
+    through this write. With a *directory* sitting at the config path every write
+    raises ``IsADirectoryError``, so both exits died on the same traceback.
+
+    Nothing here removes what is in the way: deleting a path the user may have
+    put there deliberately is not this command's call. It reports which path
+    blocks the write and what to do, and exits 1 through the normal
+    ``FactlogError`` boundary instead of a stack trace.
+    """
+    from factlog.common import FactlogError
+
+    try:
+        factlog_config.write_root(target)
+    except OSError as exc:
+        raise FactlogError(
+            f"{command}: cannot write the active-KB config at "
+            f"{factlog_config.config_path()} ({exc.strerror or exc}). Something other "
+            "than a regular file is in the way — move or remove that path, then "
+            "re-run. Nothing was changed."
+        ) from exc
+
+
+def _plan_activation(target, activate: bool | None) -> Activation:
+    """Decide whether creating *target* also moves the global active-KB pointer.
+
+    ``init``/``setup`` used to call ``write_root`` unconditionally, so creating
+    one throwaway KB silently replaced whichever KB the user had been working in
+    — with no confirmation and no surviving record of the old value (#356).
+    Creating a KB and choosing which KB is active are separate intents, so the
+    config is only written when nothing holds it yet (the first-run experience
+    ``setup`` exists for), when the target is already what it names, or when the
+    user asks with ``--activate``.
+
+    *activate* is the tri-state ``--activate``/``--no-activate`` flag: True to
+    always claim the config, False to never claim it (scratch KBs, scripts),
+    None for the default above.
+
+    Two states count as held even though ``read_root`` reports neither of them:
+
+    * a recorded root that does not currently exist — an unmounted volume must
+      not hand the setting back to ``init``;
+    * a config file that cannot be parsed — ``read_root`` folds that into None
+      like a fresh install, but the bytes may *be* the user's root, and unlike
+      the unmounted case a write destroys them. Only a missing file means
+      "nothing is recorded yet".
+
+    A config that parses but records no usable root (``{"lang": "ko"}``,
+    ``{"root": ""}``) is deliberately *not* held: it is understood, it holds no
+    path to lose, ``resolve_root`` already treats it as empty, and ``write_root``
+    preserves the sibling ``lang``. Treating it as held would deny the first-run
+    experience to anyone who ran ``factlog lang`` before their first ``init``.
+    """
+    status = factlog_config.config_status()
+    if status == factlog_config.UNREADABLE:
+        if activate is True:
+            # Explicitly asked for, and the only way back to a usable setting
+            # from a corrupt file — but say what was destroyed rather than
+            # letting the old bytes vanish quietly.
+            return Activation(
+                True,
+                f"active-KB root: replaced an unreadable {factlog_config.config_path()} with {target}",
+                None,
+            )
+        return Activation(False, *_unreadable_lines(target))
+
+    current = factlog_config.read_root()
+    already = current is not None and current == str(target)
+
+    if already and activate is not True:
+        return Activation(False, f"active-KB root unchanged: {target} (already recorded)", None)
+    if activate is False:
+        return Activation(False, *_not_active_lines(current, target))
+    if activate is True:
+        if current and not already:
+            return Activation(True, f"active-KB root: {current} → {target}", None)
+        return Activation(True, _activated_line(target), None)
+    if current is None:
+        return Activation(True, _activated_line(target), None)
+    return Activation(False, *_not_active_lines(current, target))
+
+
+def _apply_activation(
+    command: str, target, activate: bool | None, *, defer_reach: bool = False
+) -> tuple[Activation, list[str]]:
+    """Run ``_plan_activation``'s decision, print it, and hand back what was said.
+
+    Returns the plan plus the extra notes printed under it, so ``setup`` can
+    repeat the *same* strings in its end-of-run summary rather than recomputing
+    them — the summary used to carry the decision without the environment note
+    beside it, which is how a false closing line ended up with no counter-evidence
+    on screen.
+    """
+    plan = _plan_activation(target, activate)
+    if plan.write:
+        _write_root_or_explain(command, target)
+    print(f"{command}: {plan.summary}")
+    if plan.hint:
+        print(f"  {plan.hint}")
+    # After the write: the note is about what the config says *now*.
+    # *defer_reach* is for callers that render the reach note themselves later.
+    # `setup` does, in its closing line, and printing it here as well put the same
+    # sentence on screen three times: under the decision, again in the summary,
+    # and again at the end.
+    candidates = (_env_override_note(),) if defer_reach else (
+        _env_override_note(),
+        _reach_note(target, quiet_when="config"),
+    )
+    notes = [note for note in candidates if note]
+    for note in notes:
+        print(f"  {note}")
+    return plan, notes
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    target = _resolve_kb_target(getattr(args, "target", None), "factlog init")
     _init_kb(target)
-    factlog_config.write_root(target)
-    print(f"factlog init: active KB set to {target} (ingest/ask/sync default here from any directory)")
+    _apply_activation("factlog init", target, getattr(args, "activate", None))
     return 0
 
 
@@ -663,7 +979,14 @@ def cmd_use(args: argparse.Namespace) -> int:
         if error is not None:
             print(f"factlog use: {error}", file=sys.stderr)
             return 2
-    factlog_config.write_root(target)
+    # A config that cannot be read loses its `lang` to this write, because
+    # write_root rebuilds the file from a read that returned {}. Unlike `init`,
+    # `use` still goes ahead — re-pointing is the whole command, and it is the
+    # advertised way out of a damaged config — but it says what it is about to
+    # cost instead of dropping it silently, which is what `init --activate`
+    # already does.
+    replacing_unreadable = factlog_config.config_status() == factlog_config.UNREADABLE
+    _write_root_or_explain("factlog use", target)
     # --lang, when given, is set (or cleared) alongside the root in the same config
     # file; when omitted the existing language is preserved by write_root, so `use`
     # never silently drops a configured narration language.
@@ -674,7 +997,16 @@ def cmd_use(args: argparse.Namespace) -> int:
     print(f"factlog use: active KB set to {target}{note}")
     if phrase is not None:
         print(f"  {phrase}")
+    if replacing_unreadable:
+        print("  replaced an unreadable config (any narration language in it is gone)")
     print(f"  config: {factlog_config.config_path()}")
+    # `use` is where the hint from `init`/`setup` sends people, so it owes the same
+    # disclosure they do: it writes rank 3, and rank 2 outranks it. Without this,
+    # "active KB set to X" was followed by `where --porcelain` printing something
+    # else — the exact contradiction fixed in `init` and in `setup`'s closing line.
+    for extra in (_env_override_note(), _reach_note(target)):
+        if extra:
+            print(f"  {extra}")
     return 0
 
 
@@ -2050,8 +2382,6 @@ def cmd_setup(args: argparse.Namespace) -> int:
     Idempotent and safe to re-run: deps are only installed when pyrewire is
     missing/too old, and `cmd_init` skips files/dirs that already exist.
     """
-    from pathlib import Path
-
     actions: list[str] = []
 
     # Validate --lang up front (same contract/rc as `factlog lang`) so an invalid
@@ -2088,21 +2418,47 @@ def cmd_setup(args: argparse.Namespace) -> int:
         install_attempted = True
 
     print("\n=== factlog setup: initialise knowledge base ===")
-    target = Path(args.target).expanduser().resolve()
+    target = _resolve_kb_target(getattr(args, "target", None), "factlog setup")
     kb_created = _init_kb(target)
-    factlog_config.write_root(target)
     if kb_created:
         actions.append(f"created KB layout at {target}")
     else:
         actions.append(f"KB already present at {target}")
-    actions.append(f"set active KB to {target} (ingest/ask/sync default here from any directory)")
+    # Shared with `init`: a first-time setup activates the KB it just made, but a
+    # setup run beside an existing active KB creates without re-pointing it (#356).
+    activation, activation_notes = _apply_activation(
+        "factlog setup", target, getattr(args, "activate", None), defer_reach=True
+    )
+    actions.append(activation.summary)
+    # The hint and the notes travel with the summary into the block the user
+    # actually reads at the end. Printed only at the moment of the decision, they
+    # sat twenty-odd lines above the closing "next step" line with nothing to
+    # recall them. They are kept out of `actions` because those are prefixed
+    # "done:" and none of this is something setup did.
+    notes: list[str] = ([activation.hint] if activation.hint else []) + activation_notes
     # Optional narration language: applied only when --lang is given, so an existing
-    # language survives a re-run of setup that omits the flag (write_root above
-    # already preserves it). Uses the shared validate/apply path, so an empty value
-    # clears the setting with the same wording as `factlog lang`.
+    # language survives a re-run of setup that omits the flag (the root write above,
+    # when it happens, preserves it). Uses the shared validate/apply path, so an
+    # empty value clears the setting with the same wording as `factlog lang`.
+    #
+    # Not applied at all to a config that could not be read: `write_lang` rebuilds
+    # the file from `_read_config()`, which is `{}` for a damaged file, so it would
+    # destroy the KB root the activation step above just refused to touch — while
+    # the summary says it left it alone. Guarding only the root write left this
+    # sibling path open. Re-read the status here rather than reusing the plan's,
+    # because `--activate` may have just replaced the damaged file with a valid one.
+    lang_deferred = False
     if lang_normalized is not None:
-        phrase = _apply_lang(lang_normalized)
-        actions.append(f"{phrase} (assistant prose only)")
+        if factlog_config.config_status() == factlog_config.UNREADABLE:
+            lang_deferred = True
+            notes.append(
+                f"narration language NOT set: {factlog_config.config_path()} could not be read, "
+                "and writing it would destroy the KB root it may still hold — repair that file, "
+                "then set the language with `factlog lang`"
+            )
+        else:
+            phrase = _apply_lang(lang_normalized)
+            actions.append(f"{phrase} (assistant prose only)")
 
     print("\n=== factlog setup: final environment check ===")
     # gate="setup": a missing git is reported but does not fail setup, whose
@@ -2126,12 +2482,38 @@ def cmd_setup(args: argparse.Namespace) -> int:
             print(f"  done: {action}")
     else:
         print("  done: nothing to change (already set up)")
+    for note in notes:
+        print(f"  → {note}")
+
+    if final_ok and lang_deferred:
+        # A valid --lang was asked for and not applied. Exiting 0 handed a script
+        # three agreeing signals — rc 0, a "complete" line, and `factlog lang`
+        # printing empty — with only prose to say the request had been declined.
+        print(
+            f"\nfactlog setup: the KB at {target} is ready, but --lang was not applied "
+            f"because {factlog_config.config_path()} could not be read (see above). "
+            "Repair that file, then set the language with `factlog lang`.",
+            file=sys.stderr,
+        )
+        return 1
 
     if final_ok:
-        print(
-            "\nfactlog setup complete. Next: run /factlog sync (and then query, "
-            "check, repair) inside your knowledge base."
-        )
+        # The closing line is the one a user (or an LLM) acts on, so it asks the
+        # question they are about to ask: where does a flagless /factlog sync go?
+        # That is `resolve_root`, not the config — with $FACTLOG_ROOT naming the
+        # new KB, a config-based answer claimed it was unreachable when it was
+        # already the KB in force.
+        reach = _reach_note(target)
+        if reach is None:
+            print(
+                "\nfactlog setup complete. Next: run /factlog sync (and then query, "
+                "check, repair) inside your knowledge base."
+            )
+        else:
+            print(
+                f"\nfactlog setup complete, but {reach}. "
+                "Then: /factlog sync (and then query, check, repair)."
+            )
         return 0
 
     print(
@@ -3067,6 +3449,35 @@ def cmd_eject(args: argparse.Namespace) -> int:
     return 1 if recompile_failed else 0
 
 
+_TARGET_HELP = (
+    "knowledge base root to create "
+    f"(default: $FACTLOG_ROOT, else the active KB, else {_DEFAULT_KB})"
+)
+
+
+def _add_activation_flags(parser: argparse.ArgumentParser) -> None:
+    """Attach the tri-state active-KB flags shared by `init` and `setup`.
+
+    Default (neither flag) is None, which ``_plan_activation`` reads as "activate
+    only if no KB is active yet". Mutually exclusive, so asking for both is a
+    usage error (rc 2) rather than a silent last-flag-wins.
+    """
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--activate",
+        dest="activate",
+        action="store_true",
+        help="also make this KB the active one, replacing the current active KB",
+    )
+    group.add_argument(
+        "--no-activate",
+        dest="activate",
+        action="store_false",
+        help="never touch the active-KB setting, not even when none is set yet",
+    )
+    parser.set_defaults(activate=None)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="factlog", description="factlog environment and KB helpers")
     parser.add_argument("--version", action="version", version=f"factlog {__version__}")
@@ -3076,14 +3487,16 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.set_defaults(func=cmd_doctor)
 
     init = sub.add_parser("init", help="scaffold an empty knowledge base layout")
-    init.add_argument("--target", default="~/wiki", help="knowledge base root to create")
+    init.add_argument("--target", default=None, help=_TARGET_HELP)
+    _add_activation_flags(init)
     init.set_defaults(func=cmd_init)
 
     setup = sub.add_parser(
         "setup",
         help="one-shot bootstrap: doctor, ensure deps, init KB, re-check",
     )
-    setup.add_argument("--target", default="~/wiki", help="knowledge base root to create")
+    setup.add_argument("--target", default=None, help=_TARGET_HELP)
+    _add_activation_flags(setup)
     setup.add_argument(
         "--lang",
         default=None,
@@ -3111,7 +3524,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--target",
         default=None,
         help="KB root whose runs/sources/ receives the conversions "
-        "(default: the active KB set by `factlog init`/`use`, else cwd)",
+        "(default: the active KB set by `factlog use`, else cwd)",
     )
     ingest.add_argument(
         "--force",

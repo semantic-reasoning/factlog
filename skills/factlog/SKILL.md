@@ -162,7 +162,15 @@ In order, `setup`:
    `$CLAUDE_PLUGIN_ROOT` if set, else the package root). If pyrewire already
    satisfies the floor, the install is skipped.
 3. Runs the KB `init` for `--target` (scaffolds `sources/`, `facts/`,
-   `policy/`, etc.).
+   `policy/`, etc.) and records it in the **active-KB config** — but only when
+   that config records nothing yet. If the user already has a KB recorded, the
+   KB is created and their recorded one is left where it is; `setup` prints the
+   untouched value and the command that would change it. Note this is about the
+   config file, which is only rank 3 of the precedence — whether a flagless
+   command reaches the new KB is a separate question that `setup`'s closing line
+   answers. Do not re-run with `--activate` to "fix" either one on the user's
+   behalf: creating a KB is not consent to move the KB they were working in.
+   Surface the printed line and let them choose.
 4. Re-runs `doctor` and prints a concise summary of what was done and what (if
    anything) the user must do next.
 
@@ -180,7 +188,17 @@ source ~/.factlog-venv/bin/activate
 ```
 
 After `setup` succeeds, use the four operating commands — `/factlog sync`,
-`/factlog query`, `/factlog check`, `/factlog repair` — in that order.
+`/factlog query`, `/factlog check`, `/factlog repair` — in that order. **Do not
+assume the KB just created is the one they will reach.** `setup`'s closing line
+answers that: it either tells you to go ahead, or names the KB a flagless
+command would reach instead and how to redirect. Follow that line.
+
+Resolve the root the usual way (`factlog where --porcelain`, see above) rather
+than reasoning from what `setup` says about the *config* — the config is only
+rank 3, so a KB it does not record is still what every flagless command reaches
+when `$FACTLOG_ROOT` names it. If the target is genuinely unreachable, pass
+`--target <kb>` for the whole flow, or ask the user whether to run
+`factlog use <kb>` first. Do not run `factlog use` on their behalf.
 
 ---
 
