@@ -33,6 +33,7 @@ os.environ["FACTLOG_ROOT"] = factlog_config.resolve_root_from_argv("--wiki")
 
 from common import (  # noqa: E402
     composed_spelling,
+    engine_atom_key,
     engine_facts,
     ensure_dirs,
     fold_relation_name,
@@ -51,10 +52,10 @@ def main(argv: list[str] | None = None) -> int:
 
     ensure_dirs()
     facts = load_facts()
-    # Folded FOR DISPLAY, here rather than in `common.corroboration_counts`:
-    # `factlog/compile_facts.py` reads that helper too, and the raw triple is the
-    # right key there (engine atoms are the raw triple). Folding in `common`
-    # would change engine output; only this report needs the human-facing view.
+    # `common.engine_atom_key` — the same fold `common.corroboration_counts` now
+    # uses, since #342 made engine atoms fold too and the raw triple stopped
+    # being the right key anywhere. The loop stays here rather than calling that
+    # helper only because it collects the per-axis spellings in the same pass.
     #
     # The competing-values clause below folds the subject and object axes; the
     # head line and this list used the raw triple, so one report answered "how
@@ -68,11 +69,7 @@ def main(argv: list[str] | None = None) -> int:
     backing: dict[tuple[str, str, str], set[str]] = {}
     triple_spellings: dict[tuple[str, str, str], tuple[set[str], set[str]]] = {}
     for row in engine_facts(facts):
-        key = (
-            unicodedata.normalize("NFC", row["subject"]),
-            row["relation"],
-            unicodedata.normalize("NFC", row["object"]),
-        )
+        key = engine_atom_key(row)
         backing.setdefault(key, set()).add(row["source"])
         subjects, objects = triple_spellings.setdefault(key, (set(), set()))
         subjects.add(row["subject"])
@@ -133,9 +130,12 @@ def main(argv: list[str] | None = None) -> int:
             # top and would diverge from check_conflicts._fold.
             pair = (unicodedata.normalize("NFC", row["subject"]), row["relation"])
             obj = unicodedata.normalize("NFC", row["object"])
-            # Sources are re-counted here rather than read out of `counts`, which
-            # is keyed on the raw triple: summing two spellings' counts would
-            # double-count a source that backs both.
+            # Sources are collected here rather than read out of `counts`
+            # because this loop walks only the single-valued rows and wants the
+            # set, not the total. Both partitions agree — `counts` is keyed on
+            # `engine_atom_key`, and (pair, obj) above spells out the same
+            # (NFC subject, raw relation, NFC object) — so a source backing two
+            # spellings of one value counts once on either path.
             competing.setdefault(pair, {}).setdefault(obj, set()).add(row["source"])
             subject_spellings.setdefault(pair, set()).add(row["subject"])
             object_spellings.setdefault(pair, {}).setdefault(obj, set()).add(row["object"])
