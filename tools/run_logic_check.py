@@ -46,6 +46,7 @@ from common import (  # noqa: E402
     LOGIC_POLICY_DL,
     run_wirelog,
     arg_value,
+    canonical_value,
     is_quoted_string,
     query_arity_error,
     query_args,
@@ -497,30 +498,110 @@ def policy_row_matches(args: list[str], row: tuple[str, ...] | list[str]) -> boo
     0-arity row an engine may emit is dropped from a constant-pinned query (it
     still shows up for an all-variable query, as before).
 
-    Comparison is RAW (``arg_value`` only), deliberately not
-    ``common.canonical_value``: it mirrors ask_router's policy branch exactly so
-    the report and ``ask`` cannot diverge, which is the property
-    tests/unit/test_policy_query_filter.py pins. This means the policy path does
-    NOT go through the "#213 single query-value comparison chokepoint"
-    (common.py `_canonical_value`), contrary to what that docstring claims for
-    every query-match path. Measured consequence: an NFD-stored entity queried
-    with an NFC-typed constant now yields `0 rows`, which reads as a verified
-    negative. Folding both sides belongs in one place for BOTH paths and is out
-    of scope here; see #213.
+    Comparison is SPLIT BY POSITION, and the split is the whole of #383.
+    Position 0 compares RAW (``arg_value`` only); every position past it compares
+    through ``canonical_value`` — the fold ``ask``'s ``evaluate_relation``
+    already uses. Not every query-value comparison folds; still raw, for
+    example: this module's ``relation_results`` and count branch, ``ask``'s
+    count and path branches, and ``classify_query``'s path and policy gates.
+    Those asymmetries are their own matter (#213); what changes here is one.
 
-    The matching rule is kept identical to ask_router's `policy_row_matches`
-    (same body, module-specific docstring). The natural home is common.py
+    Why past-the-first folds. Those positions hold whatever the policy rule put
+    there: usually a REASON CODE, but a rule that projects an object
+    (``needs_review(S, O) :- relation(S, "대표", O).``) makes it a KB value.
+    Folding is right for both, for different reasons.
+
+    For a reason code it closes #383. ``_QUERY_VALUE_POSITIONS`` has no entry
+    for a policy predicate, so ``resolve_query_spellings`` treats every position
+    as a value and moves the constant onto some KB value's spelling -- while the
+    engine carries the code exactly as logic-policy.extra.dl wrote it. Raw
+    comparison then missed a row the "Policy evaluation: N rows" extent line
+    directly above had already counted: one report saying two things about one
+    line, and the second reading as a verified negative.
+
+    For a projected value it is what ``ask``'s ``evaluate_relation`` already
+    does, and on any KB the pipeline produces it cannot mix atoms the way
+    folding position 0 would. ``canonical_value`` folds two things --
+    NFC and ``literal_types.canonical_amount`` -- and a compile already applies
+    the FIRST to BOTH axes: ``engine_atom_key`` keys the atom on
+    ``(NFC(subject), relation, NFC(object))``, so one value's two normalization
+    forms survive a compile at neither position. The second is where the axes
+    part: ``merge_candidates`` canonicalises an amount on the OBJECT only, so a
+    merged KB's amount-shaped object arrives already canonical while two
+    amount-shaped SUBJECTS coexist. That single gap is the asymmetry -- see
+    below. That qualifier is load-bearing: the object-side canonicalisation is
+    ``merge``'s, not the compile's, so a hand-written ``candidates.csv`` run
+    through ``compile_facts`` alone can carry two amount spellings at the object
+    -- measured, folding then returns both under one subject. Reaching that
+    needs hand-writing merge's own output, the same class as editing
+    ``accepted.dl``; the position-0 gap needs neither.
+
+    Why position 0 does not: it is the entity axis, and ``resolve_query_spellings``
+    already aligns it whenever the KB writes that value one way. Folding it
+    changes an answer only where resolution was REFUSED -- where accepted.dl
+    holds one value in two spellings -- and that is reachable from a plain
+    ``compile_facts`` run, not only a hand-edited file: ``merge_candidates``
+    canonicalises amounts on the object only, so ``amount(1,000,"억")`` and
+    ``amount(1000,"억")`` survive as two subjects sharing one
+    ``kb_query_spellings`` key, which that map then refuses. Measured there, a
+    folded position 0 answered the query with the asked-for atom's row AND the
+    other atom's, indistinguishable because a constant position suppresses its
+    binding. ``kb_query_spellings``' docstring rejects exactly that trade
+    ("Substituting one atom's facts for another's is worse than the
+    unaddressability it was meant to cure"), and ``classify_query``'s policy gate
+    compares args[0] raw as well, so folding here alone would answer positively
+    for an entity the same report warns is not an engine entity.
+
+    The body is kept identical to ask_router's ``policy_row_matches``
+    (same body, module-specific docstring) so the report and ``ask``
+    cannot diverge, which is the property
+    tests/unit/test_policy_query_filter.py pins. The natural home is common.py
     alongside the other query-parsing helpers, but hoisting it there is a wider
     change than this fix needs; the report/router parity test fails if the two
-    copies ever drift. Two of its cases carry that load — the 0-arity row and the
-    NFD-stored/NFC-queried entity. Every other case is a 2-column ASCII row,
-    which a copy that lost the short-row guard, or that folded to NFC on its own,
-    still gets right; do not delete those two.
+    copies ever drift. Five of its cases carry that load. Do not delete any of
+    the five, and re-measure rather than trusting this list:
+
+    * ``test_zero_arity_row_is_dropped_by_both_paths``
+    * ``test_nfd_stored_entity_does_not_meet_an_nfc_query_on_either_path``
+    * ``test_position_0_is_not_folded_on_either_path``
+    * ``test_a_reason_code_in_the_other_normal_form_meets_the_row_on_both_paths``
+    * ``test_position_1_folds_the_way_canonical_value_does_not_merely_nfc``
+
+    The drifts they exist for: a copy that loses the short-row guard, folds
+    position 0 as well, drops the fold past the first position, drops that
+    filter altogether (#326 again), or reaches for ``unicodedata.normalize``
+    instead of ``canonical_value``. Which case catches which is not fixed here
+    on purpose -- the mapping is not one-to-one and it moves when cases are
+    added, so a claim about it goes stale silently. Run the drift and read the
+    failures.
     """
     for index, arg in enumerate(args):
         if not is_quoted_string(arg):
             continue
-        if index >= len(row) or arg_value(arg) != row[index]:
+        if index >= len(row):
+            return False
+        left, right = arg_value(arg), row[index]
+        if index:
+            # Positions past the first hold REASON CODES, not KB values, and
+            # that is where #383's contradiction lived: the engine carries the
+            # code as logic-policy.extra.dl wrote it, while
+            # resolve_query_spellings moves the query's constant onto some KB
+            # VALUE's spelling because _QUERY_VALUE_POSITIONS has no entry for a
+            # policy predicate. Raw comparison then missed a row the extent line
+            # directly above had already counted.
+            #
+            # Position 0 stays RAW deliberately. It is the entity axis, and
+            # resolve_query_spellings already aligns it whenever the KB writes
+            # that value one way; folding it changes an answer only when
+            # resolution was REFUSED, i.e. when accepted.dl holds one value in
+            # two spellings. There it would return another atom's rows under the
+            # subject the user named -- measured, `needs_review(NFC(삼성), R)?`
+            # went from the one right row to two that render identically -- and
+            # it would answer positively for an entity classify_query warns is
+            # not an engine entity, since that gate compares args[0] raw too.
+            # kb_query_spellings' docstring rejects exactly that trade.
+            left, right = canonical_value(left), canonical_value(right)
+        if left != right:
             return False
     return True
 
@@ -569,13 +650,19 @@ def policy_result_line(
     if query_error("policy query", line) is not None:
         return None
     args = query_args(line)
-    # policy_row_matches compares RAW at EVERY position (deliberately, so the
-    # report and ask_router filter identically), so the constants it sees must
-    # already carry the KB's spelling. *resolved* is *line* with its value
-    # constants moved onto the spellings accepted.dl holds; positions past the
-    # first hold engine-derived reason codes, which are absent from the value map
-    # and pass through untouched. None keeps the unresolved reading for the
-    # three-argument callers.
+    # policy_row_matches compares POSITION 0 raw, so the constant it sees there
+    # must already carry the KB's spelling — that is what *resolved* is for:
+    # *line* with its value constants moved onto the spellings accepted.dl
+    # holds. Positions past the first are compared through canonical_value, so
+    # resolution is not what makes them match. They still go through it, and
+    # that costs nothing visible: the echo is built from *line*, so a resolved
+    # constant never reaches the reader. None keeps the unresolved reading for
+    # the three-argument callers.
+    #
+    # A reason code past the first is NOT reliably absent from the value map —
+    # a hand-written logic-policy.extra.dl can name one that is also a KB value,
+    # and then it IS rewritten. Assuming otherwise is what made the report
+    # answer 0 rows under an extent line that had just said 1 (#383).
     filter_args = args if resolved is None else query_args(resolved)
     rows = [row for row in sorted(inferred[predicate]) if policy_row_matches(filter_args, row)]
     values: list[str] = []

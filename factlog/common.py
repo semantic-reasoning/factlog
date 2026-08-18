@@ -2795,9 +2795,11 @@ def resolve_query_spellings(line: str, spelling: dict[str, str]) -> str:
     and ``review_required``'s question string are left alone.
 
     A predicate this module does not know is a policy predicate, and EVERY
-    position of one is resolved. Resolving only position 0 would be the half-move
-    ``policy_row_matches`` documents itself as deferring, and it would leave the
-    router and the report describing the same row differently.
+    position of one is resolved. Resolving only position 0 would leave a folded
+    KB's hand-written policy queries unable to name their own values at the
+    positions past it; both the report and the router call THIS function, so
+    that choice would not make them disagree with each other — it would make
+    both wrong together.
 
     Positions past the first hold reason codes, and resolving them is safe only
     *conventionally*, not necessarily. ``generate_logic_policy.REASON_RE`` forces
@@ -2805,12 +2807,16 @@ def resolve_query_spellings(line: str, spelling: dict[str, str]) -> str:
     Korean KB value or differ from it by normalization, so the map never touches
     one. A hand-written ``logic-policy.extra.dl`` is not bound by that regex: a
     non-ASCII constant at position 1 that also names a KB value stored in the
-    other normal form WILL be rewritten, and ``policy_row_matches`` compares raw,
-    so the row stops matching — ``needs_review(NFC(삼성), NFC(보류))?`` against a
-    KB storing ``NFD(보류)`` goes from ``1 rows`` to ``0``. That is the narrower
-    of two evils: leaving position 0 unresolved breaks every hand-written policy
-    query on a folded KB, while this breaks only one that reuses a KB value as a
-    reason code. See ``tests/unit/test_query_spelling_resolution.py`` for both.
+    other normal form WILL be rewritten, onto a spelling the engine's row does
+    not carry. That used to end the match, because ``policy_row_matches``
+    compared raw at every position — ``needs_review(NFC(삼성), NFC(보류))?``
+    against a KB storing ``NFD(보류)`` reported ``0 rows`` under an extent line
+    that had just said ``1 rows`` (#383). The rewrite still happens; what changed
+    is that ``policy_row_matches`` now folds past the first position, so the
+    rewrite cannot cost the match. Position 0 is still compared raw there, for
+    the reasons that function documents. See
+    ``tests/unit/test_query_spelling_resolution.py`` for the rewrite and
+    ``tests/unit/test_policy_query_filter.py`` for the match.
 
     **Returns *line* UNCHANGED when nothing was substituted** — identity, not
     merely an equivalent line. Reassembly normalises whitespace
