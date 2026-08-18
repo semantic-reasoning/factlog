@@ -205,19 +205,28 @@ class TestValidateQueryVocabulary:
 
 
 class TestPolicyResultLineFiltersOnResolvedArgs:
-    """``policy_row_matches`` compares RAW at every position, so the constants it
-    filters with must already carry the KB's spelling — otherwise the report
-    answers 0 rows for a policy row the engine really inferred, and prints it
-    beside a "Policy evaluation: N rows" extent line that disagrees.
+    """``policy_row_matches`` compares position 0 RAW, so the constant it filters
+    the entity axis with must already carry the KB's spelling — otherwise the
+    report answers 0 rows for a policy row the engine really inferred, and prints
+    it beside a "Policy evaluation: N rows" extent line that disagrees.
 
-    This is the pin that makes ``filter_args = query_args(resolved)`` load-bearing;
-    with ``filter_args = args`` the whole suite still passed.
+    That makes ``filter_args = query_args(resolved)`` load-bearing, and
+    ``test_position_0_filters_on_the_resolved_constant`` is the case that carries
+    it: with ``filter_args = args`` that one fails.
+
+    Positions past the first no longer need the map — ``policy_row_matches``
+    folds them through ``canonical_value`` (#383) — so the cases below that pin
+    a reason code pass either way. They stay because they fix that resolution
+    does NOT leak into the echo: the resolved line is what gets filtered, the
+    written line is what gets shown (``policy_result_line`` builds the echo from
+    *line*, never from *resolved*).
     """
 
     # A reason code that is also a KB value, stored decomposed — the only shape
     # where a position past the first moves. See
-    # test_a_reason_code_that_is_also_a_kb_value_is_rewritten for why this is a
-    # documented cost rather than a bug.
+    # test_a_reason_code_that_is_also_a_kb_value_is_rewritten for the
+    # substitution itself; policy_row_matches folds it back, so the move no
+    # longer costs the match (#383).
     FACTS = rows((nfc("삼성"), "상태", nfd("보류")))
     INFERRED = {"needs_review": {(nfc("삼성"), nfd("보류"))}}
 
@@ -231,7 +240,7 @@ class TestPolicyResultLineFiltersOnResolvedArgs:
         )
         assert line.startswith("needs_review results (query: ") and "1 rows" in line
 
-    def test_positions_past_the_first_filter_on_the_resolved_constant(self) -> None:
+    def test_positions_past_the_first_echo_the_written_constant(self) -> None:
         spelling = kb_query_spellings(self.FACTS)
         written = f'needs_review("{nfc("삼성")}", "{nfc("보류")}")?'
         line = rlc.policy_result_line(
@@ -240,16 +249,24 @@ class TestPolicyResultLineFiltersOnResolvedArgs:
             self.INFERRED,
             resolve_query_spellings(written, spelling),
         )
+        # The row count no longer depends on resolution here — folding past the
+        # first position matches either way, and this test passes with
+        # filter_args = args. What it still pins is the ECHO: the resolved line
+        # is what gets filtered, and the written line is what gets shown.
         assert "1 rows" in line, line
-        # ...and the echo is still the line the author wrote.
         assert f"(query: {written})" in line
 
-    def test_omitting_resolved_keeps_the_unresolved_reading(self) -> None:
-        """GUARD, not evidence. The parameter is trailing and optional; the
-        three-argument callers that existed before must behave as they did."""
+    def test_omitting_resolved_still_meets_a_reason_code_past_the_first(self) -> None:
+        """The reason-code axis no longer depends on resolution (#383).
+
+        Before, a three-argument caller read this row as 0 — the constant was
+        NFC, the engine's code NFD, and the comparison raw. Folding past the
+        first position makes the map unnecessary HERE; position 0 still needs
+        it, which is what the first test in this class pins.
+        """
         written = f'needs_review("{nfc("삼성")}", "{nfc("보류")}")?'
         line = rlc.policy_result_line("needs_review", written, self.INFERRED)
-        assert "0 rows" in line, line
+        assert "1 rows" in line, line
 
     def test_omitting_the_map_keeps_the_unresolved_reading(self) -> None:
         """GUARD, not evidence. The parameter is trailing and optional; the

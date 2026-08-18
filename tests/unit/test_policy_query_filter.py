@@ -23,6 +23,7 @@ test would read the developer's real knowledge base.
 """
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 
@@ -30,6 +31,7 @@ import pytest
 
 import ask_router
 import run_logic_check as rlc
+from common import canonical_value
 
 PREDICATE = "needs_review"
 INFERRED = {
@@ -145,14 +147,83 @@ class TestReportRouterParity:
         assert _report_rows(variables, inferred) == 2
         assert _router_rows(monkeypatch, variables, inferred) == 2
 
+    def test_a_reason_code_in_the_other_normal_form_meets_the_row_on_both_paths(
+        self, monkeypatch
+    ):
+        # #383. resolve_query_spellings has no _QUERY_VALUE_POSITIONS entry for a
+        # policy predicate, so it treats position 1 as a KB value and moves the
+        # constant onto whatever spelling the KB wrote — while the engine carries
+        # the reason code exactly as logic-policy.extra.dl typed it. Comparing
+        # raw there reported 0 rows under an extent line that had just said 1.
+        nfd_reason = unicodedata.normalize("NFD", "보류")
+        nfc_reason = unicodedata.normalize("NFC", "보류")
+        assert nfd_reason != nfc_reason
+        inferred = {PREDICATE: {("삼성", nfc_reason)}}
+        for typed in (nfc_reason, nfd_reason):
+            query = f'{PREDICATE}("삼성", "{typed}")?'
+            assert _report_rows(query, inferred) == 1, typed
+            assert _router_rows(monkeypatch, query, inferred) == 1, typed
+        # Folding did not disable the filter: a genuinely different reason code
+        # still reports nothing. Without this the "drop the position-1 filter"
+        # mutation survives, which is the #326 fabricated positive.
+        other = f'{PREDICATE}("삼성", "승인")?'
+        assert _report_rows(other, inferred) == 0
+        assert _router_rows(monkeypatch, other, inferred) == 0
+
+    def test_position_1_folds_the_way_canonical_value_does_not_merely_nfc(
+        self, monkeypatch
+    ):
+        # canonical_value is NFC *plus* literal_types.canonical_amount. A copy
+        # that reached for unicodedata.normalize on its own passes every other
+        # case here, because they are ASCII or Hangul; this one separates them.
+        inferred = {PREDICATE: {("Alice", 'amount(1000,"억")')}}
+        query = (
+            f"{PREDICATE}(\"Alice\", "
+            + json.dumps('amount(1,000,"억")', ensure_ascii=False)
+            + ")?"
+        )
+        assert _report_rows(query, inferred) == 1
+        assert _router_rows(monkeypatch, query, inferred) == 1
+
+    def test_position_0_is_not_folded_on_either_path(self, monkeypatch):
+        # The other half of #383's fix, and the half that is easy to "complete"
+        # by mistake. Position 0 is the entity axis; resolve_query_spellings
+        # already aligns it wherever the KB writes that value one way, so folding
+        # here changes an answer ONLY where that map REFUSED the key — where
+        # accepted.dl holds one value in two spellings. Measured on a KB reached
+        # by a plain compile_facts run (merge_candidates canonicalises amounts on
+        # the object only, so two amount-shaped subjects survive), a folded
+        # position 0 returned the asked-for atom's row AND the other atom's,
+        # indistinguishable because a constant position suppresses its binding.
+        # classify_query's policy gate also compares args[0] raw, so folding here
+        # alone answers positively for an entity the same report warns about.
+        mine, theirs = 'amount(1,000,"억")', 'amount(1000,"억")'
+        assert canonical_value(mine) == canonical_value(theirs)
+        inferred = {PREDICATE: {(mine, "고평가"), (theirs, "저평가")}}
+        query = f"{PREDICATE}({json.dumps(mine, ensure_ascii=False)}, R)?"
+        assert _report_rows(query, inferred) == 1
+        assert _router_rows(monkeypatch, query, inferred) == 1
+        # Non-vacuous: the other atom's row is in the extent both paths start
+        # from, so the 1 above is the raw comparison holding, not an absent row.
+        variables = f"{PREDICATE}(E, R)?"
+        assert _report_rows(variables, inferred) == 2
+        assert _router_rows(monkeypatch, variables, inferred) == 2
+
     def test_nfd_stored_entity_does_not_meet_an_nfc_query_on_either_path(self, monkeypatch):
-        # Pins CURRENT behaviour, not desired behaviour: both paths compare raw
-        # values, so an NFD-stored entity is invisible to an NFC-typed constant
-        # and the query reports 0 rows — which reads as a verified negative. That
-        # is a known gap (see #213 and policy_row_matches' docstring); what this
-        # test forbids is FIXING IT ON ONE PATH ONLY, which would put the report
-        # and ask back into disagreement. The cases above are ASCII-only, so a
-        # router that folded to NFC on its own kept passing them.
+        # Position 0 compares RAW on both paths, so an NFD-stored entity is
+        # invisible to an NFC-typed constant and the query reports 0 rows —
+        # which reads as a verified negative. That reading is a real cost, and
+        # it is NOT waiting to be paid off by folding here: the sibling
+        # test_position_0_is_not_folded_on_either_path measures what folding
+        # position 0 buys, which is another atom's rows returned under the
+        # subject the user named, indistinguishable because a constant position
+        # suppresses its binding.
+        #
+        # What remains reachable is the entity axis: an accepted.dl holding one
+        # value in two spellings makes kb_query_spellings refuse that key, and
+        # then this 0 sits under an extent line that counted the row. Closing it
+        # means folding entity_set / engine_atom_key so the two atoms become one
+        # — #213/#210, not this function.
         nfd = unicodedata.normalize("NFD", "박수영")
         nfc = unicodedata.normalize("NFC", "박수영")
         assert nfd != nfc
@@ -161,7 +232,8 @@ class TestReportRouterParity:
         assert _report_rows(nfc_query, inferred) == 0
         assert _router_rows(monkeypatch, nfc_query, inferred) == 0
         # Non-vacuous: the row is reachable — an NFD-typed constant finds it on
-        # both paths, so the 0 above is the folding gap and not an empty extent.
+        # both paths, so the 0 above is the position-0 raw comparison holding,
+        # not an empty extent.
         nfd_query = f'{PREDICATE}("{nfd}", R)?'
         assert _report_rows(nfd_query, inferred) == 1
         assert _router_rows(monkeypatch, nfd_query, inferred) == 1

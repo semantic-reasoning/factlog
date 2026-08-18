@@ -168,8 +168,8 @@ class TestResolveQuerySpellings:
 
     def test_policy_predicate_position_0_resolves(self) -> None:
         """An unknown predicate is a policy predicate. ``policy_row_matches``
-        compares RAW at every position, so an unresolved constant simply misses
-        the row."""
+        compares position 0 RAW, so an unresolved constant there simply misses
+        the row — this resolution is what puts it on the KB's spelling."""
         spelling = kb_query_spellings(MIXED)
         assert resolve_query_spellings(
             f'needs_review("{nfc("서울")}", "stale")?', spelling
@@ -189,7 +189,7 @@ class TestResolveQuerySpellings:
         codes, so no generated one can collide with a Korean value. The trade-off
         is recorded in ``resolve_query_spellings``' docstring — see also
         ``test_a_reason_code_that_is_also_a_kb_value_is_rewritten`` below, which
-        pins the cost rather than hiding it."""
+        pins the substitution itself."""
         facts = rows((nfc("삼성"), "상태", nfd("보류")))
         spelling = kb_query_spellings(facts)
         assert resolve_query_spellings(
@@ -197,21 +197,25 @@ class TestResolveQuerySpellings:
         ) == f'needs_review("{nfc("삼성")}", "{nfd("보류")}")?'
 
     def test_a_reason_code_that_is_also_a_kb_value_is_rewritten(self) -> None:
-        """The KNOWN COST of resolving every policy position, pinned so it cannot
-        be rediscovered as a surprise.
+        """The rewrite itself, pinned separately from what it costs.
 
         When a hand-written policy emits a reason code that is also a KB value,
         and the KB stores that value in the other normal form, the query's reason
-        constant moves and ``policy_row_matches`` (raw) stops matching the row.
-        The alternative — resolving only position 0 — breaks every hand-written
-        policy query on a folded KB instead, which is the wider harm. If this
-        test ever needs to change, that trade-off is what is being revisited."""
+        constant MOVES onto the KB's spelling — the engine's row still carries
+        the code as the policy typed it. This used to end the match, because
+        ``policy_row_matches`` compared raw at every position, and the report
+        printed ``0 rows`` under an extent line that had just said ``1`` (#383).
+
+        The rewrite is unchanged; ``policy_row_matches`` now folds past the first
+        position, so it no longer costs the match. The match is pinned in
+        ``tests/unit/test_policy_query_filter.py`` — this test only fixes that
+        the substitution happens, which the echo still depends on."""
         facts = rows((nfc("삼성"), "상태", nfd("보류")))
         spelling = kb_query_spellings(facts)
         resolved = resolve_query_spellings(
             f'needs_review("{nfc("삼성")}", "{nfc("보류")}")?', spelling
         )
-        # An engine row carrying the NFC reason code no longer matches.
+        # The constant moved; policy_row_matches folds it back (#383).
         assert nfd("보류") in resolved and f'"{nfc("보류")}"' not in resolved
 
     def test_returns_the_input_object_unchanged_when_nothing_moves(self) -> None:
