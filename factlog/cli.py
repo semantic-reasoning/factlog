@@ -2496,11 +2496,38 @@ def cmd_status(args: argparse.Namespace) -> int:
     facts = ctx.load_facts() if ctx.candidates_csv.is_file() else []
     by_status = Counter(r["status"] for r in facts)
     engine_rows = common.engine_facts(facts)
+    # The `engine fact(s)` count below is ATOMS, not rows. compile_facts.py:32
+    # writes dedup_engine_atoms(engine_facts(facts)) to facts/accepted.dl and its
+    # log reports that folded number, so counting rows here made status the one
+    # place that claimed a number the file does not contain (#372: one name
+    # written NFC in one row and NFD in another read 3 here and 2 in
+    # accepted.dl).
+    #
+    # Folding needs the RELATION byte-identical across the rows: engine_atom_key
+    # folds subject and object under NFC and keeps the relation verbatim
+    # (#210/#345, pinned by tests/unit/test_conflict_unicode.py's
+    # test_alias_merged_rows_keep_the_separate_atom_wording). Two rows whose
+    # relations differ only by normalization stay two atoms, and their keys
+    # render identically on screen — do not "fix" that here.
+    #
+    # COUNT ONLY. Everything below keeps using engine_rows: dedup keeps just the
+    # FIRST row of each group (common.py:1932), so building the `cited` set in
+    # the Sources section below from the folded list drops a source only the
+    # losing spelling cited — measured, `2 with facts` became `1 with facts,
+    # 1 with none`.
+    engine_atoms = common.dedup_engine_atoms(engine_rows)
     if facts:
         order = ["confirmed", "accepted", "needs_review", "candidate", "superseded"]
         seen = [f"{s}={by_status[s]}" for s in order if by_status.get(s)]
         extra = [f"{s}={n}" for s, n in by_status.items() if s not in order]
-        print(f"  facts:      {len(facts)} candidate(s) [{', '.join(seen + extra)}]; {len(engine_rows)} engine fact(s)")
+        # Only when folding actually happened, so a KB with no equivalent
+        # spellings prints the same bytes as before.
+        folded = (
+            f" (folded from {len(engine_rows)} row(s))"
+            if len(engine_atoms) != len(engine_rows)
+            else ""
+        )
+        print(f"  facts:      {len(facts)} candidate(s) [{', '.join(seen + extra)}]; {len(engine_atoms)} engine fact(s){folded}")
     else:
         # Empty row list has two causes and `init` now makes the first one the
         # normal first-run state, so they must read differently: a scaffolded
@@ -2531,7 +2558,9 @@ def cmd_status(args: argparse.Namespace) -> int:
         # and is not ask's vocabulary, but the function is the one ask validates
         # a query's entity arguments through and the one the path-node set is
         # built from, so folding it moves those — #213's chokepoint, deliberately
-        # not touched here.
+        # not touched here. So the two numbers on THIS line count differently:
+        # `engine fact(s)` above is folded atoms (#372), `entit(y/ies)` here is
+        # still raw spellings (#213).
         f"{len(common.allowed_relations(engine_rows))} relation(s) "
         f"({len(attr)} attribute, {len(sv)} single-valued declared)"
     )

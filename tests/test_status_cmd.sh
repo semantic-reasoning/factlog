@@ -55,6 +55,66 @@ out="$("$PYTHON" -m factlog status --target "$KB" 2>&1)"
 printf '%s' "$out" | grep -qE "facts: +3 candidate\(s\) \[confirmed=1, accepted=1, superseded=1\]; 2 engine fact\(s\)" && ok "accepted/superseded in status breakdown" || bad "status breakdown wrong: $(printf '%s' "$out"|grep facts:)"
 printf '%s' "$out" | grep -qE "vocabulary: +[0-9]+ entit\(y/ies\), 1 literal\(s\)" && ok "literal counted when attribute relation declared (2030.1)" || bad "literal count wrong: $(printf '%s' "$out"|grep vocab)"
 
+# --- canonically equivalent spellings are ONE engine fact (#372) --------------
+# Its own mktemp KB: the blocks above and below share $KB and its policy files,
+# and this one must not leave a folded ledger behind for them.
+#
+# Only subject and object vary by normalization. engine_atom_key keeps the
+# RELATION verbatim (#210/#345), so writing both rows wholly in NFD/NFC would
+# stop exercising the fold while looking identical on screen.
+FKB="$(mktemp -d)/wiki"
+# Full scaffold: compile_facts refuses a root missing pages/ or decisions/.
+# --no-activate keeps the active KB pointing at $KB for the blocks that rely
+# on it.
+"$PYTHON" -m factlog init --target "$FKB" --no-activate >/dev/null
+printf 'x\n' > "$FKB/sources/a.md"
+printf 'x\n' > "$FKB/sources/b.md"
+"$PYTHON" - "$FKB" <<'PY'
+import sys, unicodedata
+from pathlib import Path
+kb = Path(sys.argv[1])
+nfc = lambda s: unicodedata.normalize("NFC", s)
+nfd = lambda s: unicodedata.normalize("NFD", s)
+# The needs_review row keeps the candidate count (4) apart from the engine
+# row count (3), so an implementation that folds against len(facts) instead
+# of len(engine_rows) prints the wrong number here.
+rows = [
+    (nfc("삼성"), "대표", nfc("이재용"), "a.md", "accepted"),
+    (nfd("삼성"), "대표", nfd("이재용"), "b.md", "accepted"),
+    ("갑", "관계", "을", "a.md", "accepted"),
+    ("병", "관계", "정", "a.md", "needs_review"),
+]
+kb.joinpath("facts", "candidates.csv").write_text(
+    "subject,relation,object,source,status,confidence,note\n"
+    + "".join(f"{s},{r},{o},sources/{src},{st},0.9,\n" for s, r, o, src, st in rows),
+    encoding="utf-8",
+)
+PY
+out="$("$PYTHON" -m factlog status --target "$FKB" 2>&1)"
+printf '%s' "$out" | grep -qE "facts: +4 candidate\(s\) \[accepted=3, needs_review=1\]; 2 engine fact\(s\)" \
+  && ok "folded KB: status counts engine atoms, not rows" \
+  || bad "folded count wrong: $(printf '%s' "$out" | grep facts:)"
+printf '%s' "$out" | grep -qF "2 engine fact(s) (folded from 3 row(s))" \
+  && ok "folded KB: status says it folded" || bad "folded suffix missing: $(printf '%s' "$out" | grep facts:)"
+# dedup keeps only the first row of a group, so folding the shared engine_rows
+# list would drop the source only the losing spelling cited.
+printf '%s' "$out" | grep -qE "sources: +2 file\(s\), 2 with facts" \
+  && ok "folded KB: source coverage is unaffected" || bad "source coverage shrank: $(printf '%s' "$out" | grep sources:)"
+# The claim #372 makes: status, the compile log and the file agree.
+# set +e like the rest of this file: under `set -euo pipefail` a grep that
+# matches nothing exits 1, which would abort the suite here instead of
+# recording a failure and running the ~30 assertions below.
+set +e
+lc="$(FACTLOG_ROOT="$FKB" "$PYTHON" -m factlog.compile_facts 2>&1)"
+cef="$(printf '%s' "$lc" | grep -oE 'engine facts: [0-9]+' | grep -oE '[0-9]+' | head -1)"
+dlf="$(grep -c '^relation(' "$FKB/facts/accepted.dl")"
+sef="$(printf '%s' "$out" | grep -oE '[0-9]+ engine fact\(s\)' | grep -oE '^[0-9]+')"
+set -e
+[ "$sef" = "$cef" ] && [ "$sef" = "$dlf" ] \
+  && ok "folded KB: status ($sef) == compile log ($cef) == accepted.dl ($dlf)" \
+  || bad "three-way mismatch: status=$sef compile=$cef accepted.dl=$dlf"
+
+
 # --- single-valued conflict ---------------------------------------------------
 printf '# single-valued\n- 주속성\n' > "$KB/policy/single-valued.md"
 printf '%s\n%s\n%s\n' "$H" \
