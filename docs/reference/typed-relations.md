@@ -89,13 +89,26 @@ amount 가 아니라서 저장본과 같은 정준형으로 접히지 않기 때
 아니라 ASCII 행을 supersede 하면 파싱되지 않는 값이 KB 에 남습니다. 두 표기가 같은
 값을 가리키는 흔한 경우에는 어느 행도 "낡은" 것이 아니므로 supersede 가 애초에
 맞는 도구가 아닙니다 — `check_conflicts` 는 충돌 값에 비-ASCII 숫자가 있으면 그
-점을 알리는 줄을 덧붙입니다. `factlog status` 의 `conflicts:` 줄도 **자신이 탐지한
-충돌에 대해서는** 같은 안내를 냅니다. 다만 두 명령의 탐지 조건은 같지 않습니다 —
-`check_conflicts` 는 별칭을 정준 이름으로 접고 스칼라 키로 묶는 반면 `status` 는
-원문 관계 문자열을 그대로 쓰므로, 별칭 표면형으로 수집된 행은 `check_conflicts`
-쪽에서만 충돌로 잡힙니다. 거꾸로 `amount(5400,"억")` 과 `amount(0.54,"조")` 처럼
-같은 스칼라로 접히는 표기는 `status` 에서만 충돌로 남습니다. 게이트의 판정 기준은
-`check_conflicts` 입니다.
+점을 알리는 줄을 덧붙입니다. `factlog status` 의 `conflicts:` 줄도 같은 안내를 냅니다.
+
+정책 파일을 정상적으로 읽은 경우 `tools/check_conflicts.py`, `factlog status`,
+`tools/corroboration.py` 의 **competing-values 절**은 모두 `factlog.conflicts` 의 같은
+권위 그룹핑을 사용합니다. 명시된 별칭은 정준 관계명으로 접고, 타입 지정 객체는
+파싱된 스칼라로 묶으며, 주어와 타입 미지정 객체는 NFC 동치로 묶습니다. 따라서
+`amount(5400,"억")` 과 `amount(0.54,"조")` 는 세 곳 모두 한 값이고, ASCII/전각
+쌍은 전각 쪽이 파싱되지 않아 세 곳 모두 서로 다른 값입니다. 명시적 별칭에 참여하지
+않는 관계 표기는 그룹핑·보고 provenance에서 원문을 유지합니다. 단일값 membership의
+NFC fold가 관계 축 전체를 조용히 다시 쓴다는 뜻은 아닙니다.
+
+세 표면의 역할과 상세도는 다릅니다. `check_conflicts` 는 finalize의 exit-1 게이트이며
+해소된 merge까지 자세히 공개할 수 있고, `status` 는 충돌 수와 일부 교정 안내를
+요약하며, corroboration은 경쟁 값별 distinct-source support를 보여 주는 exit-0
+보고서입니다. 충돌 분석용 typed/alias 정책 로드가 실패하면 `status` 는 저하된
+fallback임을 표시하고, corroboration은 관련 정책 로드가 실패하면 competing-values
+절을 생략하므로 이때 세 출력이 같은 판정이라고 읽으면 안 됩니다. 엔진의 typed
+side-relation 투영은 작성된 NFD 객체를 그대로 normalizer에 넘겨 흔히 파싱하지
+못하지만, conflict core는 먼저 NFC fold한 뒤 파싱하므로 결과가 여전히 다를 수
+있습니다.
 
 두 곳 모두 문제가 되는 문자를 `\uXXXX`(BMP 밖은 `\UXXXXXXXX`) 로 찍어 주므로 어느
 글자를 고쳐야 하는지 눈으로 확인할 수 있습니다.

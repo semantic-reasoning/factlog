@@ -100,12 +100,29 @@ leaves the KB holding a value that does not parse; where the two spellings denot
 the same value neither row is "outdated", so supersede is the wrong tool to begin
 with. `check_conflicts` appends a note whenever a conflicting value carries
 non-ASCII digits, and the `conflicts:` line of `factlog status` carries the same
-guidance **for the conflicts it detects**. The two do not detect the same set:
-`check_conflicts` folds aliases to the canonical name and groups on the scalar
-key, while `status` groups on the raw relation string, so rows collected under an
-alias surface form are reported only by `check_conflicts`. Conversely, spellings
-that fold to the same scalar — `amount(5400,"억")` and `amount(0.54,"조")` —
-remain a conflict only in `status`. `check_conflicts` is the gate's authority.
+guidance.
+
+When policy files load successfully, `tools/check_conflicts.py`, `factlog
+status`, and the **competing-values section** of `tools/corroboration.py` all use
+the same authoritative grouping from `factlog.conflicts`. Declared aliases fold
+to the canonical relation name, typed objects group on their parsed scalar, and
+subjects plus untyped objects group under NFC equivalence. Thus
+`amount(5400,"억")` and `amount(0.54,"조")` are one value at all three surfaces,
+while an ASCII/full-width pair is two values because the full-width side does
+not parse. Relation spellings outside a declared alias retain their written form
+for grouping and report provenance; NFC-folded single-valued membership does not
+silently rewrite the whole relation axis.
+
+The three surfaces still have different roles and detail. `check_conflicts` is
+finalize's exit-1 gate and can disclose even resolved merges in detail; `status`
+summarizes the conflict count and some correction guidance; corroboration is an
+exit-0 report of distinct-source support per competing value. If a typed or alias
+policy used by conflict analysis fails to load, status marks a degraded fallback;
+if corroboration cannot load a relevant policy, it omits its competing-values
+section. Do not read those cases as the same verdict. The engine's typed
+side-relation projection still passes an authored NFD object unchanged to the
+normalizer and commonly fails to parse it, while the conflict core first applies
+NFC and may parse it successfully, so the results can still diverge.
 
 Both spell the offending characters as `\uXXXX` (`\UXXXXXXXX` above the BMP), so
 you can see which one to correct.

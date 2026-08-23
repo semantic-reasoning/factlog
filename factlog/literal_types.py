@@ -32,8 +32,9 @@ This is not only about full-width U+FF10–FF19. ``\\d`` is exactly the Unicode
 accepted the same way — and ``int``/``Decimal`` still accept all of them
 (``int('١٠٠') == 100``), which is why the regex has to be the gate.
 
-Five call sites outside this module change behaviour as a consequence. All five
-are intended, and none of them rewrites data already stored:
+Several downstream paths change behaviour as a consequence. The conflict path
+has one implementation in ``factlog.conflicts`` and three reporting surfaces;
+none of these paths rewrites data already stored:
 
 - ``tools/merge_candidates.py`` dedup key — ``canonical_amount`` returns ``None``
   for a full-width term, so ``amount(１００,억)`` and ``amount(１００,"억")`` stay
@@ -41,11 +42,15 @@ are intended, and none of them rewrites data already stored:
   this policy rejects. A newly merged full-width row also keeps its **source
   string verbatim** instead of being rewritten to the quoted canonical form;
   rows already in the KB are untouched either way.
-- ``tools/check_conflicts.py`` ``_group_key`` — a full-width object no longer
+- ``factlog.conflicts._group_key`` — a full-width object no longer
   normalizes to a scalar, so it keys as ``("raw", obj)`` while its ASCII twin
   keys as ``("scalar", …)``. Under a single-valued relation those are **two
-  values**, so a KB that used to pass can now report a conflict and the command
-  exits **1**. This is the one consequence that flips a green gate red — see the
+  values**. When their policies load successfully, ``tools/check_conflicts.py``
+  therefore exits **1**, ``factlog status`` reports the same conflict count, and
+  the competing-values section of ``tools/corroboration.py`` reports source
+  support for the same two groups.
+  Scalar-equivalent typed spellings are likewise one value at all three
+  surfaces. This is the one consequence that flips a green gate red — see the
   migration note in ``docs/reference/typed-relations.md``.
 - ``common._canonical_value`` — a fact already stored as ``amount(１００,"억")``
   in an existing KB is no longer canonicalised, so a query written as
@@ -55,24 +60,19 @@ are intended, and none of them rewrites data already stored:
 - ``tools/ask_router.py`` answer annotation — ``humanize`` returns a full-width
   compound term verbatim rather than rendering it as ``１００억``, so the display
   suffix (``… (= 100억)``) is simply omitted for such a row.
-- ``factlog/cli.py`` ``status`` conflict count — this path never folded typed
-  scalars; it counts distinct **raw object strings**, so it already reported the
-  ASCII/full-width pair as 2 values while ``check_conflicts`` reported 0. The two
-  commands contradicted each other; narrowing here converges ``check_conflicts``
-  onto the count ``status`` was already giving. It is the strongest code-level
-  argument for rejecting rather than folding.
-
-A rejected value surfaces on one automatic warning, one gate, and one manual
-tool — and falls through one hole:
+A rejected value surfaces on an automatic warning, the shared conflict
+grouping's reports, and one manual tool — and falls through one hole:
 
 - **automatic** — under a relation declared **typed**,
   ``common._project_typed_relations`` warns on stderr and loads the fact untyped.
   The warning names the offending codepoints (``mark_non_ascii_digits``): its
   ``repr``-rendered value alone cannot tell ``1２3억`` from ``123억``, and the
   remedy it points at needs the reader to know which character is wrong.
-- **gate** — under a relation declared **single-valued**,
-  ``tools/check_conflicts.py`` sees the ASCII/full-width pair as two values and
-  exits 1, naming the offending value (``non_ascii_digit_note``).
+- **conflict reports** — under a relation declared **single-valued**, the shared
+  core sees the ASCII/full-width pair as two values. ``tools/check_conflicts.py``
+  exits 1, while ``factlog status`` summarizes the count and both name the
+  offending codepoints. Corroboration's competing-values section shows the
+  distinct source support without adding the correction guidance.
 - **manual** — ``tools/entity_audit.py`` reports a value under a relation not
   declared an attribute as a *literal suspect*. Nothing in the pipeline runs it
   (``skills/factlog/SKILL.md`` documents it as a manual command) and its message

@@ -755,11 +755,10 @@ def folded_relation_names(names: Iterable[str]) -> set[str]:
     uniformly in NFD — the macOS default for Hangul — then matches nothing, and
     every consumer that tests membership silently reports it as clean.
 
-    ``check_conflicts`` folds both sides for exactly this reason. Readers that
-    display conflict counts must use the same predicate, or ``factlog status``
-    reports 0 on a KB ``finalize`` then refuses to compile — and unlike the
-    remaining checker/status divergences, this one needs no mixed spellings at
-    all, just one consistently decomposed KB.
+    ``factlog.conflicts`` folds both sides for exactly this reason, and its
+    checker, status, and corroboration competing-value projections share that
+    membership decision. This is membership-only: non-participating relation
+    spellings remain verbatim grouping and report keys.
     """
     return {fold_relation_name(name) for name in names}
 
@@ -818,10 +817,10 @@ def composed_spelling(spellings: Iterable[str]) -> str:
 
     Every caller standing a representative in front of a folded group goes
     through THIS function, never through a re-derived ordering of its own:
-    ``check_conflicts._representative`` for the report, ``corroboration`` for its
-    competing-values clause, and ``kb_spellings`` for the spelling written into
-    ``accepted.dl``. Two of them naming one value differently is the bug this
-    centralization exists to prevent.
+    ``factlog.conflicts._representative`` for its scan and source-support
+    projections, and ``kb_spellings`` for the spelling written into
+    ``accepted.dl``. The checker and corroboration's competing-values clause
+    consume those projections rather than deriving another ordering.
 
     Same function, but only the same ANSWER where the callers pool the same
     spellings, and they do not always. Two ways they can part:
@@ -854,7 +853,7 @@ def _relation_names_from(path: Path) -> set[str]:
     name that contains spaces). Absent file → empty set.
 
     Names are returned VERBATIM — no NFC coercion. single-valued.md's consumer
-    (check_conflicts._canonicalize) deliberately preserves an NFD-authored name
+    (factlog.conflicts._canonicalize) deliberately preserves an NFD-authored name
     so a non-participating relation is reported exactly as written (#210/#227),
     and normalizing here breaks its NFD membership test. attribute-relations.md
     handles the same problem without touching the fact side; see
@@ -1813,7 +1812,7 @@ def engine_atom_key(row: dict[str, str]) -> tuple[str, str, str]:
     **Which axes fold, and why those.** Subject and object fold under NFC;
     the relation does not.
 
-    * *subject / object* — ``check_conflicts`` already folds both (``_fold``,
+    * *subject / object* — ``factlog.conflicts`` folds both (``_fold``,
       applied to subjects and to objects through ``_group_key``), and
       ``common._canonical_value`` (#213) fixed NFC as value equality for every
       query comparison. Keying the engine atom raw made the engine the one
@@ -1827,9 +1826,12 @@ def engine_atom_key(row: dict[str, str]) -> tuple[str, str, str]:
       ``_group_key`` folds the subject across rows into a bucket. Two rows with
       the same folded subject and different objects stay two atoms here and are
       one group there, so the checker remains stricter on that axis. See
-      ``check_conflicts.collect_conflicts``.
-    * *relation* — left verbatim, matching the checker's grouping and
-      ``corroboration``. Folding it is the deferred #210 call: it changes which
+      ``factlog.conflicts.collect_conflicts``.
+    * *relation* — left verbatim for engine atom identity and corroboration's
+      general fact/source list. The conflict core canonicalizes declared aliases
+      for the checker, status, and competing-values clause, while preserving
+      non-participating spellings. NFC-folding the remaining relation axis is the
+      deferred #210 call: it changes which
       rows collide on an axis where "no silent NFC coercion for a
       non-participating relation" was a deliberate promise, and deciding that is
       a maintainer's, not this fix's. So two spellings of one relation still
@@ -1942,7 +1944,7 @@ def kb_spellings(rows: list[dict[str, str]]) -> dict[str, str]:
     rather than candidates, and refuses any value the file spells more than one
     way; see its docstring for why each of those three has to differ.
 
-    Not shared with ``check_conflicts._representative``, which pools a value over
+    Not shared with ``factlog.conflicts._representative``, which pools a value over
     the rows of its own conflict group. For a value spelled consistently across
     positions the two agree, which is the case the report was written for; where
     a value is composed only in object position and decomposed only in subject
