@@ -675,3 +675,21 @@ class TestNonAsciiDigitDiagnostics:
         # character that was replaced. Sampled across BMP and astral Nd blocks.
         for ch in ("１", "١", "१", "๑", "𝟏", "𝟶", "\U000104a1"):
             assert lt.mark_non_ascii_digits(ch).encode().decode("unicode_escape") == ch
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("１２٣", "123"),
+            ("१२३", "123"),
+            ("𝟏𝟎𝟎", "100"),
+            ("ASCII 123", "ASCII 123"),
+            ("²", "²"),
+        ],
+    )
+    def test_ascii_digit_shadow_is_diagnostic_only(self, value, expected):
+        assert lt.ascii_digit_shadow(value) == expected
+
+    def test_ascii_digit_shadow_does_not_change_parser_acceptance(self):
+        original = "amount(１００,억)"
+        assert lt.canonical_amount(original) is None
+        assert lt.canonical_amount(lt.ascii_digit_shadow(original)) == 'amount(100,"억")'

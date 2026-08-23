@@ -91,6 +91,7 @@ from common import (  # noqa: E402
     logic_policy_md_has_rules,
     nearby_vocabulary,
     policy_predicates,
+    query_amount_digit_near_matches,
     relation_aliases,
     resolve_query_spellings,
     run_wirelog,
@@ -171,6 +172,23 @@ POLICY_UNEVALUABLE_WARNING = (
     "evaluated by the engine, so this answer was produced WITHOUT policy. Fix "
     "policy/logic-policy.extra.dl. Reason: {reason}"
 )
+
+
+def _warn_query_amount_digit_near_matches(
+    draft: str, facts: list[dict[str, str]]
+) -> None:
+    """Explain a narrowly proven legacy amount miss without changing its result."""
+    for written, accepted in query_amount_digit_near_matches(draft, facts):
+        print(
+            "WARNING: query value "
+            f"'{literal_types.mark_non_ascii_digits(written)}' did not match; "
+            "accepted facts contain the legacy amount near-spelling "
+            f"'{literal_types.mark_non_ascii_digits(accepted)}'. Non-ASCII "
+            "decimal digits are rejected, so amount unit-quoting "
+            "canonicalization was not applied. No compatibility/NFKC folding "
+            "was performed; correct the source digits to ASCII and re-finalize.",
+            file=sys.stderr,
+        )
 
 
 def _policy_uncompiled() -> bool:
@@ -1133,7 +1151,10 @@ def record_open_question(question: str, root: Path) -> Path:
 
 def cmd_validate(args: argparse.Namespace) -> int:
     facts = load_accepted_facts()
-    print(json.dumps(classify(args.draft, facts), ensure_ascii=False))
+    decision = classify(args.draft, facts)
+    if not decision["ok"]:
+        _warn_query_amount_digit_near_matches(args.draft, facts)
+    print(json.dumps(decision, ensure_ascii=False))
     return 0
 
 
@@ -1144,6 +1165,8 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
     except NotImplementedError as exc:
         print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 2
+    if result.get("count") == 0 and not result.get("policy_unevaluable"):
+        _warn_query_amount_digit_near_matches(args.draft, facts)
     print(json.dumps(result, ensure_ascii=False))
     return 0
 
@@ -1154,6 +1177,8 @@ def cmd_render(args: argparse.Namespace) -> int:
     caller (the skill) can run wiki exploration."""
     facts = load_accepted_facts()
     decision = classify(args.draft, facts)
+    if not decision["ok"]:
+        _warn_query_amount_digit_near_matches(args.draft, facts)
     if decision["route"] == "engine":
         # A verified negative is proven by the validator regardless of predicate,
         # so it is always renderable as an engine answer — never demoted.

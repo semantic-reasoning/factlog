@@ -2732,6 +2732,60 @@ _QUERY_VALUE_POSITIONS: dict[str, tuple[int, ...]] = {
 }
 
 
+def query_amount_digit_near_matches(
+    line: str, facts: list[dict[str, str]]
+) -> tuple[tuple[str, str], ...]:
+    """Find causally proven legacy amount spellings behind a query miss.
+
+    This is diagnostic-only: it examines quoted value positions without
+    rewriting the query or changing acceptance.  A pair is returned only when
+    the authored and accepted values have identical Unicode digit codepoints,
+    their ASCII-digit shadows share the current amount canonical form, and one
+    accepted ``relation/3`` row matches every other query argument.  That last
+    counterfactual makes the warning causal rather than a global KB suggestion.
+    """
+    match = re.match(r"^(\w+)\((.*)\)\?$", line.strip())
+    if not match or match.group(1) != "relation":
+        return ()
+    args = _query_args(line)
+    if len(args) != 3 or any(
+        not (_is_variable(arg) or _is_quoted_string(arg)) for arg in args
+    ):
+        return ()
+
+    def other_arguments_match(row: dict[str, str], target: int) -> bool:
+        values = (row["subject"], row["relation"], row["object"])
+        for index, (arg, value) in enumerate(zip(args, values, strict=True)):
+            if index == target or _is_variable(arg):
+                continue
+            # Conservative subset of relation evaluation semantics: canonical
+            # equality is sufficient proof. Alias-only equality is omitted here
+            # rather than risking a warning when policy loading is unavailable.
+            if _canonical_value(_arg_value(arg)) != _canonical_value(value):
+                return False
+        return True
+
+    found: set[tuple[str, str]] = set()
+    for index in _QUERY_VALUE_POSITIONS["relation"]:
+        if not _is_quoted_string(args[index]):
+            continue
+        written = _arg_value(args[index])
+        written_key = literal_types.amount_digit_diagnostic_key(written)
+        if written_key is None:
+            continue
+        field = "subject" if index == 0 else "object"
+        for row in facts:
+            accepted_value = row[field]
+            accepted_key = literal_types.amount_digit_diagnostic_key(accepted_value)
+            if (
+                written != accepted_value
+                and written_key == accepted_key
+                and other_arguments_match(row, index)
+            ):
+                found.add((written, accepted_value))
+    return tuple(sorted(found))
+
+
 def kb_query_spellings(facts: list[dict[str, str]]) -> dict[str, str]:
     """Map a query constant's ``_canonical_value`` key to the ONE spelling
     ``accepted.dl`` actually holds for it.

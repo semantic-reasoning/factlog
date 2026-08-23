@@ -665,6 +665,36 @@ if hrouter render 'relation("존재안함", "게재연도", O)?' | grep -qF "pos
 if [ -f "$HKB/facts/query.dl" ]; then bad "#189: coverage-hint path wrote facts/query.dl"; else ok "#189: coverage-hint path never writes facts/query.dl"; fi
 if [ "$(cat "$HKB/facts/accepted.dl")" = "$HACCEPTED_BEFORE" ]; then ok "#189: coverage-hint path leaves accepted.dl unchanged"; else bad "#189: coverage-hint path mutated accepted.dl"; fi
 
+# --- #346: legacy non-ASCII amount misses are diagnosed, never folded -------
+AKB="$(mktemp -d)/wiki"
+"$PYTHON" -m factlog init --target "$AKB" >/dev/null
+printf '%s\n' 'relation("A", "금액", "amount(１００,\"억\")").' > "$AKB/facts/accepted.dl"
+arouter() { "$PYTHON" "$ROUTER" "$@" --target "$AKB"; }
+amount_query='relation("A", "금액", "amount(１００,억)")?'
+amount_exact='relation("A", "금액", "amount(１００,\"억\")")?'
+
+amount_validate_err="$(mktemp)"
+amount_validate="$(arouter validate "$amount_query" 2>"$amount_validate_err")"
+if printf '%s' "$amount_validate" | "$PYTHON" -c "import json,sys; d=json.load(sys.stdin); assert d['route']=='wiki' and d['code']=='entity_not_accepted'"; then ok "#346: validate keeps the legacy amount miss wiki-routed"; else bad "#346: validate changed the legacy miss result: $amount_validate"; fi
+if grep -qF 'legacy amount near-spelling' "$amount_validate_err" && grep -qF '\uff11' "$amount_validate_err"; then ok "#346: validate explains the causally proven legacy amount near-spelling"; else bad "#346: validate omitted the legacy amount diagnostic"; fi
+
+amount_evaluate_err="$(mktemp)"
+amount_evaluate="$(arouter evaluate "$amount_query" 2>"$amount_evaluate_err")"
+if printf '%s' "$amount_evaluate" | "$PYTHON" -c "import json,sys; d=json.load(sys.stdin); assert d == {'rows': [], 'count': 0}"; then ok "#346: evaluate preserves the zero-row JSON result"; else bad "#346: evaluate changed its JSON result: $amount_evaluate"; fi
+if grep -qF 'legacy amount near-spelling' "$amount_evaluate_err"; then ok "#346: evaluate no longer misses the legacy spelling silently"; else bad "#346: evaluate legacy miss stayed silent"; fi
+
+amount_render_err="$(mktemp)"
+amount_render="$(arouter render "$amount_query" 2>"$amount_render_err")"
+if printf '%s' "$amount_render" | "$PYTHON" -c "import json,sys; assert json.load(sys.stdin)['route']=='wiki'"; then ok "#346: render preserves its wiki directive"; else bad "#346: render changed its stdout directive: $amount_render"; fi
+if grep -qF 'legacy amount near-spelling' "$amount_render_err"; then ok "#346: render surfaces the legacy amount diagnostic on stderr"; else bad "#346: render legacy miss stayed silent"; fi
+
+amount_exact_err="$(mktemp)"
+amount_exact_result="$(arouter evaluate "$amount_exact" 2>"$amount_exact_err")"
+if printf '%s' "$amount_exact_result" | "$PYTHON" -c "import json,sys; assert json.load(sys.stdin)['count']==1" && [ ! -s "$amount_exact_err" ]; then ok "#346: exact legacy spelling succeeds without a warning"; else bad "#346: exact legacy spelling result or stderr changed"; fi
+unrelated_err="$(mktemp)"
+arouter validate 'relation("Model４", "금액", O)?' >/dev/null 2>"$unrelated_err"
+if [ ! -s "$unrelated_err" ]; then ok "#346: unrelated non-ASCII identifier stays warning-free"; else bad "#346: unrelated identifier produced an amount warning"; fi
+
 # --- #279: renderer row caps are explicit and escapable ---------------------
 # Test below / at / above the same small cap directly.  This keeps the boundary
 # deterministic without making the fixture depend on the production default.

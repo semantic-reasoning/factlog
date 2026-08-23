@@ -86,12 +86,16 @@ wiki-exploration route, which still returns its `UNVERIFIED — wiki exploration
 block — and those excerpts may quote both sides of the unresolved conflict, so
 they must not be read as a settled answer.
 
-That gate failure is loud; there is also a **quiet** one. If an existing KB holds
-a full-width amount compound term (`amount(１００,"억")`), a query written without
-the quotes — `amount(１００,억)` — now **misses silently**, because a full-width
-term is no longer a valid amount and so no longer folds to the same canonical
-form as the stored value. That miss is indistinguishable from an engine-verified
-"no such fact", which makes it harder to notice than the failure.
+If an existing KB holds a full-width amount compound term
+(`amount(１００,"억")`), a query written without the quotes —
+`amount(１００,억)` — still misses, because a full-width term is no longer a valid
+amount and so no longer folds to the same canonical form as the stored value.
+However, `ask_router` now warns on stderr for `validate`, `render`, and a zero-row
+`evaluate` when it finds a stored legacy unit-quoting near-spelling with the exact
+same authored digit codepoints. Stdout JSON, routing, row count, and exit status
+are unchanged, and no NFKC/compatibility fold or retry occurs. Different numbers,
+numeral scripts, units, and ordinary identifiers containing digits do not trigger
+this warning.
 
 Both cases clear the same way: **correct the source to ASCII digits and
 re-collect**. The `status='superseded'` advice the conflict message prints does

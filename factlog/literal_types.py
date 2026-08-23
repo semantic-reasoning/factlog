@@ -54,9 +54,11 @@ none of these paths rewrites data already stored:
   migration note in ``docs/reference/typed-relations.md``.
 - ``common._canonical_value`` — a fact already stored as ``amount(１００,"억")``
   in an existing KB is no longer canonicalised, so a query written as
-  ``amount(１００,억)`` misses it. Intended: under this policy ``amount(１００,억)``
-  is not a valid amount term at all, so there is no canonical form to map it to.
-  The fix is to correct the source to ASCII and re-collect, not to fold here.
+  ``amount(１００,억)`` misses it. Under this policy ``amount(１００,억)`` is not
+  a valid amount term at all, so there is no canonical form to map it to. The ask
+  router keeps that miss but emits a diagnostic when the accepted legacy spelling
+  is a causally proven unit-quoting near-match. The fix is to correct the source
+  to ASCII and re-collect, not to fold here.
 - ``tools/ask_router.py`` answer annotation — ``humanize`` returns a full-width
   compound term verbatim rather than rendering it as ``１００억``, so the display
   suffix (``… (= 100억)``) is simply omitted for such a row.
@@ -121,6 +123,25 @@ def has_non_ascii_digits(value: str) -> bool:
     gate. ``str.isdigit`` is deliberately not used: it also matches ``No`` (``²``),
     which ``\\d`` never did. Total; never raises."""
     return any(unicodedata.category(ch) == "Nd" and not ch.isascii() for ch in value)
+
+
+def ascii_digit_shadow(value: str) -> str:
+    """Return a diagnostic-only shadow with every Unicode ``Nd`` digit written
+    as its ASCII decimal value.
+
+    This helper must never feed storage, matching, or canonicalisation directly:
+    the public parsing policy remains reject-not-fold.  It exists only to prove
+    that two rejected spellings would have shared the old ``\\d`` parse path.
+    ``unicodedata.decimal`` is deliberately narrower than ``str.isdigit`` and
+    therefore leaves numeric characters such as ``²`` untouched.
+    """
+    chars: list[str] = []
+    for ch in value:
+        try:
+            chars.append(str(unicodedata.decimal(ch)))
+        except ValueError:
+            chars.append(ch)
+    return "".join(chars)
 
 
 def _escape_codepoint(ch: str) -> str:
@@ -194,6 +215,14 @@ _AMOUNT_RE = re.compile(r"^(?P<num>-?[0-9][0-9,]*(?:\.[0-9]+)?) ?(?P<unit>\D+)$"
 # so never normalizes to a scalar. Only the ``num`` groups are ``[0-9]``.
 _AMOUNT_COMPOUND_RE = re.compile(
     r'^amount\(\s*"?(?P<num>-?[0-9][0-9,]*(?:\.[0-9]+)?)"?\s*,\s*'
+    r'(?:"(?P<qunit>[^"]*)"|(?P<unit>[^,)"]+))\s*\)$',
+    re.IGNORECASE,
+)
+# Diagnostic counterpart to ``_AMOUNT_COMPOUND_RE``.  Its ``\d`` use is
+# intentional and tightly confined to explaining a rejected legacy spelling;
+# every parser above and below remains ASCII-only.
+_DIAGNOSTIC_AMOUNT_COMPOUND_RE = re.compile(
+    r'^amount\(\s*"?(?P<num>-?\d[\d,]*(?:\.\d+)?)"?\s*,\s*'
     r'(?:"(?P<qunit>[^"]*)"|(?P<unit>[^,)"]+))\s*\)$',
     re.IGNORECASE,
 )
@@ -402,6 +431,27 @@ def canonical_amount(raw: str) -> str | None:
     if not m:
         return None
     return f'amount({m.group("num").replace(",", "")},"{_amount_unit(m)}")'
+
+
+def amount_digit_diagnostic_key(raw: str) -> tuple[str, tuple[int, ...]] | None:
+    """Describe a rejected legacy amount spelling for near-match diagnostics.
+
+    The key contains the canonical form of an ASCII-digit *shadow* and the exact
+    ordered digit codepoints authored in the number token.  Requiring both keeps
+    the diagnostic causal: another numeral script, number, unit, compound type,
+    or a digit appearing only in the unit cannot become a near match.  No caller
+    may use this key to rewrite or match a query.
+    """
+    match = _DIAGNOSTIC_AMOUNT_COMPOUND_RE.match(raw.strip())
+    if not match:
+        return None
+    number = match.group("num")
+    if not has_non_ascii_digits(number):
+        return None
+    digits = tuple(ord(ch) for ch in number if unicodedata.category(ch) == "Nd")
+    shadow = f'amount({ascii_digit_shadow(number)},"{_amount_unit(match)}")'
+    canonical = canonical_amount(shadow)
+    return (canonical, digits) if canonical is not None else None
 
 
 # `number` dispatches to parse_number_scaled (exact int64 fixed-point, ×1000):
