@@ -255,6 +255,16 @@ else
   ok "#331: non-ASCII digits in the unit name carry no note (the value parses)"
 fi
 
+# #347: digit width must be the CAUSE, not merely present. Correcting 제１분기
+# to 제1분기 still does not make it a date, so the conflict remains but the
+# source-correction note would be false.
+printf '# single-valued\n\n- 출시\n' > "$KB/policy/single-valued.md"
+printf -- '- `출시` : date as launch_date\n' > "$KB/policy/typed-relations.md"
+csv '을서비스,출시,2030.1,sources/x.md,confirmed,0.9,' '을서비스,출시,제１분기,sources/x.md,confirmed,0.9,'
+causal_out="$("$PYTHON" "$CONFLICTS" --wiki "$KB" 2>&1 || true)"
+if printf '%s' "$causal_out" | grep -qF "CONFLICT"; then ok "#347: non-digit date syntax failure remains a conflict"; else bad "#347: date conflict disappeared"; fi
+if printf '%s' "$causal_out" | grep -qF "non-ASCII digits"; then bad "#347: checker blames digit width for non-digit date syntax"; else ok "#347: checker suppresses non-causal digit guidance"; fi
+
 # Negative control 2 (ASCII-only, typed). Without these the assertions above would
 # pass just as well against a note printed for EVERY conflict.
 printf '# single-valued\n\n- 주_속성\n' > "$KB/policy/single-valued.md"

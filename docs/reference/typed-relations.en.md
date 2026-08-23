@@ -102,9 +102,12 @@ re-collect**. The `status='superseded'` advice the conflict message prints does
 clear the gate, but superseding the ASCII row rather than the full-width one
 leaves the KB holding a value that does not parse; where the two spellings denote
 the same value neither row is "outdated", so supersede is the wrong tool to begin
-with. `check_conflicts` appends a note whenever a conflicting value carries
-non-ASCII digits, and the `conflicts:` line of `factlog status` carries the same
-guidance.
+with. `check_conflicts` and `factlog status` add the same correction guidance
+only when the original fails to parse and a diagnostic shadow made by changing
+**numeric-token digits only** to ASCII succeeds. Thus `제１분기` is not blamed:
+`제1분기` is still not a date, and digits inside an `amount` unit name belong to
+an opaque identifier and are never shadowed. This counterfactual explains the
+cause; it does not fold or repair stored data, conflict groups, or engine input.
 
 When policy files load successfully, `tools/check_conflicts.py`, `factlog
 status`, and the **competing-values section** of `tools/corroboration.py` all use

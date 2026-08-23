@@ -91,8 +91,11 @@ JSON, 경로, 행 수와 종료 코드는 바뀌지 않으며 NFKC/호환성 접
 메시지가 안내하는 `status='superseded'` 로도 게이트는 초록이 되지만, 전각 행이
 아니라 ASCII 행을 supersede 하면 파싱되지 않는 값이 KB 에 남습니다. 두 표기가 같은
 값을 가리키는 흔한 경우에는 어느 행도 "낡은" 것이 아니므로 supersede 가 애초에
-맞는 도구가 아닙니다 — `check_conflicts` 는 충돌 값에 비-ASCII 숫자가 있으면 그
-점을 알리는 줄을 덧붙입니다. `factlog status` 의 `conflicts:` 줄도 같은 안내를 냅니다.
+맞는 도구가 아닙니다 — `check_conflicts` 와 `factlog status` 는 원문이 파싱에
+실패하고 **타입 문법의 숫자 토큰만** ASCII 로 바꾼 진단 그림자가 파싱에 성공할 때만
+같은 교정 안내를 덧붙입니다. 예를 들어 `제１분기`는 `제1분기`도 date가 아니므로
+안내하지 않고, `amount` 단위 이름 속 숫자는 불투명 식별자의 일부라 바꾸지 않습니다.
+이 반사실 검사는 원인을 설명할 뿐 저장값·충돌 그룹·엔진 입력을 접거나 고치지 않습니다.
 
 정책 파일을 정상적으로 읽은 경우 `tools/check_conflicts.py`, `factlog status`,
 `tools/corroboration.py` 의 **competing-values 절**은 모두 `factlog.conflicts` 의 같은

@@ -2471,7 +2471,10 @@ def cmd_status(args: argparse.Namespace) -> int:
     from pathlib import Path
 
     import factlog.common as common
-    from factlog.conflicts import collect_conflicts
+    from factlog.conflicts import (
+        collect_conflict_digit_width_offenders,
+        collect_conflicts,
+    )
     from factlog.common import FactlogError
 
     target_str, source = factlog_config.resolve_root(args.target)
@@ -2635,6 +2638,11 @@ def cmd_status(args: argparse.Namespace) -> int:
             degraded.append("relation-aliases.md")
         scan = collect_conflicts(engine_rows, sv, typed, aliases)
         conflicts = scan.conflicts
+        digit_width_offenders = (
+            {}
+            if degraded
+            else collect_conflict_digit_width_offenders(scan, typed, aliases)
+        )
         msg = f"  conflicts:  {len(conflicts)} (over {len(sv)} single-valued relation(s))"
         if degraded:
             msg += (
@@ -2644,11 +2652,10 @@ def cmd_status(args: argparse.Namespace) -> int:
         elif conflicts:
             msg += "  ⚠ resolve via superseded / see tools/check_conflicts.py"
         print(msg)
-        # Under a TYPED relation, a conflicting value carrying non-ASCII digits
-        # does not parse as the declared type, so the generic "resolve via
-        # superseded" advice above can clear the gate while leaving that value in
-        # the KB (#331). Name it here — this path did not print the values at all,
-        # and repr() would not distinguish '１００억' from '100억' on screen.
+        # Under a TYPED relation, name a non-ASCII numeric token only when the
+        # shared sidecar proves its ASCII-token shadow parses. This path does not
+        # print values otherwise, and repr() would not distinguish '１００억'
+        # from '100억' on screen.
         #
         # Restricted to typed relations on purpose: under an untyped relation the
         # two spellings are just two strings, the value is a usable relation/3
@@ -2658,35 +2665,11 @@ def cmd_status(args: argparse.Namespace) -> int:
         # Inspect the raw spellings behind conflicting representatives: the
         # representative can be ASCII even when another row in its value class
         # contains the unreadable digits that need correction.
-        flagged: dict[str, set[str]] = {}
-        for pair in conflicts:
-            relation = pair[1]
-            hits = {
-                raw
-                for variants in scan.object_variants[pair].values()
-                for raw in variants
-                if literal_types.has_non_ascii_digits(raw)
-            }
-            if hits:
-                flagged.setdefault(relation, set()).update(hits)
-        odd: set[str] = set()
-        if flagged:
-            for relation, hits in flagged.items():
-                # typed_relations() keys are NFC; a CSV-sourced name may be NFD.
-                spec = typed.get(unicodedata.normalize("NFC", relation))
-                if spec is None:
-                    continue
-                # Carrying non-ASCII digits is not the same as failing to parse: a
-                # declared UNIT NAME may carry them (`amount(100,"억１")` under a
-                # declared `억１` unit) and still normalize to a scalar, which the
-                # engine reads fine. Ask the normalizer, so this line and
-                # check_conflicts' note fire on the one predicate that decides
-                # raw-vs-scalar in the first place.
-                odd.update(
-                    literal_types.mark_non_ascii_digits(o)
-                    for o in hits
-                    if literal_types.normalize(spec.type, o, spec.units) is None
-                )
+        odd = {
+            offender.marked_value
+            for offenders in digit_width_offenders.values()
+            for offender in offenders
+        }
         if odd:
             # A set, so one offender shared by several conflict groups is named once.
             print(

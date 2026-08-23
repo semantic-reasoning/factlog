@@ -417,6 +417,33 @@ else
 fi
 rm -f "$KB/policy/typed-relations.md"
 
+# #347 symptom A: ASCII-shadowing 제１분기 still yields invalid date syntax.
+# Keep the conflict count but suppress a correction that cannot fix parsing.
+printf '# single-valued\n- 출시\n' > "$KB/policy/single-valued.md"
+printf -- '- `출시` : date as launch_date\n' > "$KB/policy/typed-relations.md"
+printf '%s\n%s\n%s\n' "$H" \
+  '을서비스,출시,2030.1,sources/a.md,confirmed,0.9,' \
+  '을서비스,출시,제１분기,sources/a.md,confirmed,0.9,' > "$KB/facts/candidates.csv"
+out="$("$PYTHON" -m factlog status --target "$KB" 2>&1)"
+printf '%s' "$out" | grep -qE "conflicts: +1 " && ok "#347: status keeps the non-digit syntax conflict" || bad "#347: status lost the date conflict"
+if printf '%s' "$out" | grep -qF "non-ASCII digits"; then bad "#347: status blames digit width for non-digit date syntax"; else ok "#347: status suppresses non-causal digit guidance"; fi
+
+# #347 symptom B is repaired by the shared conflict core (#341/#345). Pin the
+# original alias fixture at both reporting surfaces so spec resolution cannot
+# drift back to the reported surface name.
+printf '# single-valued\n- 게재연도\n' > "$KB/policy/single-valued.md"
+printf -- '- `게재연도` -> `published_year`\n' > "$KB/policy/relation-aliases.md"
+printf -- '- `published_year` : number as pub_year\n' > "$KB/policy/typed-relations.md"
+printf -- '- published_year\n' > "$KB/policy/attribute-relations.md"
+printf '%s\n%s\n%s\n' "$H" \
+  '논문A,게재연도,2020,sources/a.md,confirmed,0.9,' \
+  '논문A,게재연도,２０２１,sources/a.md,confirmed,0.9,' > "$KB/facts/candidates.csv"
+alias_status="$("$PYTHON" -m factlog status --target "$KB" 2>&1)"
+alias_check="$("$PYTHON" "$PLUGIN_ROOT/tools/check_conflicts.py" --wiki "$KB" 2>&1 || true)"
+if printf '%s' "$alias_status" | grep -qF "non-ASCII digits" && printf '%s' "$alias_check" | grep -qF "non-ASCII digits"; then ok "#347: status/checker share alias-aware causal guidance"; else bad "#347: alias-aware guidance diverged between status and checker"; fi
+rm -f "$KB/policy/relation-aliases.md"
+printf '# attribute relations\n' > "$KB/policy/attribute-relations.md"
+
 # Negative control 2: restore the ASCII-only conflict, which must NOT be flagged —
 # otherwise the two assertions above would pass against an unconditional warning.
 printf '# single-valued\n- 주속성\n' > "$KB/policy/single-valued.md"
@@ -476,6 +503,7 @@ set +e; broken_out="$("$PYTHON" -m factlog status --target "$BROKEN" 2>/dev/null
 [ "$broken_rc" = "0" ] && ok "#331: broken typed policy + full-width conflict — status still exits 0" || bad "#331: broken typed policy aborts status (rc=$broken_rc)"
 printf '%s' "$broken_out" | grep -qE "logic: +" && ok "#331: broken typed policy — report still reaches the logic line" || bad "#331: broken typed policy truncates the report before logic:"
 printf '%s' "$broken_out" | grep -qE "conflicts: +1 \(over 1 single-valued" && ok "#331: broken typed policy — conflicts still counted" || bad "#331: broken typed policy — conflicts line wrong: $(printf '%s' "$broken_out"|grep conflicts)"
+if printf '%s' "$broken_out" | grep -qF "non-ASCII digits"; then bad "#347: degraded typed policy emits an unproven digit hint"; else ok "#347: degraded typed policy withholds digit repair guidance"; fi
 
 # Same claim, a failure that is NOT a FactlogError. typed_relations() reads
 # logic-policy.dl to compute reserved names, so a policy file that is not UTF-8

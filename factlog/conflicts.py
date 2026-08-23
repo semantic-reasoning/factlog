@@ -379,6 +379,14 @@ class ConflictScan(NamedTuple):
 ConflictSupport = dict[tuple[str, str], dict[str, tuple[str, ...]]]
 
 
+class DigitWidthOffender(NamedTuple):
+    """Authored value whose typed parse failure is caused by numeric digit width."""
+
+    value: str
+    type_tag: str
+    marked_value: str
+
+
 class _ConflictGroups(NamedTuple):
     """Private result of one authoritative pass over engine-input rows."""
 
@@ -389,6 +397,16 @@ class _ConflictGroups(NamedTuple):
     raw_relations: dict[tuple[str, str], set[str]]
     relation_subjects: dict[tuple[str, str], set[str]]
     sources: dict[tuple[str, str], dict[tuple, set[str]]]
+
+
+def _resolve_typed_spec(
+    relation: str,
+    typed: dict[str, TypedRelSpec],
+    aliases: dict[str, str],
+) -> TypedRelSpec | None:
+    """Resolve the exact spec used for one authored relation spelling."""
+    canonical = _canonicalize(relation, aliases)
+    return typed.get(canonical) or typed.get(_fold(relation))
 
 
 def _group_conflict_rows(
@@ -414,7 +432,7 @@ def _group_conflict_rows(
         if fold_relation_name(canon) not in sv:
             continue
         obj = row["object"]
-        spec = typed.get(canon) or typed.get(_fold(relation))
+        spec = _resolve_typed_spec(relation, typed, aliases)
         key = _group_key(obj, spec)
         pair = (_fold(row["subject"]), _fold(canon))
         by_key.setdefault(pair, {}).setdefault(key, set()).add(obj)
@@ -649,6 +667,41 @@ def collect_conflicts(
         dict(sorted(relation_variants.items())),
         dict(sorted(reported_relations.items())),
     )
+
+
+def collect_conflict_digit_width_offenders(
+    scan: ConflictScan,
+    typed: dict[str, TypedRelSpec] | None = None,
+    aliases: dict[str, str] | None = None,
+) -> dict[tuple[str, str], tuple[DigitWidthOffender, ...]]:
+    """Derive causal digit-width repair hints from an existing conflict scan.
+
+    Only actual conflicts participate; conflict-free fold/parse disclosures in
+    ``object_variants`` never gain repair guidance.  Every authored raw object is
+    checked against the spec resolved from the raw relation spelling of its row,
+    matching :func:`_group_conflict_rows` rather than guessing from a reported
+    representative.  Pure, sorted, and de-duplicated.
+    """
+    typed = typed or {}
+    aliases = aliases or {}
+    result: dict[tuple[str, str], tuple[DigitWidthOffender, ...]] = {}
+    for pair in scan.conflicts:
+        found: set[DigitWidthOffender] = set()
+        for variants in scan.object_variants[pair].values():
+            for raw in variants:
+                for relation in scan.object_relations[pair].get(raw, ()):
+                    spec = _resolve_typed_spec(relation, typed, aliases)
+                    if spec is not None and literal_types.digit_width_causes_parse_failure(
+                        spec.type, raw, spec.units
+                    ):
+                        marked = literal_types.mark_numeric_token_non_ascii_digits(
+                            spec.type, raw
+                        )
+                        if marked is not None:  # guaranteed by the causal predicate
+                            found.add(DigitWidthOffender(raw, spec.type, marked))
+        if found:
+            result[pair] = tuple(sorted(found))
+    return result
 
 
 def collect_conflict_support(

@@ -39,6 +39,8 @@ import literal_types
 
 # A typed single-valued amount relation — the only shape the note applies to.
 _AMOUNT_SPEC = common.TypedRelSpec("amount", "revenue")
+_NUMBER_SPEC = common.TypedRelSpec("number", "quantity")
+_DATE_SPEC = common.TypedRelSpec("date", "launch_date")
 
 
 def _nfd(value: str) -> str:
@@ -93,7 +95,9 @@ class TestAsciiCleanGroupsGetNoNote:
         # _group_key keys it ("scalar", …) — every clause of the note ("does not
         # parse", "compared here as a raw string") would be false. Carrying
         # non-ASCII digits is not the same as failing to parse.
-        spec = common.TypedRelSpec("amount", "revenue", {"억１": 100000000})
+        spec = common.TypedRelSpec(
+            "amount", "revenue", {"억": 100000000, "억１": 100000000}
+        )
         objects = ['amount(100,"억１")', 'amount(200,"억１")']
         assert all(literal_types.has_non_ascii_digits(o) for o in objects)
         assert literal_types.normalize(spec.type, objects[0], spec.units) == 10000000000
@@ -104,7 +108,9 @@ class TestAsciiCleanGroupsGetNoNote:
         # Mixed group: the unit-name value parses, the numeral one does not. The
         # note must name the second only — naming both would restate the false
         # claim about the first.
-        spec = common.TypedRelSpec("amount", "revenue", {"억１": 100000000})
+        spec = common.TypedRelSpec(
+            "amount", "revenue", {"억": 100000000, "억１": 100000000}
+        )
         note = "\n".join(check_conflicts.non_ascii_digit_note(['amount(100,"억１")', "２００억"], spec))
         assert "\\uff12\\uff10\\uff10억" in note
         assert "억\\uff11" not in note
@@ -146,12 +152,12 @@ class TestTypedNonAsciiDigitGroupsGetTheNote:
         assert "'100억'" not in note
 
     def test_fires_for_digit_systems_other_than_full_width(self):
-        note = check_conflicts.non_ascii_digit_note(["100", "١٠٠"], _AMOUNT_SPEC)
+        note = check_conflicts.non_ascii_digit_note(["100", "١٠٠"], _NUMBER_SPEC)
         assert note is not None
         assert "\\u0661\\u0660\\u0660" in "\n".join(note)
 
     def test_fires_for_devanagari(self):
-        note = check_conflicts.non_ascii_digit_note(["123", "१२३"], _AMOUNT_SPEC)
+        note = check_conflicts.non_ascii_digit_note(["123", "१२३"], _NUMBER_SPEC)
         assert note is not None
         assert "\\u0967\\u0968\\u0969" in "\n".join(note)
 
@@ -164,6 +170,29 @@ class TestTypedNonAsciiDigitGroupsGetTheNote:
         # main() prints these one per call; embedded newlines would double-space.
         for line in check_conflicts.non_ascii_digit_note(["100억", "１００억"], _AMOUNT_SPEC):
             assert "\n" not in line
+
+    def test_non_digit_syntax_failure_does_not_blame_width(self):
+        assert check_conflicts.non_ascii_digit_note(
+            ["2030.1", "제１분기"], _DATE_SPEC
+        ) is None
+
+    def test_amount_unit_identifier_is_never_shadowed(self):
+        spec = common.TypedRelSpec("amount", "revenue", {"억1": 100000000})
+        raw = 'amount(100,"억１")'
+        assert literal_types.normalize(spec.type, raw, spec.units) is None
+        assert literal_types.normalize(
+            spec.type, literal_types.ascii_digit_shadow(raw), spec.units
+        ) is not None
+        assert literal_types.numeric_token_ascii_shadow(spec.type, raw) is None
+        assert check_conflicts.non_ascii_digit_note([raw, "200억1"], spec) is None
+
+    def test_valid_digit_bearing_unit_is_not_marked_as_the_remediation(self):
+        spec = common.TypedRelSpec("amount", "revenue", {"억１": 100000000})
+        note = "\n".join(check_conflicts.non_ascii_digit_note(
+            ['amount(１００,"억１")', 'amount(200,"억１")'], spec
+        ))
+        assert 'amount(\\uff11\\uff10\\uff10,"억１")' in note
+        assert "억\\uff11" not in note
 
 
 class TestUnitNameFoldDoesNotDisturbTheDigitPolicy:

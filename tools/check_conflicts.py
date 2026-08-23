@@ -10,9 +10,10 @@ a plain notes wiki accumulates. This surfaces it deterministically.
 
 Resolution is human-in-the-loop and non-destructive: mark the outdated row's
 status as 'superseded' in facts/candidates.csv (it stays for audit, drops out of
-engine input, and the conflict clears). A value carrying non-ASCII digits is the
-exception: it does not parse, so supersession can clear the gate while keeping the
-unreadable value (see non_ascii_digit_note).
+engine input, and the conflict clears). Digit-specific guidance is emitted only
+when a numeric-token-only ASCII counterfactual proves width caused the parse
+failure; supersession can otherwise clear the gate while keeping an unreadable
+value (see ``non_ascii_digit_note``).
 
 Exit code: 0 if no conflicts, 1 if any conflict is found.
 
@@ -51,6 +52,7 @@ from common import (  # noqa: E402
 )
 from factlog.conflicts import (  # noqa: E402
     ConflictScan,
+    DigitWidthOffender,
     _canonicalize,
     _fold,
     _fold_classes,
@@ -58,6 +60,7 @@ from factlog.conflicts import (  # noqa: E402
     _group_key_unfolded,
     _representative,
     collect_conflicts,
+    collect_conflict_digit_width_offenders,
     detect_conflicts,
 )
 
@@ -285,15 +288,15 @@ def _report_relation_atom_divergence(scan: ConflictScan) -> None:
 
 
 def non_ascii_digit_note(objects: list[str], spec: TypedRelSpec | None) -> list[str] | None:
-    """Extra guidance lines for a **typed** relation's conflict group when one of
-    its values carries non-ASCII digits; ``None`` otherwise.
+    """Extra guidance for a typed conflict when numeric digit width is proven to
+    cause a parse failure; ``None`` otherwise.
 
     The generic advice printed by ``main`` ("mark the outdated row superseded")
-    assumes one of the values is out of date. Under a typed relation a value
-    carrying non-ASCII digits does not parse as the declared type at all
-    (``_group_key`` degrades it to ``("raw", obj)``), so superseding the OTHER row
-    clears this gate while leaving the KB holding the value the engine cannot
-    read.
+    assumes one of the values is out of date. The proof requires the original to
+    fail and a numeric-token-only ASCII shadow to parse. Merely carrying such
+    digits is insufficient: ``제１분기`` is invalid as a date after becoming
+    ``제1분기``, and an amount unit is an opaque identifier whose digits are never
+    shadowed.
 
     **The ``spec is None`` gate is load-bearing, not defensive.** Under an untyped
     single-valued relation ``_group_key`` returns a raw key because there is no
@@ -308,7 +311,9 @@ def non_ascii_digit_note(objects: list[str], spec: TypedRelSpec | None) -> list[
     unit NAME, so a declared unit may carry them: ``amount(100,"억１")`` under a
     declared ``억１`` unit normalizes to a scalar and ``_group_key`` keys it
     ``("scalar", …)``. Both leading clauses of the note would be false there.
-    Asking ``normalize`` converges this note and ``_group_key`` on one predicate.
+    The original ``normalize`` call keeps this note aligned with ``_group_key``;
+    the second call on a grammar-proven numeric-token shadow supplies the extra
+    causal proof that grouping itself does not need.
 
     ``_parse_amount_units`` does now **NFC-fold** a unit name (#325), which is a
     normalization and not a validation, so the example above is unaffected. That
@@ -339,23 +344,40 @@ def non_ascii_digit_note(objects: list[str], spec: TypedRelSpec | None) -> list[
     Pure; never raises."""
     if spec is None:
         return None
-    offenders = [
-        o
-        for o in objects
-        if literal_types.has_non_ascii_digits(o)
-        and literal_types.normalize(spec.type, o, spec.units) is None
-    ]
+    offenders = tuple(
+        DigitWidthOffender(
+            obj,
+            spec.type,
+            literal_types.mark_numeric_token_non_ascii_digits(spec.type, obj) or obj,
+        )
+        for obj in sorted(set(objects))
+        if literal_types.digit_width_causes_parse_failure(spec.type, obj, spec.units)
+    )
+    return _digit_width_note(offenders)
+
+
+def _digit_width_note(
+    offenders: tuple[DigitWidthOffender, ...],
+) -> list[str] | None:
+    """Render causal offender records; grouping and provenance stay in core."""
     if not offenders:
         return None
-    shown = ", ".join(f"'{literal_types.mark_non_ascii_digits(o)}'" for o in offenders)
-    return [
-        f"    note: {shown} carries non-ASCII digits, so it does not parse as this",
-        f"          relation's declared type ({spec.type}) and is compared here as a raw",
-        "          string. Superseding a row clears this gate but can leave that",
-        "          unreadable value in the KB. Correct the source to ASCII digits and",
-        "          re-collect; if the values still differ afterwards, supersede the",
-        "          outdated one (docs/reference/typed-relations.md).",
-    ]
+    lines: list[str] = []
+    for type_tag in sorted({offender.type_tag for offender in offenders}):
+        shown = ", ".join(
+            f"'{offender.marked_value}'"
+            for offender in offenders
+            if offender.type_tag == type_tag
+        )
+        lines.extend([
+            f"    note: {shown} carries non-ASCII digits, so it does not parse as this",
+            f"          relation's declared type ({type_tag}) and is compared here as a raw",
+            "          string. Superseding a row clears this gate but can leave that",
+            "          unreadable value in the KB. Correct the source to ASCII digits and",
+            "          re-collect; if the values still differ afterwards, supersede the",
+            "          outdated one (docs/reference/typed-relations.md).",
+        ])
+    return lines
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -370,7 +392,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     typed = typed_relations()
-    scan = collect_conflicts(load_facts(), single_valued, typed, relation_aliases())
+    aliases = relation_aliases()
+    scan = collect_conflicts(load_facts(), single_valued, typed, aliases)
+    digit_width_offenders = collect_conflict_digit_width_offenders(scan, typed, aliases)
     conflicts, subject_variants, object_variants = (
         scan.conflicts,
         scan.subject_variants,
@@ -385,7 +409,6 @@ def main(argv: list[str] | None = None) -> int:
     print(f"check_conflicts: {len(conflicts)} conflict(s) found", file=sys.stderr)
     _report_resolved_merges(scan)
     _report_relation_atom_divergence(scan)
-    aliases = relation_aliases()
     # Whether folding merged spellings anywhere. This is an *extra* disclosure,
     # never a replacement for the supersede guidance: a contradiction that a mixed
     # spelling merely joined is still a contradiction, and unifying the spelling
@@ -439,13 +462,10 @@ def main(argv: list[str] | None = None) -> int:
                     f"    value {obj!r} spellings: {_spellings(members)}",
                     file=sys.stderr,
                 )
-        # The conflict key is the canonical relation, which is already NFC when it
-        # came from the alias map; fall back to the NFC form for an NFD-authored
-        # name. NOT identical to detect_conflicts' lookup: there the second probe
-        # uses the NFC of the ROW's relation, which can differ from the canonical
-        # one when an NFD surface form participates in an alias (#210).
-        spec = typed.get(relation) or typed.get(unicodedata.normalize("NFC", relation))
-        for line in non_ascii_digit_note(objects, spec) or ():
+        # The shared sidecar resolved each raw object's spec from the exact raw
+        # relation spelling used by the grouping pass; do not infer it again from
+        # this reported representative.
+        for line in _digit_width_note(digit_width_offenders.get(key, ())) or ():
             print(line, file=sys.stderr)
     print(
         "  Resolve by marking the outdated row(s) status='superseded' in "

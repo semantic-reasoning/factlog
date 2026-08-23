@@ -72,9 +72,11 @@ grouping's reports, and one manual tool — and falls through one hole:
   remedy it points at needs the reader to know which character is wrong.
 - **conflict reports** — under a relation declared **single-valued**, the shared
   core sees the ASCII/full-width pair as two values. ``tools/check_conflicts.py``
-  exits 1, while ``factlog status`` summarizes the count and both name the
-  offending codepoints. Corroboration's competing-values section shows the
-  distinct source support without adding the correction guidance.
+  exits 1, while ``factlog status`` summarizes the count. Both name the offending
+  codepoints only when ``digit_width_causes_parse_failure`` proves that changing
+  a grammar-defined numeric token to ASCII makes the typed parser succeed; this
+  diagnostic shadow never changes grouping. Corroboration's competing-values
+  section shows distinct source support without adding correction guidance.
 - **manual** — ``tools/entity_audit.py`` reports a value under a relation not
   declared an attribute as a *literal suspect*. Nothing in the pipeline runs it
   (``skills/factlog/SKILL.md`` documents it as a manual command) and its message
@@ -225,6 +227,23 @@ _DIAGNOSTIC_AMOUNT_COMPOUND_RE = re.compile(
     r'^amount\(\s*"?(?P<num>-?\d[\d,]*(?:\.\d+)?)"?\s*,\s*'
     r'(?:"(?P<qunit>[^"]*)"|(?P<unit>[^,)"]+))\s*\)$',
     re.IGNORECASE,
+)
+_DIAGNOSTIC_DATE_RE = re.compile(r"^(?:\d{4}[.\-/]\d{1,2}(?:[.\-/]\d{1,2})?)$")
+_DIAGNOSTIC_DATE_COMPOUND_RE = re.compile(
+    r"^date\(\s*\d{4}(?:\s*,\s*\d{1,2}(?:\s*,\s*\d{1,2})?)?\s*\)$",
+    re.IGNORECASE,
+)
+_DIAGNOSTIC_NUMBER_RE = re.compile(r"^-?\d[\d,]*(?:\.\d+)?$")
+_DIAGNOSTIC_NUMBER_COMPOUND_RE = re.compile(
+    r'^number\(\s*"?-?\d[\d,]*(?:\.\d+)?"?\s*\)$', re.IGNORECASE
+)
+_DIAGNOSTIC_ORDINAL_KO_RE = re.compile(r"^제?\d+\s*(?:호|위|번|차|등|째)$")
+_DIAGNOSTIC_ORDINAL_EN_RE = re.compile(r"^\d+\s*(?:st|nd|rd|th)$", re.IGNORECASE)
+_DIAGNOSTIC_ORDINAL_COMPOUND_RE = re.compile(
+    r"^ordinal\(\s*\d+\s*\)$", re.IGNORECASE
+)
+_DIAGNOSTIC_AMOUNT_RE = re.compile(
+    r"^(?P<num>-?\d[\d,]*(?:\.\d+)?) ?(?P<unit>\D+)$"
 )
 
 
@@ -476,6 +495,110 @@ def normalize(type_tag: str, raw: str, units: dict[str, int] | None = None) -> i
         return parse_amount(raw, units or DEFAULT_AMOUNT_UNITS)
     parser = _PARSERS.get(type_tag)
     return parser(raw) if parser is not None else None
+
+
+def _diagnostic_numeric_segment(
+    type_tag: str, raw: str
+) -> tuple[str, int, int] | None:
+    """Return ``(NFC text, start, end)`` for a grammar-proven numeric segment.
+
+    This deliberately duplicates the accepted literal shapes with ``\\d`` in a
+    diagnostic-only grammar.  It never widens the real parsers.  In particular,
+    an amount unit is an opaque identifier: the prose grammar excludes ``Nd``
+    from the unit, and the compound grammar replaces only its named ``num``
+    capture, never digits in ``unit``/``qunit``.
+    """
+    text = unicodedata.normalize("NFC", raw).strip()
+    patterns = {
+        "date": (_DIAGNOSTIC_DATE_COMPOUND_RE, _DIAGNOSTIC_DATE_RE),
+        "number": (_DIAGNOSTIC_NUMBER_COMPOUND_RE, _DIAGNOSTIC_NUMBER_RE),
+        "ordinal": (
+            _DIAGNOSTIC_ORDINAL_COMPOUND_RE,
+            _DIAGNOSTIC_ORDINAL_KO_RE,
+            _DIAGNOSTIC_ORDINAL_EN_RE,
+        ),
+    }
+    if type_tag in patterns:
+        if not has_non_ascii_digits(text) or not any(
+            pattern.match(text) for pattern in patterns[type_tag]
+        ):
+            return None
+        # These grammars contain no other Nd-bearing identifier position, so the
+        # whole matched text is a safe replacement/marking segment.
+        return text, 0, len(text)
+    if type_tag != "amount":
+        return None
+    match = _DIAGNOSTIC_AMOUNT_COMPOUND_RE.match(text) or _DIAGNOSTIC_AMOUNT_RE.match(text)
+    if not match:
+        return None
+    number = match.group("num")
+    if not has_non_ascii_digits(number):
+        return None
+    start, end = match.span("num")
+    return text, start, end
+
+
+def numeric_token_ascii_shadow(type_tag: str, raw: str) -> str | None:
+    """Return an NFC diagnostic shadow with only grammar-proven numeric tokens
+    converted from Unicode ``Nd`` to ASCII, or ``None`` when none can be proven.
+    """
+    segment = _diagnostic_numeric_segment(type_tag, raw)
+    if segment is None:
+        return None
+    text, start, end = segment
+    return text[:start] + ascii_digit_shadow(text[start:end]) + text[end:]
+
+
+def mark_numeric_token_non_ascii_digits(type_tag: str, raw: str) -> str | None:
+    """Escape only the non-ASCII digits in a grammar-proven numeric token.
+
+    Unlike :func:`mark_non_ascii_digits`, this never marks an opaque identifier
+    position such as an amount unit.  It is the display counterpart of
+    :func:`numeric_token_ascii_shadow` and is diagnostic-only.
+    """
+    if _diagnostic_numeric_segment(type_tag, raw) is None:
+        return None
+    if type_tag != "amount":
+        # The date/number/ordinal diagnostic grammars have no Nd-bearing opaque
+        # identifier position. Mark the authored string directly so NFD spelling
+        # and outer whitespace remain byte-for-byte intact.
+        return mark_non_ascii_digits(raw)
+
+    # Re-match the authored (unfolded) amount solely to recover its raw numeric
+    # span. NFC was needed for the parser counterfactual, but must never leak into
+    # provenance shown to the user. Both amount wrappers are ASCII and the unit
+    # groups accept NFD text, so this raw match has the same numeric boundary.
+    stripped = raw.strip()
+    match = (
+        _DIAGNOSTIC_AMOUNT_COMPOUND_RE.match(stripped)
+        or _DIAGNOSTIC_AMOUNT_RE.match(stripped)
+    )
+    if match is None:  # pragma: no cover - NFC proof above guarantees this shape
+        return None
+    start, end = match.span("num")
+    leading = len(raw) - len(raw.lstrip())
+    raw_start, raw_end = leading + start, leading + end
+    return (
+        raw[:raw_start]
+        + mark_non_ascii_digits(raw[raw_start:raw_end])
+        + raw[raw_end:]
+    )
+
+
+def digit_width_causes_parse_failure(
+    type_tag: str, raw: str, units: dict[str, int] | None = None
+) -> bool:
+    """Whether non-ASCII digits in a typed literal's numeric token caused its
+    parse failure, proven by a numeric-token-only ASCII counterfactual.
+
+    Diagnostic only: both inputs are temporary NFC shadows.  Stored data,
+    grouping, matching, and the reject-not-fold parser policy are unchanged.
+    """
+    folded = unicodedata.normalize("NFC", raw)
+    if normalize(type_tag, folded, units) is not None:
+        return False
+    shadow = numeric_token_ascii_shadow(type_tag, folded)
+    return shadow is not None and normalize(type_tag, shadow, units) is not None
 
 
 def humanize(value: str) -> str:
