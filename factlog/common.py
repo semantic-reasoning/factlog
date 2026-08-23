@@ -783,10 +783,12 @@ def load_questions() -> list[dict[str, str]]:
 
 
 def fold_relation_name(name: str) -> str:
-    """Return *name* under Unicode canonical composition, for membership tests.
+    """Return the NFC-only identity of a relation name.
 
     NFC only — never NFKC, never casefold. Fullwidth ``ＡＢＣ`` and ``ABC`` are
     different relations, not two spellings of one, and must stay distinct.
+    Relation names are not literal values, so amount syntax and semantic aliases
+    also remain distinct unless an explicit alias consumer expands them.
     """
     return unicodedata.normalize("NFC", name)
 
@@ -1053,8 +1055,8 @@ def relation_aliases(root: Path | None = None) -> dict[str, str]:
         m = re.fullmatch(r"`([^`]+)`\s*->\s*`([^`]+)`", stripped)
         if not m:
             continue
-        raw = unicodedata.normalize("NFC", m.group(1).strip())
-        canonical = unicodedata.normalize("NFC", m.group(2).strip())
+        raw = fold_relation_name(m.group(1).strip())
+        canonical = fold_relation_name(m.group(2).strip())
         if not raw or not canonical:
             continue
         # self-map
@@ -1097,7 +1099,7 @@ def canonical_variants_of(relation: str, aliases: dict[str, str]) -> set[str]:
     an empty result doubles as "not a declared canonical" (the boolean use in
     classify_query).
     """
-    return surface_variants(unicodedata.normalize("NFC", relation), aliases)
+    return surface_variants(fold_relation_name(relation), aliases)
 
 
 def _attribute_relations_from(policy_dir: Path, read_aliases) -> set[str]:
@@ -1136,7 +1138,7 @@ def _attribute_relations_from(policy_dir: Path, read_aliases) -> set[str]:
         expanded = set(names)
         for name in names:
             # relation_aliases() keys are NFC-normalized, so look up the NFC form.
-            nfc = unicodedata.normalize("NFC", name)
+            nfc = fold_relation_name(name)
             canonical = aliases.get(nfc, nfc)
             expanded.add(canonical)
             expanded |= surface_variants(canonical, aliases)
@@ -1144,7 +1146,7 @@ def _attribute_relations_from(policy_dir: Path, read_aliases) -> set[str]:
     return names | {
         form
         for name in names
-        for form in (unicodedata.normalize("NFC", name), unicodedata.normalize("NFD", name))
+        for form in (fold_relation_name(name), unicodedata.normalize("NFD", name))
     }
 
 
@@ -1285,7 +1287,7 @@ def _parse_typed_relations(
                 continue
             print(f"typed-relations: skipping malformed line: {stripped!r}", file=sys.stderr)
             continue
-        name = unicodedata.normalize("NFC", (m.group("qname") or m.group("name")).strip())
+        name = fold_relation_name((m.group("qname") or m.group("name")).strip())
         type_tag = m.group("type")
         alias = m.group("alias")
         units_body = m.group("units")  # None if no clause, "" if empty `()`
@@ -1309,7 +1311,7 @@ def _parse_typed_relations(
 
 
 def _warn_typed_not_attribute(specs: dict[str, TypedRelSpec], attrs: set[str]) -> None:
-    attrs_nfc = {unicodedata.normalize("NFC", a) for a in attrs}
+    attrs_nfc = {fold_relation_name(a) for a in attrs}
     for name in specs:
         if name not in attrs_nfc:
             print(
@@ -1845,7 +1847,7 @@ def engine_facts(facts: list[dict[str, str]]) -> list[dict[str, str]]:
 
 
 def engine_atom_key(row: dict[str, str]) -> tuple[str, str, str]:
-    """Identity of the engine atom *row* compiles to: ``(NFC(subject), relation,
+    """Identity of the engine atom *row* compiles to: ``(NFC(subject), NFC(relation),
     NFC(object))``.
 
     The single definition of "these rows are the same engine atom", shared by
@@ -1853,8 +1855,8 @@ def engine_atom_key(row: dict[str, str]) -> tuple[str, str, str]:
     (which aggregates sources under it), so the atom written to ``accepted.dl``
     and the source count reported for it cannot disagree.
 
-    **Which axes fold, and why those.** Subject and object fold under NFC;
-    the relation does not.
+    **Which axes fold, and why those.** Subject, relation, and object fold under
+    NFC. Semantic aliases remain distinct raw ``relation/3`` atoms.
 
     * *subject / object* — ``factlog.conflicts`` folds both (``_fold``,
       applied to subjects and to objects through ``_group_key``), and
@@ -1871,20 +1873,13 @@ def engine_atom_key(row: dict[str, str]) -> tuple[str, str, str]:
       the same folded subject and different objects stay two atoms here and are
       one group there, so the checker remains stricter on that axis. See
       ``factlog.conflicts.collect_conflicts``.
-    * *relation* — left verbatim for engine atom identity and corroboration's
-      general fact/source list until #386. The conflict core already folds this
-      axis for the checker, status, and competing-values clause while restoring
-      an authored spelling for reports. Thus two spellings of one relation still
-      make two ``relation/3`` atoms even though conflict analysis compares them
-      together.
-
-      Read that as "this function does not fold it", never as "the axis is
-      unfolded". ``canonical_atoms`` NFC-folds the relation before its alias
-      lookup, so the SAME ``accepted.dl`` can carry two ``relation/3`` atoms and
-      one ``canonical/3`` atom for one aliased pair; and ``_canonical_value``
-      folds a query's relation argument, so one spelling typed by the user
-      already matches both. #386 tracks making engine identity and its provenance
-      maps agree with those folded consumers.
+    * *relation* — the conflict core, policy membership, canonical queries, and
+      ``canonical_atoms`` already compare relation names under NFC. Folding the
+      engine identity too prevents one logical fact from becoming two
+      ``relation/3`` atoms and keeps general corroboration on the same key
+      (#386). This is normalization only: an alias such as ``CEO`` and its
+      canonical name ``대표`` remain distinct here and meet only in the optional
+      ``canonical/3`` block.
 
     NFC only — never NFKC, never casefold. Fullwidth ``ＡＢＣ`` and ``ABC``, and
     ``a`` and ``A``, are different values and must stay different atoms.
@@ -1912,7 +1907,7 @@ def fold_atom_triple(subject: str, relation: str, object_: str) -> tuple[str, st
     an engine answer row, say, which is a list and not a candidates dict."""
     return (
         unicodedata.normalize("NFC", subject),
-        relation,
+        fold_relation_name(relation),
         unicodedata.normalize("NFC", object_),
     )
 
@@ -2008,12 +2003,14 @@ def dedup_engine_atoms(rows: list[dict[str, str]]) -> list[dict[str, str]]:
     provenance) lives on the separate candidates path (``corroboration_counts``,
     ``fact_signals``) and is untouched by this collapse.
 
-    **Which spelling is written.** Per VALUE, not per group: both axes are
-    looked up in :func:`kb_spellings`, which pools every spelling of a value
-    across every engine row and both positions before applying
-    ``composed_spelling``. Choosing inside the group instead breaks the join to
-    the rest of the KB — see that docstring for the measured shape and for why
-    the pool cannot be per-axis either.
+    **Which spelling is written.** Per VALUE, not per group: the subject/object
+    axes are looked up in :func:`kb_spellings`, which pools every spelling of a
+    value across every engine row and both positions before applying
+    ``composed_spelling``. Relations use a separate pool within each atom group:
+    this prefers an authored NFC spelling when equivalent rows collapse without
+    rewriting an unrelated NFD-only atom. Choosing subject/object spellings
+    inside the group instead breaks the join to the rest of the KB — see that
+    docstring for the measured shape and for why their pool cannot be per-axis.
 
     The composed spelling is the one a reader greps for from an NFC editor, and
     the one the engine's typed projection can parse
@@ -2040,29 +2037,31 @@ def dedup_engine_atoms(rows: list[dict[str, str]]) -> list[dict[str, str]]:
     group's FIRST row, so first-occurrence still decides everything the fold does
     not.
 
-    Observability consequence, unchanged in kind and wider in reach now that the
-    pool is KB-wide: ``compile_facts`` prints ``source=`` from that first row
-    beside a triple the row may never have written, and the spelling can come
-    from a row in a different group entirely. The aggregate ``sources=N`` beside
-    it is the honest count (it is keyed on the atom); the single ``source=`` is a
-    sample, not the provenance of those exact bytes. Nothing downstream reads it
-    — ``ask`` renders ``source_paths`` from ``fact_signals`` — so this is a log
-    legibility matter, recorded rather than fixed.
+    Observability consequence: ``compile_facts`` prints ``source=`` from that
+    first row beside a triple the row may never have written. A subject/object
+    spelling can come from another group; a relation spelling comes from another
+    member of this group. The aggregate ``sources=N`` beside it is the honest
+    count (it is keyed on the atom); the single ``source=`` is a sample, not the
+    provenance of those exact bytes. Nothing downstream reads it — ``ask``
+    renders ``source_paths`` from ``fact_signals`` — so this is a log legibility
+    matter, recorded rather than fixed.
 
     **Byte-invariance.** ``composed_spelling`` of a one-element set is that
-    element, so a value the KB spells one way maps to itself and its row is
-    yielded untouched — the same object, not a copy. A KB that spells every
-    value one way — every NFC-only KB, and every uniformly-NFD one — therefore
-    compiles to a byte-identical ``accepted.dl``, measured against origin/main.
-    Nothing is normalized on the way out; a uniformly decomposed KB keeps its
-    decomposed spelling, because no pool has a composed member to prefer.
+    element, so a value the KB spells one way maps to itself; the same holds for
+    a relation written one way within its atom group. A KB that spells every
+    value one way and every atom's relation one way — including every NFC-only
+    KB and every uniformly-NFD one — therefore compiles to a byte-identical
+    ``accepted.dl``, measured against origin/main. Nothing is normalized on the
+    way out; a uniformly decomposed KB keeps its decomposed spelling, because no
+    applicable pool has a composed member to prefer.
 
     The bytes of an atom change only where the KB itself holds more than one
-    spelling of a value, and then only to a spelling that KB already wrote. Note
-    the scope: because the pool is KB-wide, an atom can be rewritten even when
-    its own group is a singleton — a value written NFC in one fact and NFD in
-    another is unified in both, which is the whole point. Only a KB already
-    mixing forms for one value sees this.
+    spelling of a subject/object value, or its atom group holds more than one
+    spelling of the relation, and then only to a spelling the KB already wrote.
+    The value pool is KB-wide, so a singleton atom can still inherit another
+    fact's subject/object spelling. The relation pool is group-local so an
+    unrelated atom cannot acquire a relation spelling that would also change the
+    exact-match typed projection (#387).
 
     **Agreeing with itself is the correction only because the query side moves
     too.** Collapsing the atoms without that is half a move: it picks one
@@ -2070,11 +2069,12 @@ def dedup_engine_atoms(rows: list[dict[str, str]]) -> list[dict[str, str]]:
     addresses nothing — measured on the three rows in :func:`kb_spellings`, where
     BOTH single-form ``path`` queries were refused and ``count`` answered ``0``
     while presenting it as verified. :func:`kb_query_spellings` and
-    :func:`resolve_query_spellings` are the read side that closes it, applied by
-    ``classify_query``, ``ask_router.evaluate`` and ``run_logic_check``. Anything
-    that changes which spelling this function writes has to keep them in step;
-    the write side alone decides only what the file contains, not what a reader
-    can ask for."""
+    :func:`resolve_query_spellings` are the subject/object read side that closes
+    it, applied by ``classify_query``, ``ask_router.evaluate`` and
+    ``run_logic_check``. Relation arguments instead use folded relation
+    comparison directly. Anything that changes which spelling this function
+    writes has to keep those paths in step; the write side alone decides only
+    what the file contains, not what a reader can ask for."""
     spelling = kb_spellings(rows)
     groups: dict[tuple[str, str, str], list[dict[str, str]]] = {}
     for row in rows:
@@ -2082,11 +2082,21 @@ def dedup_engine_atoms(rows: list[dict[str, str]]) -> list[dict[str, str]]:
     unique: list[dict[str, str]] = []
     for key, members in groups.items():
         base = members[0]
-        subject, object_ = spelling[key[0]], spelling[key[2]]
-        if subject == base["subject"] and object_ == base["object"]:
+        subject, relation, object_ = (
+            spelling[key[0]],
+            composed_spelling({member["relation"] for member in members}),
+            spelling[key[2]],
+        )
+        if (
+            subject == base["subject"]
+            and relation == base["relation"]
+            and object_ == base["object"]
+        ):
             unique.append(base)
         else:
-            unique.append({**base, "subject": subject, "object": object_})
+            unique.append(
+                {**base, "subject": subject, "relation": relation, "object": object_}
+            )
     return unique
 
 
@@ -2112,7 +2122,7 @@ def canonical_atoms(
     seen: set[tuple[str, str, str]] = set()
     unique: list[tuple[str, str, str]] = []
     for row in rows:
-        R = unicodedata.normalize("NFC", row["relation"])
+        R = fold_relation_name(row["relation"])
         if R in aliases:
             canon = aliases[R]
         elif R in canonical_values:
@@ -2638,14 +2648,14 @@ def _canonical_value(value: str) -> str:
     the same form merge stores — so a query literal matches the stored object
     whether or not the author quoted the unit.
 
-    NFC folding at the single query-value comparison chokepoint (#213): every
-    query-match path routes value comparison through here, so folding once here
-    makes an NFD-stored relation or object meet an NFC-typed query constant (and
-    the reverse) without touching any per-path code. macOS text is routinely NFD,
-    so an NFD-stored fact would otherwise never meet an NFC-typed query constant.
-    Idempotent no-op on NFC-only data, so a KB that was already NFC compares
-    byte-identically. Non-amount strings are otherwise returned unchanged, so
-    dates/numbers/ordinals/entities keep their form. Total: never raises."""
+    NFC folding at the query VALUE comparison chokepoint (#213) makes an
+    NFD-stored subject or object meet an NFC-typed query constant (and the
+    reverse). Relation names deliberately use :func:`fold_relation_name` instead:
+    applying amount canonicalization to that axis would merge distinct engine
+    predicates. Idempotent no-op on NFC-only data, so a KB that was already NFC
+    compares byte-identically. Non-amount strings are otherwise returned
+    unchanged, so dates/numbers/ordinals/entities keep their form. Total: never
+    raises."""
     nfc = unicodedata.normalize("NFC", value)
     return literal_types.canonical_amount(nfc) or nfc
 
@@ -2790,14 +2800,11 @@ review_required_question = _review_required_question
 # absent from this table is a policy predicate, whose every position is a value
 # position (see resolve_query_spellings).
 #
-# The RELATION argument is deliberately absent from every entry. ``engine_atom_key``
-# folds the subject and object axes and leaves the relation axis alone until
-# #386, so one
-# ``accepted.dl`` may legitimately hold two spellings of one relation name and
-# there is no single spelling to resolve a relation constant onto. Relation
-# matching handles its own folding through ``_canonical_value`` on both sides
-# (see ``_relation_match_count``) and needs no rewrite. ``review_required`` holds
-# the user's ORIGINAL question, not a KB value, and is never rewritten.
+# The RELATION argument is deliberately absent from every entry. Relation
+# matching uses NFC-only ``fold_relation_name`` plus explicit alias expansion
+# (see ``_relation_match_count``) and needs no spelling rewrite.
+# ``review_required`` holds the user's ORIGINAL question, not a KB value, and is
+# never rewritten.
 _QUERY_VALUE_POSITIONS: dict[str, tuple[int, ...]] = {
     "relation": (0, 2),
     "path": (0, 1),
@@ -2837,10 +2844,16 @@ def query_amount_digit_near_matches(
         for index, (arg, value) in enumerate(zip(args, values, strict=True)):
             if index == target or _is_variable(arg):
                 continue
-            # Conservative subset of relation evaluation semantics: canonical
-            # equality is sufficient proof. Alias-only equality is omitted here
-            # rather than risking a warning when policy loading is unavailable.
-            if _canonical_value(_arg_value(arg)) != _canonical_value(value):
+            # Conservative subset of relation evaluation semantics: relation
+            # identity is NFC-only, while subject/object use value
+            # canonicalization. Alias-only equality is omitted rather than
+            # risking a warning when policy loading is unavailable.
+            query_value = _arg_value(arg)
+            if index == 1:
+                matches = fold_relation_name(query_value) == fold_relation_name(value)
+            else:
+                matches = _canonical_value(query_value) == _canonical_value(value)
+            if not matches:
                 return False
         return True
 
@@ -2890,9 +2903,9 @@ def kb_query_spellings(facts: list[dict[str, str]]) -> dict[str, str]:
       compiled by an older factlog, or an ``accepted.dl`` edited by hand, is
       described correctly by this map and incorrectly by the other.
     * the value pool is ``value_set`` — subjects and objects only, never relation
-      names. Relation names must stay out while engine identity leaves that axis
-      unfolded (#386), or a value that is also a relation name would otherwise
-      take part in a fold it has no representative for.
+      names. Relations choose an authored representative within each atom group
+      and use their own query comparison; a string used on both axes must not mix
+      those pools (#386).
 
     **A value spelled more than one way is refused, not guessed.** The refusal
     is on the RAW spellings: a key is kept only when the whole KB writes that
@@ -3034,7 +3047,7 @@ def _relation_match_count(
             # Folded so a stored surface variant in the other normal form still
             # counts: the alias keys are NFC, a stored row need not be (#213).
             canonical_variants = {
-                _canonical_value(v)
+                fold_relation_name(v)
                 for v in canonical_variants_of(_arg_value(rel_arg), _aliases)
             }
         count = 0
@@ -3044,9 +3057,11 @@ def _relation_match_count(
             if not (_is_variable(s_arg) or _canonical_value(_arg_value(s_arg)) == _canonical_value(s_val)):
                 continue
             # Relation: match exact canonical name OR any surface variant.
-            if not (_is_variable(r_arg) or
-                    _canonical_value(_arg_value(r_arg)) == _canonical_value(r_val) or
-                    _canonical_value(r_val) in canonical_variants):
+            if not (
+                _is_variable(r_arg)
+                or fold_relation_name(_arg_value(r_arg)) == fold_relation_name(r_val)
+                or fold_relation_name(r_val) in canonical_variants
+            ):
                 continue
             if not (_is_variable(o_arg) or _canonical_value(_arg_value(o_arg)) == _canonical_value(o_val)):
                 continue
@@ -3191,13 +3206,14 @@ def classify_query(
         # accepted.dl, so which queries can trigger its raise-on-malformed-file is
         # unchanged (a variable/known-variant relation never reads it here).
         _rel_aliases: dict[str, str] | None = None
-        # Membership goes through _canonical_value on BOTH sides, like the object
-        # check below: allowed_relations() returns raw stored names, so an
+        # Membership goes through fold_relation_name on BOTH sides. Unlike the
+        # object check below this is NFC-only: allowed_relations() returns raw
+        # stored names, so an
         # NFD-stored relation would otherwise miss an NFC-typed query and be
         # rejected here — before _relation_match_count (which does fold) is ever
         # reached (#213).
-        if not _is_variable(relation) and _canonical_value(_arg_value(relation)) not in {
-            _canonical_value(r) for r in relations
+        if not _is_variable(relation) and fold_relation_name(_arg_value(relation)) not in {
+            fold_relation_name(r) for r in relations
         }:
             # A declared canonical name (one whose surface_variants is non-empty)
             # counts as accepted even though the canonical itself may not appear
@@ -3249,8 +3265,8 @@ def classify_query(
             return False, QUERY_ENTITY_NOT_ACCEPTED, f"count subject is not an accepted entity: {_arg_value(_shown[0])}"
         # Same folded membership as the relation branch above — a count over an
         # NFD-stored relation must accept an NFC-typed query name (#213).
-        if not _is_variable(relation) and _canonical_value(_arg_value(relation)) not in {
-            _canonical_value(r) for r in relations
+        if not _is_variable(relation) and fold_relation_name(_arg_value(relation)) not in {
+            fold_relation_name(r) for r in relations
         }:
             # A declared canonical name (one whose surface_variants is non-empty)
             # counts as accepted even though the canonical itself may not appear

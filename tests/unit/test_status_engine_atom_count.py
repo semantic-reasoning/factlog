@@ -7,14 +7,9 @@ rows, so a KB holding one name in two canonically equivalent spellings read 3
 here and 2 in the file — a contradiction a user hits by opening the file and
 counting, with no judgement in between.
 
-**Folding needs the relation byte-identical.** ``common.engine_atom_key`` folds
-subject and object under NFC and keeps the relation verbatim until #386, pinned
-by ``test_conflict_unicode.test_alias_merged_rows_keep_the_separate_atom_wording``.
-Two rows written wholly in NFD and wholly in NFC therefore stay TWO atoms, and
-their keys render identically on screen. Every folding fixture below varies only
-subject and object; a fixture that also varied the relation would silently stop
-exercising the fold and invite "fixing" the relation axis, which is a different
-issue with a pin against it.
+``common.engine_atom_key`` folds subject, relation, and object under NFC. Alias
+names remain separate because this is canonical normalization, not semantic
+renaming.
 """
 from __future__ import annotations
 
@@ -141,12 +136,7 @@ def test_a_kb_with_nothing_to_fold_is_unchanged(tmp_path, capsys):
     assert "folded from" not in facts
 
 
-def test_relation_spellings_do_not_fold(tmp_path, capsys):
-    """Guard on the fixture contract above, and on the relation axis itself.
-
-    Same fact written wholly NFD and wholly NFC: engine_atom_key keeps the
-    relation verbatim, so these are two atoms and status must say so.
-    """
+def test_relation_spellings_fold_into_the_same_engine_fact(tmp_path, capsys):
     kb = _kb(
         tmp_path,
         capsys,
@@ -156,5 +146,5 @@ def test_relation_spellings_do_not_fold(tmp_path, capsys):
         ],
     )
     facts = _line(_status_lines(kb, capsys), "facts:")
-    assert "2 engine fact(s)" in facts
-    assert "folded from" not in facts
+    assert "1 engine fact(s)" in facts
+    assert "(folded from 2 row(s))" in facts

@@ -93,6 +93,7 @@ from common import (  # noqa: E402
     policy_predicates,
     query_amount_digit_near_matches,
     relation_aliases,
+    fold_relation_name,
     resolve_query_spellings,
     run_wirelog,
     is_sync_ignored,
@@ -278,9 +279,11 @@ def evaluate_relation(draft: str, facts: list[dict[str, str]]) -> list[list[str]
         s_val, r_val, o_val = row["subject"], row["relation"], row["object"]
         if not (is_variable(s_arg) or canonical_value(arg_value(s_arg)) == canonical_value(s_val)):
             continue
-        if not (is_variable(r_arg) or
-                canonical_value(arg_value(r_arg)) == canonical_value(r_val) or
-                r_val in rel_variants):
+        if not (
+            is_variable(r_arg)
+            or fold_relation_name(arg_value(r_arg)) == fold_relation_name(r_val)
+            or fold_relation_name(r_val) in rel_variants
+        ):
             continue
         if not (is_variable(o_arg) or canonical_value(arg_value(o_arg)) == canonical_value(o_val)):
             continue
@@ -320,7 +323,7 @@ def coverage_hint(
       - the subject has NO fact under any other relation either (a genuine
         verified negative — the honest-absence value we must preserve).
 
-    Relation names are compared canonically (matching ``evaluate_relation``), and
+    Relation names use NFC-only identity (matching ``evaluate_relation``), and
     the queried relation's declared surface variants are treated as the same
     predicate, so an alias never masquerades as an "other" relation. The listed
     relations are sorted deterministically and capped at *max_relations*.
@@ -354,8 +357,9 @@ def coverage_hint(
     if canonical_value(subject) not in accepted_entities_c:
         return None
     subject_c = canonical_value(subject)
-    queried_rels = {canonical_value(arg_value(r_arg))} | {
-        canonical_value(v) for v in canonical_variants_of(arg_value(r_arg), relation_aliases())
+    queried_rels = {fold_relation_name(arg_value(r_arg))} | {
+        fold_relation_name(v)
+        for v in canonical_variants_of(arg_value(r_arg), relation_aliases())
     }
     other_relations: set[str] = set()
     other_facts = 0
@@ -363,7 +367,7 @@ def coverage_hint(
     for row in facts:
         if canonical_value(row["subject"]) != subject_c:
             continue
-        if canonical_value(row["relation"]) in queried_rels:
+        if fold_relation_name(row["relation"]) in queried_rels:
             queried_facts += 1
         else:
             other_facts += 1
@@ -676,8 +680,11 @@ def evaluate(draft: str, facts: list[dict[str, str]]) -> dict[str, object]:
             row["object"]
             for row in facts
             if (is_variable(args[0]) or row["subject"] == subject)
-            and (is_variable(args[1]) or row["relation"] == relation
-                 or row["relation"] in rel_variants)
+            and (
+                is_variable(args[1])
+                or fold_relation_name(row["relation"]) == fold_relation_name(relation)
+                or fold_relation_name(row["relation"]) in rel_variants
+            )
         }
         return {"rows": [[str(len(objects))]], "count": len(objects)}
     if predicate == "path":

@@ -57,13 +57,15 @@ class TestLoaderKeepsEverySpellingTheEngineCanSee:
         # The property that actually matters: every symbol the engine can parse
         # out of the file text is present in the rows run_wirelog interns from.
         atoms = [
-            f'relation("{_nfd("부산항만공사")}", "관할", "{_nfc("부산항")}").',
-            f'relation("{_nfc("부산항만공사")}", "관할", "{_nfd("부산항")}").',
+            f'relation("{_nfd("부산항만공사")}", "{_nfd("관할")}", "{_nfc("부산항")}").',
+            f'relation("{_nfc("부산항만공사")}", "{_nfc("관할")}", "{_nfd("부산항")}").',
         ]
         rows = common._load_accepted_facts_from(_write(tmp_path, *atoms))
         internable = {row[axis] for row in rows for axis in ("subject", "relation", "object")}
         for spelling in (
-            _nfd("부산항만공사"), _nfc("부산항만공사"), _nfd("부산항"), _nfc("부산항"),
+            _nfd("부산항만공사"), _nfc("부산항만공사"),
+            _nfd("관할"), _nfc("관할"),
+            _nfd("부산항"), _nfc("부산항"),
         ):
             assert spelling in internable, f"{ascii(spelling)} would decode as a bare intern id"
 

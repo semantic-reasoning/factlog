@@ -1,14 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """A query constant meets a fact whatever unicode normal form each was authored in.
 
-Every query-value comparison routes through ``common._canonical_value`` (the single
-chokepoint #213 set up: ``_relation_match_count`` and the ``classify_query``
-acceptance gate both call it). It folded ``amount`` quoting but left an ordinary
-string in whatever normal form it arrived in, so an NFD-stored relation or object —
-macOS text is routinely NFD — never met an NFC-typed query constant, and the
-report/ask returned nothing about a fact that was right there. Folding NFC once at
-that chokepoint makes both directions meet without touching any per-path code, and is
-a no-op on NFC-only data.
+Subject/object comparisons route through ``common._canonical_value``; relation
+names route through the NFC-only ``common.fold_relation_name``. An NFD-stored
+relation or value — macOS text is routinely NFD — must meet an NFC-typed query
+constant, while amount canonicalization must never merge relation predicates.
 
 The chokepoint only covers a comparison that actually routes through it. Two relation-
 name membership tests did not: the ``classify_query`` acceptance gate compared the raw
@@ -24,10 +20,17 @@ a separate concern and is not covered here.
 """
 from __future__ import annotations
 
+import json
 import unicodedata
 
+import ask_router
 from factlog import common
-from factlog.common import _canonical_value, _relation_match_count, classify_query
+from factlog.common import (
+    _canonical_value,
+    _relation_match_count,
+    classify_query,
+    fold_relation_name,
+)
 
 nfc = lambda s: unicodedata.normalize("NFC", s)  # noqa: E731
 nfd = lambda s: unicodedata.normalize("NFD", s)  # noqa: E731
@@ -49,6 +52,14 @@ def _relation_query(subject, relation, object_):
 
 def _count_query(subject, relation):
     return f'count("{subject}", "{relation}")?'
+
+
+def _quoted_relation_query(subject, relation, object_="O"):
+    return f"relation({json.dumps(subject)}, {json.dumps(relation)}, {object_})?"
+
+
+def _quoted_count_query(subject, relation):
+    return f"count({json.dumps(subject)}, {json.dumps(relation)})?"
 
 
 class TestRelationMatchCountFoldsForms:
@@ -87,6 +98,67 @@ class TestCountFoldsForms:
             if _relation_match_count(_relation_query(SUBJ, nfc(REL), row["object"]), facts) >= 1
         }
         assert len(matched) == 2
+
+    def test_router_relation_and_count_agree_after_relation_dedup(self, monkeypatch):
+        facts = common.dedup_engine_atoms(
+            [
+                _fact(SUBJ, nfc(REL), nfc(OBJ)),
+                _fact(SUBJ, nfd(REL), nfc(OBJ)),
+            ]
+        )
+        assert len(facts) == 1
+        monkeypatch.setattr(ask_router, "relation_aliases", lambda: {})
+
+        relation = ask_router.evaluate(
+            _relation_query(SUBJ, nfd(REL), nfc(OBJ)), facts
+        )
+        count = ask_router.evaluate(_count_query(SUBJ, nfd(REL)), facts)
+        assert relation["count"] == 1
+        assert count == {"rows": [["1"]], "count": 1}
+
+    def test_non_nfc_relation_equivalences_stay_distinct(self, monkeypatch):
+        pairs = [
+            ('amount(1,000,"억")', 'amount(1000,"억")'),
+            ("rel", "REL"),
+            ("rel", "ｒｅｌ"),
+        ]
+        monkeypatch.setattr(ask_router, "relation_aliases", lambda: {})
+        for stored, queried in pairs:
+            facts = [_fact(SUBJ, stored, OBJ)]
+            relation_query = _quoted_relation_query(SUBJ, queried)
+            count_query = _quoted_count_query(SUBJ, queried)
+
+            ok, code, _reason = classify_query(
+                relation_query, facts, policy_program=""
+            )
+            assert not ok
+            assert code == common.QUERY_RELATION_NOT_ACCEPTED
+            count_ok, count_code, _count_reason = classify_query(
+                count_query, facts, policy_program=""
+            )
+            assert not count_ok
+            assert count_code == common.QUERY_RELATION_NOT_ACCEPTED
+            assert ask_router.evaluate(relation_query, facts)["count"] == 0
+            assert ask_router.evaluate(count_query, facts) == {
+                "rows": [["0"]],
+                "count": 0,
+            }
+
+    def test_coverage_hint_does_not_overfold_amount_shaped_relations(
+        self, monkeypatch
+    ):
+        stored = 'amount(1,000,"억")'
+        queried = 'amount(1000,"억")'
+        facts = [
+            _fact(SUBJ, stored, OBJ),
+            _fact("P2", queried, OBJ),
+        ]
+        monkeypatch.setattr(ask_router, "relation_aliases", lambda: {})
+        query = _quoted_relation_query(SUBJ, queried, json.dumps(OBJ))
+
+        result = ask_router.evaluate(query, facts)
+        assert result["count"] == 0
+        assert stored in result["coverage_hint"]
 
 
 class TestGateDoesNotReject:
@@ -340,7 +412,7 @@ class TestRelationGateFoldIsLoadBearing:
         facts = [_fact(SUBJ, nfd(REL), nfd(OBJ))]
         relations = common.allowed_relations(facts)
         assert nfc(REL) not in relations  # the bug: the raw test turned the query away
-        assert _canonical_value(nfc(REL)) in {_canonical_value(r) for r in relations}
+        assert fold_relation_name(nfc(REL)) in {fold_relation_name(r) for r in relations}
         for query in (_relation_query(SUBJ, nfc(REL), nfc(OBJ)), _count_query(SUBJ, nfc(REL))):
             ok, code, _reason = classify_query(query, facts, policy_program="")
             assert ok, code  # the fix

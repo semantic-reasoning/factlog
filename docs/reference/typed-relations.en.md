@@ -118,8 +118,8 @@ subjects, relations, plus untyped objects group under NFC equivalence. Thus
 while an ASCII/full-width pair is two values because the full-width side does
 not parse. Relation grouping treats NFC-equivalent spellings as one identity
 while restoring a spelling actually authored for report provenance. General
-engine `relation/3` atom identity still preserves relation bytes, so mixed
-spellings can remain separate atoms until #386 aligns that boundary.
+engine `relation/3` atom identity uses the same NFC relation identity. Semantic
+aliases remain separate raw atoms and meet in the optional `canonical/3` block.
 
 The three surfaces still have different roles and detail. `check_conflicts` is
 finalize's exit-1 gate and can disclose even resolved merges in detail; `status`

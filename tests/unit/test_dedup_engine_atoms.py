@@ -8,9 +8,9 @@ first-occurrence stable (not sort-min) so accepted.dl stays byte-identical when
 the KB has no duplicate triple. Source aggregation lives on the separate
 candidates path and is untouched.
 
-Sameness is `common.engine_atom_key` — subject and object folded to NFC, the
-relation verbatim (#342). Two canonically equivalent spellings of one fact are
-one atom, not two byte-different visually identical `relation(...)` lines. What
+Sameness is `common.engine_atom_key` — subject, relation, and object folded to
+NFC (#342, #386). Two canonically equivalent spellings of one fact are one atom,
+not two byte-different visually identical `relation(...)` lines. What
 gets WRITTEN is still a row as authored: the group's composed-preferred member,
 never a normalized synthesis, so a uniformly decomposed KB keeps its spelling.
 """
@@ -148,10 +148,10 @@ class TestCanonicallyEquivalentSpellingsCollapse:
         said = " ".join(bullet.split())
 
         assert "common.engine_atom_key" in said
-        assert "same relation spelling" in said
+        assert "subject, relation, and object" in said
         assert "**single** `accepted.dl` atom" in said
-        assert "alias and canonical names" in said
-        assert "separate atoms (#386)" in said
+        assert "Semantically different relation names remain separate" in said
+        assert "`canonical/3` block" in said
         assert "dedup on the raw triple" not in said
         assert "both spellings still reach `accepted.dl`" not in said
 
@@ -169,7 +169,7 @@ class TestCanonicallyEquivalentSpellingsCollapse:
         ]
 
         assert len(common.dedup_engine_atoms(object_variants)) == 1
-        assert len(common.dedup_engine_atoms(relation_variants)) == 2
+        assert len(common.dedup_engine_atoms(relation_variants)) == 1
         assert len(common.dedup_engine_atoms(alias_and_canonical)) == 2
 
     def test_subject_axis_nfc_and_nfd_are_one_atom(self):
@@ -307,18 +307,14 @@ class TestCanonicallyEquivalentSpellingsCollapse:
         assert common.corroboration_counts(facts)[common.engine_atom_key(atom)] == 2
 
     # GUARD, not a pin: passes on origin/main too, by construction. It cannot
-    # fail before the fix because before the fix NOTHING folded, so it can only
-    # ever catch a LATER change that over-folds. Kept for that, not offered as
-    # evidence that #342 was fixed.
-    def test_relation_axis_is_deliberately_not_folded_GUARD(self):
-        # #386 boundary: engine identity still keeps the relation
-        # verbatim. Conflict grouping now folds it, so this guard records the
-        # residual axis that still costs two atoms.
+    def test_relation_axis_folds_and_prefers_an_authored_nfc_spelling(self):
         rows = [
-            _row("연구소", _nfc("소속"), "한국대학교", source="sources/a.md"),
-            _row("연구소", _nfd("소속"), "한국대학교", source="sources/b.md"),
+            _row("연구소", _nfd("소속"), "한국대학교", source="sources/a.md"),
+            _row("연구소", _nfc("소속"), "한국대학교", source="sources/b.md"),
         ]
-        assert len(common.dedup_engine_atoms(rows)) == 2
+        [atom] = common.dedup_engine_atoms(rows)
+        assert atom["relation"] == _nfc("소속")
+        assert atom["source"] == "sources/a.md"
 
     # GUARD, not a pin: passes on origin/main too (see above).
     def test_compatibility_and_case_variants_stay_distinct_GUARD(self):
@@ -342,27 +338,67 @@ class TestCanonicallyEquivalentSpellingsCollapse:
 
 
 class TestEngineAtomKey:
-    def test_folds_subject_and_object_but_not_relation(self):
+    def test_folds_subject_relation_and_object(self):
         key = common.engine_atom_key(
             _row(_nfd("연구소"), _nfd("소속"), _nfd("한국대학교"))
         )
-        assert key == (_nfc("연구소"), _nfd("소속"), _nfc("한국대학교"))
+        assert key == (_nfc("연구소"), _nfc("소속"), _nfc("한국대학교"))
+
+    def test_uniformly_decomposed_relation_keeps_its_authored_spelling(self):
+        row = _row("연구소", _nfd("소속"), "한국대학교")
+        assert common.dedup_engine_atoms([row]) == [row]
+
+    def test_relation_and_value_spelling_pools_are_independent(self):
+        rows = [
+            _row(_nfc("소속"), _nfd("소속"), "A"),
+            _row(_nfd("소속"), "다른관계", "B"),
+        ]
+        out = common.dedup_engine_atoms(rows)
+        assert out[0]["subject"] == _nfc("소속")
+        assert out[0]["relation"] == _nfd("소속")
+
+    def test_relation_representative_does_not_rewrite_unrelated_atom_groups(self):
+        rows = [
+            _row("A", _nfd("소속"), "B"),
+            _row("C", _nfc("소속"), "D"),
+        ]
+        out = common.dedup_engine_atoms(rows)
+        assert [row["relation"] for row in out] == [_nfd("소속"), _nfc("소속")]
+
+    def test_semantic_aliases_stay_raw_but_share_one_canonical_atom(self):
+        rows = [
+            _row("삼성", "CEO", "이재용"),
+            _row("삼성", "대표", "이재용"),
+        ]
+        accepted = common.dedup_engine_atoms(rows)
+        assert len(accepted) == 2
+        assert common.canonical_atoms(accepted, {"CEO": "대표"}) == [
+            ("삼성", "대표", "이재용")
+        ]
+
+    def test_relation_fold_is_nfc_only(self):
+        rows = [
+            _row("A", "rel", "B"),
+            _row("A", "REL", "B"),
+            _row("A", "ｒｅｌ", "B"),
+        ]
+        assert len(common.dedup_engine_atoms(rows)) == 3
 
     def test_corroboration_counts_aggregate_under_the_folded_atom(self):
         # The compile log annotates the atom dedup wrote. Keyed raw, a fact
         # backed by two sources under two spellings reported sources=1 for the
         # surviving spelling and dropped the other source from the log entirely.
         facts = [
-            _row("연구소", "소속", _nfc("한국대학교"), source="sources/a.md", status="confirmed"),
-            _row("연구소", "소속", _nfd("한국대학교"), source="sources/b.md", status="confirmed"),
+            _row("연구소", _nfc("소속"), _nfc("한국대학교"), source="sources/a.md", status="confirmed"),
+            _row("연구소", _nfd("소속"), _nfd("한국대학교"), source="sources/b.md", status="confirmed"),
         ]
         counts = common.corroboration_counts(facts)
         assert counts == {("연구소", "소속", _nfc("한국대학교")): 2}
 
     def test_one_source_backing_both_spellings_counts_once(self):
         facts = [
-            _row("연구소", "소속", _nfc("한국대학교"), source="sources/a.md", status="confirmed"),
-            _row("연구소", "소속", _nfd("한국대학교"), source="sources/a.md", status="confirmed"),
+            _row("연구소", _nfc("소속"), _nfc("한국대학교"), source="sources/a.md", status="confirmed"),
+            _row("연구소", _nfd("소속"), _nfd("한국대학교"), source="sources/a.md", status="confirmed"),
         ]
         assert common.corroboration_counts(facts) == {
             ("연구소", "소속", _nfc("한국대학교")): 1

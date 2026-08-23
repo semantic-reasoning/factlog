@@ -74,6 +74,18 @@ def test_unrelated_subject_relation_arity_or_predicate_do_not_warn():
     ) == ()
 
 
+def test_amount_canonicalization_does_not_merge_relation_names():
+    facts = [
+        {
+            "subject": "A",
+            "relation": 'amount(1000,"억")',
+            "object": 'amount(１００,"억")',
+        }
+    ]
+    line = 'relation("A", "amount(1,000,\\"억\\")", "amount(１００,억)")?'
+    assert query_amount_digit_near_matches(line, facts) == ()
+
+
 def test_matches_are_deduplicated_and_sorted():
     facts = rows('amount(２００,"억")', 'amount(１００,"억")', 'amount(１００,"억")')
     line = 'relation("A", "금액", "amount(１００,억)")?'

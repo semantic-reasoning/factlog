@@ -153,10 +153,11 @@ class TestResolveQuerySpellings:
         )
 
     def test_relation_argument_is_never_rewritten(self) -> None:
-        """``engine_atom_key`` leaves the relation axis unfolded, so one file may
-        hold two spellings of one relation and there is no representative to
-        resolve onto. A KB where a relation name also appears as a value must not
-        leak that value's representative into the relation position."""
+        """Relation matching already folds independently of value rewriting.
+
+        A KB where a relation name also appears as a value must not leak that
+        value's representative into the relation position.
+        """
         both = rows((nfd("서울"), nfc("서울"), "x"))
         spelling = kb_query_spellings(both)
         line = f'relation(S, "{nfc("서울")}", O)?'

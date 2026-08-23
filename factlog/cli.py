@@ -2530,7 +2530,7 @@ def cmd_vocab(args: argparse.Namespace) -> int:
             # and not which relation is functional. The typed lookup two lines
             # down already folds; leaving this one raw made the same loop
             # asymmetric.
-            tname = unicodedata.normalize("NFC", name)
+            tname = common.fold_relation_name(name)
             tags = [
                 t
                 for t, on in (("attribute", name in attr), ("single-valued", tname in sv_folded))
@@ -2592,10 +2592,8 @@ def cmd_status(args: argparse.Namespace) -> int:
     # written NFC in one row and NFD in another read 3 here and 2 in
     # accepted.dl).
     #
-    # Folding still needs the RELATION byte-identical across the rows:
-    # engine_atom_key keeps it verbatim until #386. Two rows whose
-    # relations differ only by normalization stay two atoms, and their keys
-    # render identically on screen — do not "fix" that here.
+    # Relation names participate in the same NFC identity (#386), while semantic
+    # aliases remain separate raw relation/3 atoms.
     #
     # COUNT ONLY. Everything below keeps using engine_rows: dedup keeps just the
     # FIRST row of each group (common.py:1932), so building the `cited` set in

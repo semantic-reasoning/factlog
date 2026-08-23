@@ -52,6 +52,7 @@ from common import (  # noqa: E402
     query_arity_error,
     query_args,
     query_shape_error,
+    fold_relation_name,
     review_required_question,
     records_engine_failure,
 )
@@ -138,8 +139,16 @@ def relation_results(line: str, facts: list[dict[str, str]]) -> list[tuple[str, 
     rows: list[tuple[str, str, str]] = []
     for row in facts:
         matched = True
-        for arg, field in zip(args, fields, strict=True):
-            if is_quoted_string(arg) and arg_value(arg) != row[field]:
+        for index, (arg, field) in enumerate(zip(args, fields, strict=True)):
+            if not is_quoted_string(arg):
+                continue
+            query_value, row_value = arg_value(arg), row[field]
+            if index == 1:
+                query_value, row_value = (
+                    fold_relation_name(query_value),
+                    fold_relation_name(row_value),
+                )
+            if query_value != row_value:
                 matched = False
                 break
         if matched:
@@ -509,11 +518,11 @@ def policy_row_matches(args: list[str], row: tuple[str, ...] | list[str]) -> boo
 
     Comparison is SPLIT BY POSITION, and the split is the whole of #383.
     Position 0 compares RAW (``arg_value`` only); every position past it compares
-    through ``canonical_value`` — the fold ``ask``'s ``evaluate_relation``
-    already uses. Not every query-value comparison folds; still raw, for
-    example: this module's ``relation_results`` and count branch, ``ask``'s
-    count and path branches, and ``classify_query``'s path and policy gates.
-    Those asymmetries are their own matter (#213); what changes here is one.
+    through ``canonical_value``. This policy-row helper handles generic values,
+    not relation-name arguments: relation/count query evaluators use the NFC-only
+    ``fold_relation_name`` so amount canonicalization cannot merge predicates.
+    Other raw comparisons, such as path and policy gates, are separate concerns;
+    what changes here is one.
 
     Why past-the-first folds. Those positions hold whatever the policy rule put
     there: usually a REASON CODE, but a rule that projects an object
@@ -844,9 +853,9 @@ def evaluate_queries(
         elif predicate == "relation":
             if query_error("relation", line) is not None:
                 continue
-            # relation_results compares RAW, so it must see the resolved line;
-            # the bindings below are named from the written one, which resolution
-            # cannot change (a variable is never a value position).
+            # relation_results compares subject/object to the resolved line and
+            # folds the relation argument directly; bindings below are named from
+            # the written line (a variable is never a value position).
             rows = relation_results(resolved, facts)
             args = query_args(line)
             result_values: list[str] = []
@@ -880,7 +889,10 @@ def evaluate_queries(
                 f["object"]
                 for f in facts
                 if (not is_quoted_string(subj_q) or f["subject"] == subj)
-                and (not is_quoted_string(rel_q) or f["relation"] == rel)
+                and (
+                    not is_quoted_string(rel_q)
+                    or fold_relation_name(f["relation"]) == fold_relation_name(rel)
+                )
             }
             # Echo the query, as policy_result_line does (17cf7d3): a malformed
             # line now drops out of this list, so 3 query lines can leave 2 result

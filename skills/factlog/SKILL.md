@@ -294,14 +294,14 @@ Three things follow from folding, and the report states all three:
   a substitute for superseding — a real contradiction that a mixed spelling
   merely joined is still a contradiction.
 - When the merge *resolved* the contradiction, the run exits 0 and says so on
-  stdout. That is the only signal you get: `finalize` proceeds. With the same
-  relation spelling, `common.engine_atom_key` NFC-folds the subject and object,
-  so canonically equivalent object spellings compile as a **single**
+  stdout. That is the only signal you get: `finalize` proceeds.
+  `common.engine_atom_key` NFC-folds the subject, relation, and object, so
+  canonically equivalent spellings compile as a **single**
   `accepted.dl` atom (written in the composed spelling wherever the KB authored
   one). The authored rows and source provenance remain in `sources/` and
-  `facts/candidates.csv`. If relation spellings differ — including declared
-  alias and canonical names — the report instead explains that they still
-  compile as separate atoms (#386).
+  `facts/candidates.csv`. Semantically different relation names remain separate
+  raw atoms even when policy declares one an alias of the other; the optional
+  `canonical/3` block is where alias and canonical names meet.
 - A typed literal (`policy/typed-relations.md`) only parses in its composed form,
   so folding can make a decomposed literal reach the same scalar as a differently
   written twin — `제3호` and `3위` are both ordinal rank 3 once folded. The run

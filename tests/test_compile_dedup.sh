@@ -110,7 +110,7 @@ after="$(cat "$KB2/facts/accepted.dl")"
 [ "$(grep -cE '^relation\(' "$KB2/facts/accepted.dl")" = "2" ] && ok "distinct triples preserved (2 rows)" || bad "distinct triple count wrong"
 
 # --- (f) canonically equivalent spellings collapse to one atom (#342) -------
-# The dedup key folds subject and object to NFC, so a fact written once composed
+# The dedup key folds subject, relation, and object to NFC, so a fact written once composed
 # and once decomposed is one engine atom, not two byte-different visually
 # identical relation() lines. Before the fix this KB compiled to two.
 KB3="$(mktemp -d)/wiki"
@@ -123,8 +123,8 @@ nfc = lambda s: unicodedata.normalize("NFC", s)
 nfd = lambda s: unicodedata.normalize("NFD", s)
 rows = [
     "subject,relation,object,source,status,confidence,note",
-    f"{nfd('삼성')},대표,{nfd('이재용')},sources/a.md,confirmed,0.90,",
-    f"{nfc('삼성')},대표,{nfc('이재용')},sources/b.md,confirmed,0.95,",
+    f"{nfd('삼성')},{nfd('대표')},{nfd('이재용')},sources/a.md,confirmed,0.90,",
+    f"{nfc('삼성')},{nfc('대표')},{nfc('이재용')},sources/b.md,confirmed,0.95,",
 ]
 Path(sys.argv[1], "facts/candidates.csv").write_text("\n".join(rows) + "\n", encoding="utf-8")
 PY
@@ -145,8 +145,8 @@ nfd = lambda s: unicodedata.normalize("NFD", s)
 lines = [l for l in Path(sys.argv[1], "facts/accepted.dl").read_text(encoding="utf-8").split("\n")
          if l.startswith("relation(")]
 assert len(lines) == 1, lines
-ok = all(f'"{nfc(v)}"' in lines[0] for v in ("삼성", "이재용"))
-ok = ok and not any(f'"{nfd(v)}"' in lines[0] for v in ("삼성", "이재용"))
+ok = all(f'"{nfc(v)}"' in lines[0] for v in ("삼성", "대표", "이재용"))
+ok = ok and not any(f'"{nfd(v)}"' in lines[0] for v in ("삼성", "대표", "이재용"))
 sys.exit(0 if ok else 1)
 PY
 
@@ -172,6 +172,13 @@ for s in a b; do
     && ok "render lists backing source sources/$s.md" \
     || bad "render dropped backing source sources/$s.md: $rn3"
 done
+rn3_nfd="$(FACTLOG_ROOT="$KB3" "$PYTHON" "$ROUTER" render "relation(S, \"$("$PYTHON" -c 'import unicodedata; print(unicodedata.normalize("NFD", "대표"))')\", O)?" --target "$KB3")"
+printf '%s' "$rn3_nfd" | grep -qF "sources: 2" \
+  && printf '%s' "$rn3_nfd" | grep -qF "sources/a.md" \
+  && printf '%s' "$rn3_nfd" | grep -qF "sources/b.md" \
+  && ! printf '%s' "$rn3_nfd" | grep -qF "no extraction backing" \
+  && ok "either relation normalization form keeps the same annotation" \
+  || bad "decomposed relation query lost the folded atom annotation"
 
 # the engine, not just the python helper: one row out of pyrewire
 if "$PYTHON" -c "import pyrewire" >/dev/null 2>&1; then
@@ -201,8 +208,8 @@ from pathlib import Path
 nfd = lambda s: unicodedata.normalize("NFD", s)
 rows = [
     "subject,relation,object,source,status,confidence,note",
-    f"{nfd('삼성')},대표,{nfd('이재용')},sources/a.md,confirmed,0.90,",
-    f"{nfd('삼성')},대표,{nfd('이재용')},sources/b.md,confirmed,0.95,",
+    f"{nfd('삼성')},{nfd('대표')},{nfd('이재용')},sources/a.md,confirmed,0.90,",
+    f"{nfd('삼성')},{nfd('대표')},{nfd('이재용')},sources/b.md,confirmed,0.95,",
 ]
 Path(sys.argv[1], "facts/candidates.csv").write_text("\n".join(rows) + "\n", encoding="utf-8")
 PY
@@ -226,11 +233,9 @@ nfd = lambda s: unicodedata.normalize("NFD", s)
 lines = [l for l in Path(sys.argv[1], "facts/accepted.dl").read_text(encoding="utf-8").split("\n")
          if l.startswith("relation(")]
 assert len(lines) == 1, lines
-# subject and object as authored (decomposed), and not silently recomposed.
-# The relation is ASCII-free but written composed in the CSV, so the LINE is
-# never wholly NFD — check the two folded axes, which is what the fix touches.
-ok = all(f'"{nfd(v)}"' in lines[0] for v in ("삼성", "이재용"))
-ok = ok and not any(f'"{nfc(v)}"' in lines[0] for v in ("삼성", "이재용"))
+# All three axes stay as authored (decomposed), never silently recomposed.
+ok = all(f'"{nfd(v)}"' in lines[0] for v in ("삼성", "대표", "이재용"))
+ok = ok and not any(f'"{nfc(v)}"' in lines[0] for v in ("삼성", "대표", "이재용"))
 sys.exit(0 if ok else 1)
 PY
 

@@ -53,8 +53,8 @@ class TestFactSignalsFoldsLikeTheAtom:
     def test_two_spellings_two_sources_report_one_atom_with_both(self, tmp_path):
         _kb(tmp_path, "a.md", "b.md")
         facts = [
-            _fact("연구소", "소속", _nfc("한국대학교"), "sources/a.md"),
-            _fact("연구소", "소속", _nfd("한국대학교"), "sources/b.md", "0.95"),
+            _fact("연구소", _nfc("소속"), _nfc("한국대학교"), "sources/a.md"),
+            _fact("연구소", _nfd("소속"), _nfd("한국대학교"), "sources/b.md", "0.95"),
         ]
         signals = common.fact_signals(facts, root=tmp_path)
         assert len(signals) == 1
@@ -78,20 +78,30 @@ class TestFactSignalsFoldsLikeTheAtom:
         # b.md is never created, so the NFD row's source has vanished.
         _kb(tmp_path, "a.md")
         facts = [
-            _fact("연구소", "소속", _nfc("한국대학교"), "sources/a.md"),
-            _fact("연구소", "소속", _nfd("한국대학교"), "sources/b.md"),
+            _fact("연구소", _nfc("소속"), _nfc("한국대학교"), "sources/a.md"),
+            _fact("연구소", _nfd("소속"), _nfd("한국대학교"), "sources/b.md"),
         ]
         signals = common.fact_signals(facts, root=tmp_path)
         assert len(signals) == 1
         assert next(iter(signals.values()))["stale"] is True
+
+    def test_semantic_alias_surfaces_keep_separate_signal_maps(self, tmp_path):
+        _kb(tmp_path, "a.md", "b.md")
+        facts = [
+            _fact("삼성", "CEO", "이재용", "sources/a.md"),
+            _fact("삼성", "대표", "이재용", "sources/b.md"),
+        ]
+        signals = common.fact_signals(facts, root=tmp_path)
+        assert len(signals) == 2
+        assert {entry["sources"] for entry in signals.values()} == {1}
 
 
 class TestRendererLooksUpThroughTheSameFold:
     def _signals(self, tmp_path):
         _kb(tmp_path, "a.md", "b.md")
         facts = [
-            _fact("연구소", "소속", _nfc("한국대학교"), "sources/a.md"),
-            _fact("연구소", "소속", _nfd("한국대학교"), "sources/b.md"),
+            _fact("연구소", _nfc("소속"), _nfc("한국대학교"), "sources/a.md"),
+            _fact("연구소", _nfd("소속"), _nfd("한국대학교"), "sources/b.md"),
         ]
         return common.fact_signals(facts, root=tmp_path)
 
@@ -112,7 +122,7 @@ class TestRendererLooksUpThroughTheSameFold:
         # decomposed spelling; the annotation must not depend on which one.
         out = render_engine_answer(
             "relation('연구소', '소속', O)?",
-            [["연구소", "소속", _nfd("한국대학교")]],
+            [["연구소", _nfd("소속"), _nfd("한국대학교")]],
             self._signals(tmp_path),
             annotate_objects=True,
         )

@@ -59,9 +59,8 @@ printf '%s' "$out" | grep -qE "vocabulary: +[0-9]+ entit\(y/ies\), 1 literal\(s\
 # Its own mktemp KB: the blocks above and below share $KB and its policy files,
 # and this one must not leave a folded ledger behind for them.
 #
-# Only subject and object vary by normalization. engine_atom_key keeps the
-# RELATION verbatim until #386, so writing both rows wholly in NFD/NFC would
-# stop exercising the fold while looking identical on screen.
+# Subject and object vary by normalization here; relation-fold coverage lives in
+# the dedicated unit, compile-dedup, conflict, and corroboration cases.
 FKB="$(mktemp -d)/wiki"
 # Full scaffold: compile_facts refuses a root missing pages/ or decisions/.
 # --no-activate keeps the active KB pointing at $KB for the blocks that rely

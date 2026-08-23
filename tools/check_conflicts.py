@@ -92,14 +92,12 @@ def _spellings(raws: list[str]) -> str:
 def _atom_count(members: list[str], relations: dict[str, list[str]]) -> int:
     """How many ``accepted.dl`` atoms the canonically equivalent *members* become.
 
-    ``common.engine_atom_key`` is ``(NFC(subject), relation, NFC(object))``. Every
-    member of a fold class shares ``NFC(object)`` by definition, and they all sit
-    under one ``_fold(subject)`` bucket, so ``NFC(subject)`` is shared too. The
-    relation is the one component the compiler leaves verbatim while this module
-    canonicalizes it — so the atom count is exactly the number of distinct raw
-    relation spellings the members were written under.
+    ``common.engine_atom_key`` NFC-folds all three axes. Every member of a fold
+    class therefore shares one atom unless conflict grouping additionally
+    canonicalized semantic alias names, which engine identity deliberately does
+    not. The count is the number of distinct NFC relation identities.
     """
-    return len({rel for member in members for rel in relations.get(member, ())})
+    return len({_fold(rel) for member in members for rel in relations.get(member, ())})
 
 
 def _report_resolved_merges(scan: ConflictScan) -> None:
@@ -135,18 +133,17 @@ def _report_resolved_merges(scan: ConflictScan) -> None:
 
     **The equivalence message is gated on the atom count, not assumed.** "They
     collapse into a single ``accepted.dl`` atom" is a claim about the compiler,
-    and this module's group is not the compiler's key: grouping canonicalizes
-    declared aliases and NFC-folds the resulting relation, while
-    ``engine_atom_key`` keeps it verbatim. Under ``CEO -> 대표``,
+    and this module's group is not always the compiler's key: both NFC-fold the
+    relation, but grouping additionally canonicalizes declared aliases. Under
+    ``CEO -> 대표``,
     ``삼성 CEO NFC(이재용)`` and
     ``삼성 대표 NFD(이재용)`` are one group here and two atoms there — measured,
     with the advisory printing "single atom" at exit 0 while ``accepted.dl``
     carried both. The reader was told the duplicate was already gone and left the
-    sources unmerged, which is the checker-vs-engine disagreement this whole
-    change exists to close. So ``_atom_count`` decides which sentence is printed,
+    sources unmerged. So ``_atom_count`` decides which sentence is printed,
     and where the rows really are two atoms the message keeps the older "separate
     atom" conclusion — true on that input before this change and still true —
-    with the accurate reason, which is the relation axis and not the raw triple.
+    with the accurate reason: semantic alias surfaces, not Unicode normalization.
 
     **Two message classes, because folding merges values two ways.** Canonical
     equivalence is one; making a typed literal parse is the other, and calling
@@ -203,9 +200,9 @@ def _report_resolved_merges(scan: ConflictScan) -> None:
             print(line)
         print(
             "  These spellings are canonically equivalent, so this check treats them as "
-            "one value — it canonicalizes declared aliases and NFC-folds the resulting "
-            "relation before grouping. The engine atom does not: it "
-            "keys the relation verbatim, so each relation spelling still enters "
+            "one value — it canonicalizes declared aliases before grouping. The engine "
+            "atom NFC-folds relation spelling but does not apply semantic aliases, so "
+            "each alias/canonical surface still enters "
             "facts/accepted.dl as a separate atom and the duplicate survives this "
             "run's exit 0. Unify the relation spelling as well as the value at the "
             "source and re-collect."
@@ -244,46 +241,6 @@ def _report_resolved_merges(scan: ConflictScan) -> None:
         "the relation name is decomposed too, every one of them), and the notations never "
         "meet there. Unify the spelling in sources/ and re-collect, then re-run to see "
         "whether a contradiction remains."
-    )
-
-
-def _report_relation_atom_divergence(scan: ConflictScan) -> None:
-    """Disclose conflict-free relation spellings that compile as separate atoms.
-
-    Conflict grouping compares canonically equivalent relation spellings
-    together, but the engine atom identity still preserves the relation bytes.
-    At exit 0 there is no CONFLICT line to carry the spelling list, so disclose
-    the remaining compiler divergence before finalize writes separate atoms.
-
-    Pairs already covered by a CONFLICT line are skipped — that line carries the
-    suffix and the spelling list on stderr, and repeating it here would double-
-    report one fact in two streams.
-    """
-    conflicting = {(_fold(s), _fold(r)) for s, r in scan.conflicts}
-    lines = []
-    for key in sorted(scan.relation_variants):
-        subject, relation = key
-        if (_fold(subject), relation) in conflicting:
-            continue
-        lines.append(f"    on '{subject}' spellings: {_spellings(scan.relation_variants[key])}")
-    if not lines:
-        return
-    # One line per (subject, relation) pair, so the header names that unit and no
-    # other. Naming either axis alone miscounts in one direction or the other:
-    # "N subject(s)" reads as N people when one subject has two split relations,
-    # and "N relation(s) … for one subject" reads as one person when N subjects
-    # each have one. There is no single axis to name — the pair is the count.
-    print(
-        f"check_conflicts: {len(lines)} (subject, relation) pair(s) whose single-valued relation "
-        "is written in several Unicode normalization forms:"
-    )
-    for line in lines:
-        print(line)
-    print(
-        "  Conflict analysis compared these spellings together as one relation. The current "
-        "compiler still preserves relation spelling in atom identity, so if finalize proceeds "
-        "they enter accepted.dl as separate relation/3 atoms. Unify the spelling in sources/ "
-        "and re-collect, then re-run."
     )
 
 
@@ -403,12 +360,10 @@ def main(argv: list[str] | None = None) -> int:
     if not conflicts:
         print(f"check_conflicts: 0 conflicts across {len(single_valued)} single-valued relation(s)")
         _report_resolved_merges(scan)
-        _report_relation_atom_divergence(scan)
         return 0
 
     print(f"check_conflicts: {len(conflicts)} conflict(s) found", file=sys.stderr)
     _report_resolved_merges(scan)
-    _report_relation_atom_divergence(scan)
     # Whether folding merged spellings anywhere. This is an *extra* disclosure,
     # never a replacement for the supersede guidance: a contradiction that a mixed
     # spelling merely joined is still a contradiction, and unifying the spelling

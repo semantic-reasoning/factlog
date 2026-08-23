@@ -24,7 +24,7 @@ def main() -> None:
     ensure_dirs()
     facts = load_facts()
     # Collapse rows that are the same engine atom (common.engine_atom_key:
-    # subject and object folded to NFC, relation verbatim) to one, so
+    # subject, relation, and object folded to NFC) to one, so
     # accepted.dl / ask / run_logic_check use set semantics. Source aggregation
     # (sources: N, provenance) stays on the candidates path and is unaffected.
     # A group written one way keeps its first row verbatim, so accepted.dl is

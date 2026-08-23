@@ -174,3 +174,18 @@ def test_nothing_loads_typed_when_the_relation_name_is_decomposed(capsys):
     common._project_typed_relations(fake, _ORDINAL, accepted)
     assert fake.inserts == []
     assert capsys.readouterr().err == ""
+
+
+def test_dedup_does_not_expand_typed_projection_across_unrelated_atoms(capsys):
+    accepted = common.dedup_engine_atoms(
+        [
+            _row("갑", _nfd("순위"), "3위"),
+            _row("을", "순위", "4위"),
+        ]
+    )
+    assert [row["relation"] for row in accepted] == [_nfd("순위"), "순위"]
+
+    fake = FakeSession()
+    common._project_typed_relations(fake, _ORDINAL, accepted)
+    assert _decode_inserts(fake) == {("rank", "을", 4)}
+    assert capsys.readouterr().err == ""

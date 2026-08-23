@@ -647,7 +647,7 @@ class TestFoldingThatResolvesAConflict:
 
     def test_alias_merged_rows_keep_the_separate_atom_wording(self, monkeypatch, capsys):
         # PIN. Grouping canonicalizes the relation through relation-aliases.md;
-        # common.engine_atom_key keeps it verbatim. So these two rows are ONE
+        # common.engine_atom_key does not canonicalize semantic aliases. So these rows are ONE
         # group here and TWO atoms in accepted.dl (measured: the compile log
         # reports `engine facts: 2 / 2` and the file carries both
         # relation("삼성","CEO",…) and relation("삼성","대표",…)). Claiming a
@@ -675,10 +675,8 @@ class TestFoldingThatResolvesAConflict:
         ]
         assert _run_main(monkeypatch, facts, {_nfc("소속")}) == 0
         out = capsys.readouterr().out
-        assert "canonicalizes declared aliases and NFC-folds the resulting" in out
-        assert "relation before grouping" in out
-        assert "through policy/relation-aliases.md" not in out
-        assert "separate atom" in out
+        assert "single facts/accepted.dl atom" in out
+        assert "separate atom" not in out
 
     def test_atom_count_is_the_gate_not_the_presence_of_aliases(self, monkeypatch, capsys):
         # PIN, the other branch. A relation-aliases.md file exists and this
@@ -1109,10 +1107,10 @@ class TestFoldEnabledTypedParseIsDisclosed:
         assert len(seen) == 1
 
 
-class TestRelationAtomDivergenceIsDisclosedAtExitZero:
-    """Conflict grouping folds relations before the engine atom identity does."""
+class TestRelationAtomIdentityAgreesWithConflictGrouping:
+    """NFC relation variants no longer need a compiler-divergence advisory."""
 
-    def test_whole_row_flipped_is_disclosed(self, monkeypatch, capsys):
+    def test_whole_row_flipped_needs_no_divergence_advisory(self, monkeypatch, capsys):
         rel = [_nfc("소속"), _nfd("소속")]
         facts = [
             _fact(_nfc("김철수"), rel[0], "A사"),
@@ -1120,19 +1118,17 @@ class TestRelationAtomDivergenceIsDisclosedAtExitZero:
         ]
         assert _run_main(monkeypatch, facts, {_nfc("소속")}) == 0
         out = capsys.readouterr().out
-        assert "(subject, relation) pair(s)" in out
-        assert ascii(rel[0]) in out and ascii(rel[1]) in out
-        assert "compared these spellings together" in out
-        assert "separate relation/3 atoms" in out
-        assert "never compared" not in out
+        assert out == "check_conflicts: 0 conflicts across 1 single-valued relation(s)\n"
 
-    def test_split_relation_names_the_subject_as_written(self, monkeypatch, capsys):
+    def test_relation_only_merge_is_quiet_at_exit_zero(self, monkeypatch, capsys):
         facts = [
             _fact(_nfc("김철수"), _nfc("소속"), "A사"),
             _fact(_nfd("김철수"), _nfd("소속"), "A사"),
         ]
         _run_main(monkeypatch, facts, {_nfc("소속")})
-        assert f"on '{_nfc('김철수')}'" in capsys.readouterr().out
+        assert capsys.readouterr().out == (
+            "check_conflicts: 0 conflicts across 1 single-valued relation(s)\n"
+        )
 
     def test_conflicting_pair_is_not_disclosed_twice(self, monkeypatch, capsys):
         # CONTROL (passes before this change too): the CONFLICT line already
@@ -1170,22 +1166,18 @@ class TestRelationAtomDivergenceIsDisclosedAtExitZero:
             "check_conflicts: 0 conflicts across 2 single-valued relation(s)\n"
         )
 
-    def test_two_subjects_are_not_conflated(self, monkeypatch, capsys):
-        # CONTROL: the channel is keyed per subject, so one subject's mixed
-        # spelling must not implicate another's.
+    def test_two_subjects_need_no_divergence_advisory(self, monkeypatch, capsys):
         facts = [
             _fact("김철수", _nfc("소속"), "A사"),
             _fact("김철수", _nfd("소속"), "A사"),
             _fact("박영희", _nfc("소속"), "C사"),
         ]
         _run_main(monkeypatch, facts, {_nfc("소속")})
-        out = capsys.readouterr().out
-        assert "1 (subject, relation) pair(s)" in out
-        assert "박영희" not in out
+        assert capsys.readouterr().out == (
+            "check_conflicts: 0 conflicts across 1 single-valued relation(s)\n"
+        )
 
-    def test_header_counts_pairs_not_relations(self, monkeypatch, capsys):
-        # One subject, two split relations. Naming the SUBJECT axis miscounts here
-        # — "2 subject(s)" reads as two people when there is one.
+    def test_two_relations_need_no_divergence_advisory(self, monkeypatch, capsys):
         facts = [
             _fact("김철수", _nfc("소속"), "A사"),
             _fact("김철수", _nfd("소속"), "A사"),
@@ -1193,17 +1185,13 @@ class TestRelationAtomDivergenceIsDisclosedAtExitZero:
             _fact("김철수", _nfd("직급"), "부장"),
         ]
         assert _run_main(monkeypatch, facts, {_nfc("소속"), _nfc("직급")}) == 0
-        out = capsys.readouterr().out
-        assert "2 (subject, relation) pair(s)" in out
-        assert "subject(s)" not in out
-        assert len([ln for ln in out.splitlines() if ln.startswith("    on ")]) == 2
+        assert capsys.readouterr().out == (
+            "check_conflicts: 0 conflicts across 2 single-valued relation(s)\n"
+        )
 
-    def test_header_counts_pairs_not_subjects(self, monkeypatch, capsys):
-        # The mirror image: two subjects, one split relation each. Naming the
-        # RELATION axis miscounts here — "2 relation(s) … for one subject" reads
-        # as one person with two relations when there are two people with one.
-        # Both pins are needed because the header has been wrong in each
-        # direction in turn; the count is over pairs and names neither axis.
+    def test_two_subject_relation_pairs_need_no_divergence_advisory(
+        self, monkeypatch, capsys
+    ):
         facts = [
             _fact("김철수", _nfc("소속"), "A사"),
             _fact("김철수", _nfd("소속"), "A사"),
@@ -1211,11 +1199,9 @@ class TestRelationAtomDivergenceIsDisclosedAtExitZero:
             _fact("박영희", _nfd("소속"), "C사"),
         ]
         assert _run_main(monkeypatch, facts, {_nfc("소속")}) == 0
-        out = capsys.readouterr().out
-        assert "2 (subject, relation) pair(s)" in out
-        assert "for one subject" not in out
-        assert f"on '{_nfc('김철수')}'" in out and f"on '{_nfc('박영희')}'" in out
-        assert len([ln for ln in out.splitlines() if ln.startswith("    on ")]) == 2
+        assert capsys.readouterr().out == (
+            "check_conflicts: 0 conflicts across 1 single-valued relation(s)\n"
+        )
 
 
 class TestRelationSpellingIsDisclosed:

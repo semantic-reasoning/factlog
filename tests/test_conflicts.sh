@@ -125,7 +125,7 @@ cout="$("$PYTHON" "$CONFLICTS" --wiki "$KB" 2>&1 || true)"
 if [ "$(printf '%s' "$cout" | grep -c '  CONFLICT:')" -eq 1 ]; then ok "#345: mixed relation spellings produce one conflict"; else bad "#345: mixed relation conflict was split or missed"; fi
 csv '김철수,소속,A사,sources/x.md,confirmed,0.9,' "김철수,$NFD_OWNER,A사,sources/x.md,confirmed,0.9,"
 cout="$("$PYTHON" "$CONFLICTS" --wiki "$KB" 2>&1)"
-if printf '%s' "$cout" | grep -qF 'separate relation/3 atoms'; then ok "#345: conflict-free mixed relation spelling discloses engine divergence"; else bad "#345: engine relation divergence was silent"; fi
+if ! printf '%s' "$cout" | grep -qF 'separate relation/3 atoms'; then ok "#386: conflict-free mixed relation spelling has no engine divergence"; else bad "#386: stale engine relation divergence was reported"; fi
 
 # --- #227: canonicalize single-valued conflict detection over alias variants ---
 # Set up: published_year is single-valued; 게재연도 and 발행년도 are aliases.

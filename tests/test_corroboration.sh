@@ -250,6 +250,7 @@ nfd = lambda s: unicodedata.normalize("NFD", s)
 )
 PY
 nfd_subject="$("$PYTHON" -c "import unicodedata,sys;sys.stdout.write(unicodedata.normalize('NFD','김철수'))")"
+nfd_relation="$("$PYTHON" -c "import unicodedata,sys;sys.stdout.write(unicodedata.normalize('NFD','소속'))")"
 nfd_object="$("$PYTHON" -c "import unicodedata,sys;sys.stdout.write(unicodedata.normalize('NFD','한국대'))")"
 co="$("$PYTHON" "$CORR" --wiki "$AKB" 2>&1)"
 printf '%s' "$co" | grep -qF "$nfd_object (1 src)" \
@@ -258,6 +259,9 @@ printf '%s' "$co" | grep -qF "$nfd_object (1 src)" \
 printf '%s' "$co" | grep -qF "$nfd_subject / " \
   && ok "all-NFD subject reported in the bytes actually written" \
   || bad "reported a subject spelling never written: $(printf '%s' "$co" | tail -2)"
+printf '%s' "$co" | grep -qF ", $nfd_relation, " \
+  && ok "all-NFD relation reported in the bytes actually written" \
+  || bad "reported a relation spelling never written: $(printf '%s' "$co" | head -3)"
 
 # --- the head line and the fact list use the same equivalence as the clause ---
 # One fact written in two forms and backed by two different files. Keyed on the
@@ -279,7 +283,7 @@ nfd = lambda s: unicodedata.normalize("NFD", s)
 (kb / "facts" / "candidates.csv").write_text(
     "subject,relation,object,source,status,confidence,note\n"
     f"{nfc('김철수')},{nfc('소속')},{nfc('에이사')},sources/a.md,confirmed,0.9,\n"
-    f"{nfc('김철수')},{nfc('소속')},{nfd('에이사')},sources/b.md,confirmed,0.9,\n",
+    f"{nfc('김철수')},{nfd('소속')},{nfd('에이사')},sources/b.md,confirmed,0.9,\n",
     encoding="utf-8",
 )
 PY
@@ -312,7 +316,7 @@ nfd = lambda s: unicodedata.normalize("NFD", s)
 (kb / "facts" / "candidates.csv").write_text(
     "subject,relation,object,source,status,confidence,note\n"
     f"{nfc('김철수')},{nfc('소속')},{nfc('에이사')},sources/a.md,confirmed,0.9,\n"
-    f"{nfc('김철수')},{nfc('소속')},{nfd('에이사')},sources/a.md,confirmed,0.9,\n",
+    f"{nfc('김철수')},{nfd('소속')},{nfd('에이사')},sources/a.md,confirmed,0.9,\n",
     encoding="utf-8",
 )
 PY

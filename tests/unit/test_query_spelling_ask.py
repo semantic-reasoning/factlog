@@ -71,8 +71,9 @@ class TestEvaluateResolvesSpellings:
     @pytest.mark.parametrize("form", [nfc, nfd])
     def test_relation_branch_is_a_guard_not_evidence(self, form) -> None:
         """GUARD, not evidence — both of these passed before the fix, measured.
-        ``evaluate_relation`` already folds all three positions through
-        ``canonical_value``, so the relation branch was never the broken one and
+        ``evaluate_relation`` folds subject/object through ``canonical_value``
+        and relation names through ``fold_relation_name``, so this branch was
+        never the broken one and
         no ``ask`` + ``relation`` assertion can be evidence for this change. They
         are pinned so a later refactor cannot quietly lose what already worked —
         in particular, so resolving the constants cannot narrow a match the fold
@@ -238,12 +239,12 @@ class TestReasonNamesWhatTheUserTyped:
 class TestCoverageHintQuotesWhatTheUserTyped:
     """``evaluate``'s coverage hint must be built from the WRITTEN draft.
 
-    The hint's decision is spelling-insensitive (``coverage_hint`` folds every
-    comparison through ``canonical_value`` and re-runs ``classify``), so passing
-    it the resolved draft would not change whether a hint appears. Its TEXT is a
-    different matter: the message interpolates the subject and the relation
-    argument straight off the draft, so the resolved draft quotes the user a
-    spelling they never typed.
+    The hint's decision is spelling-insensitive (``coverage_hint`` uses
+    ``canonical_value`` for values, NFC-only ``fold_relation_name`` for relation
+    names, and re-runs ``classify``), so passing it the resolved draft would not
+    change whether a hint appears. Its TEXT is a different matter: the message
+    interpolates the subject and relation argument straight off the draft, so
+    the resolved draft quotes the user a spelling they never typed.
 
     Reached through the ``evaluate`` API and the ``factlog ask evaluate``
     subcommand — ``cmd_evaluate`` calls ``evaluate`` with no gate in front of it,

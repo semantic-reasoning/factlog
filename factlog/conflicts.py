@@ -37,7 +37,7 @@ def _canonicalize(relation: str, aliases: dict[str, str]) -> str:
     """
     if not aliases:
         return relation
-    rn = unicodedata.normalize("NFC", relation)
+    rn = fold_relation_name(relation)
     if rn in aliases:
         return aliases[rn]
     if rn in set(aliases.values()):
@@ -355,14 +355,13 @@ class ConflictScan(NamedTuple):
     * *relation_variants* — ``{(reported subject, NFC relation): sorted
       canonicalized relation spellings}`` wherever one folded relation was
       written more than one way for a subject. Membership and grouping both fold, while the
-      representative and this channel preserve authored provenance. Keyed on all
-      pairs because conflict-free mixed spellings still compile as separate
-      engine atoms until #386 aligns that identity.
+      representative and this channel preserve authored provenance even though
+      #386 makes canonically equivalent spellings one engine atom.
     * *object_relations* — ``{reported object: sorted raw relation spellings}``
       per key: the relation names the rows behind each raw object were actually
-      written under. Same key set as *object_variants*. Grouping canonicalizes
-      the relation and ``common.engine_atom_key`` does not, so a group here can
-      be more than one atom there; this is what lets the disclosure say which.
+      written under. Same key set as *object_variants*. Semantic alias and
+      canonical names can still make a group here more than one raw atom; NFC
+      variants alone cannot (#386).
 
     Every public mapping is inserted in sorted key order, including both levels
     of nested mappings. Iterating a scan therefore never exposes input row order.
@@ -538,9 +537,9 @@ def collect_conflicts(
     is still a merge the author did not ask for, even now that the engine
     reproduces it.
 
-    **The relation axis still diverges from engine atom identity (#386).** This
-    module folds it while ``engine_atom_key`` leaves it raw. The same divergence
-    already existed for declared aliases: ``_canonicalize`` collapses the
+    **The relation axis now agrees on NFC identity (#386).** Canonically
+    equivalent relation spellings are one engine atom. A distinct semantic
+    boundary remains for declared aliases: ``_canonicalize`` collapses the
     relation axis here whenever ``policy/relation-aliases.md`` names it, so
     ``삼성 CEO NFC(이재용)`` and ``삼성 대표 NFD(이재용)`` under ``CEO -> 대표``
     are ONE group here and **two** atoms in ``accepted.dl`` — measured. That is
@@ -552,12 +551,11 @@ def collect_conflicts(
     * ``common.canonical_atoms`` NFC-folds the relation before the alias lookup,
       so an aliased pair emits **two** ``relation/3`` atoms and **one**
       ``canonical/3`` atom into the same ``accepted.dl`` — measured.
-    * ``common._canonical_value`` (#213) folds the relation argument of a query,
-      so one spelling typed by the user matches both atoms.
+    * ``common.fold_relation_name`` folds the relation argument of a query under
+      NFC only, so either normalization spelling addresses the same atom.
 
-    #386 tracks folding ``engine_atom_key`` and the provenance maps keyed by it.
-    Until then, the checker discloses conflict-free mixed relation spellings
-    before finalize writes separate atoms.
+    The atom-count check therefore distinguishes NFC spelling variants (one
+    atom) from semantic alias/canonical surfaces (two raw atoms).
 
     **The typed projection still does not fold (#325 follow-up).** ``_group_key``
     folds *before* ``literal_types.normalize``; the engine's counterpart,

@@ -58,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
     # being the right key anywhere. The loop stays here rather than calling that
     # helper only because it collects the per-axis spellings in the same pass.
     #
-    # The competing-values clause below folds the subject and object axes; the
+    # The competing-values clause below folds all canonical-equivalence axes; the
     # head line and this list used the raw triple, so one report answered "how
     # many facts, how many corroborated" on one equivalence and "which values
     # compete" on another. Two spellings of one fact backed by two different
@@ -66,15 +66,20 @@ def main(argv: list[str] | None = None) -> int:
     # signal this tool exists to give, under-reported in exactly the mixed KB
     # #325 is about. Sources are counted per folded fact, so a source backing
     # both spellings counts once (summing the raw counts would double it). The
-    # The general fact list follows raw engine relation identity until #386;
-    # the competing-values clause uses the conflict core's folded relation axis.
+    # general fact list and competing-values clause now agree on NFC relation
+    # identity; semantic alias grouping remains exclusive to the conflict core.
     backing: dict[tuple[str, str, str], set[str]] = {}
-    triple_spellings: dict[tuple[str, str, str], tuple[set[str], set[str]]] = {}
+    triple_spellings: dict[
+        tuple[str, str, str], tuple[set[str], set[str], set[str]]
+    ] = {}
     for row in engine_facts(facts):
         key = engine_atom_key(row)
         backing.setdefault(key, set()).add(row["source"])
-        subjects, objects = triple_spellings.setdefault(key, (set(), set()))
+        subjects, relations, objects = triple_spellings.setdefault(
+            key, (set(), set(), set())
+        )
         subjects.add(row["subject"])
+        relations.add(row["relation"])
         objects.add(row["object"])
     counts = {key: len(srcs) for key, srcs in backing.items()}
     if not counts:
@@ -86,9 +91,10 @@ def main(argv: list[str] | None = None) -> int:
     for key, n in sorted(counts.items()):
         # Report spellings that were actually written, the same provenance rule
         # the competing-values clause follows.
-        subjects, objects = triple_spellings[key]
+        subjects, relations, objects = triple_spellings[key]
         print(
-            f"  {n} source(s): {composed_spelling(subjects)}, {key[1]}, "
+            f"  {n} source(s): {composed_spelling(subjects)}, "
+            f"{composed_spelling(relations)}, "
             f"{composed_spelling(objects)}"
         )
 

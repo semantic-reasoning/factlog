@@ -8,6 +8,9 @@ resolve correctly.
 """
 from __future__ import annotations
 
+import json
+import unicodedata
+
 import run_logic_check as rlc
 
 
@@ -35,6 +38,15 @@ class TestRelationResultsCommaLiteral:
         facts = [_fact("A", "knows", "B")]
         rows = rlc.relation_results('relation("A", "knows", "B")?', facts)
         assert rows == [("A", "knows", "B")]
+
+    def test_relation_name_matches_across_nfc_forms(self):
+        relation = "소속"
+        nfd_relation = unicodedata.normalize("NFD", relation)
+        facts = [_fact("A", relation, "B")]
+        rows = rlc.relation_results(
+            f'relation("A", "{nfd_relation}", "B")?', facts
+        )
+        assert rows == [("A", relation, "B")]
 
 
 class TestPredicateExactDispatch:
@@ -86,3 +98,35 @@ class TestPredicateExactDispatch:
             'count results (query: count("A", "knows")?): 1 (distinct objects)'
         ]
         assert self._run(monkeypatch, 'review_required("q")?') == ["review_required: q"]
+
+    def test_relation_and_count_reports_fold_relation_names(self, monkeypatch):
+        relation = "소속"
+        nfd_relation = unicodedata.normalize("NFD", relation)
+        facts = [_fact("A", relation, "B")]
+        assert self._run(
+            monkeypatch, f'relation("A", "{nfd_relation}", O)?', facts
+        ) == ["relation results: 1 rows; O=B"]
+        assert self._run(
+            monkeypatch, f'count("A", "{nfd_relation}")?', facts
+        ) == [
+            f'count results (query: count("A", "{nfd_relation}")?): '
+            "1 (distinct objects)"
+        ]
+
+    def test_non_nfc_relation_equivalences_stay_distinct(self, monkeypatch):
+        pairs = [
+            ('amount(1,000,"억")', 'amount(1000,"억")'),
+            ("rel", "REL"),
+            ("rel", "ｒｅｌ"),
+        ]
+        for stored, queried in pairs:
+            facts = [_fact("A", stored, "B")]
+            relation_query = f'relation("A", {json.dumps(queried)}, O)?'
+            count_query = f'count("A", {json.dumps(queried)})?'
+            assert rlc.relation_results(relation_query, facts) == []
+            assert self._run(monkeypatch, relation_query, facts) == [
+                "relation results: 0 rows"
+            ]
+            assert self._run(monkeypatch, count_query, facts) == [
+                f"count results (query: {count_query}): 0 (distinct objects)"
+            ]
