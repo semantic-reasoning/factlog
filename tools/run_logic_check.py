@@ -281,7 +281,16 @@ def validate_query(
                 f"query references non-engine entity: {one_line(arg_value(args[0]))}"
             )
         return errors, warnings
-    if predicate == "count":
+    if predicate == "conflict":
+        # A policy declaration above owns evaluation and keeps the established
+        # "policy query" wording.  Without one, conflict is still a reserved
+        # report predicate with a known two-argument signature, even though a
+        # well-formed query intentionally has no result renderer.
+        conflict_error = query_error("conflict", line)
+        if conflict_error:
+            errors.append(conflict_error)
+            return errors, warnings
+    elif predicate == "count":
         # count(subject, relation)? — engine-verified aggregate (see evaluate_queries).
         count_error = query_error("count", line)
         if count_error:

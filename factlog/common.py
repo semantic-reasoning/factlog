@@ -2698,6 +2698,7 @@ _QUERY_ARITY_RULES: dict[str, tuple[int, str]] = {
     "relation": (3, "relation query must have subject, relation, and object arguments"),
     "path": (2, "path query must have start and target arguments"),
     "count": (2, "count query must have subject and relation arguments"),
+    "conflict": (2, "conflict query must have entity and reason arguments"),
     "policy query": (2, "policy query must have entity and reason arguments"),
 }
 
@@ -2720,16 +2721,19 @@ def _query_shape_error(label: str, args: Sequence[str]) -> str | None:
     """The malformed-shape verdict on *args*, or None when every one is valid.
 
     *label* names the query in the message ("relation", "path", "count",
-    "policy query"), which is the ONLY thing that differs between the four
-    branches — the rule itself is `_is_valid_arg` for every one of them.
+    "conflict", "policy query"), which is the ONLY thing that differs between
+    the five branches — the rule itself is `_is_valid_arg` for every one of them.
 
     Returning the message rather than a bool is what keeps the three consumers
     honest. classify_query (the gate), run_logic_check (the report) and
-    ask_router.evaluate (`ask`) must reject the SAME lines with the SAME wording;
-    when each restated the rule, the report's count branch drifted into accepting
-    lines the gate calls malformed and answering them with a wrong aggregate
-    (#328). A caller that phrases its own message can drift again, so callers
-    pass this string through.
+    ask_router.evaluate (`ask`) must reject the SAME malformed lines with the
+    SAME wording when a predicate has a known signature; when each restated the
+    rule, the report's count branch drifted into accepting lines the gate calls
+    malformed and answering them with a wrong aggregate (#328). Signature is
+    separate from availability: a well-formed undeclared ``conflict`` remains an
+    unknown predicate at the gate, unrendered in the report, and unsupported by
+    direct evaluation. A caller that phrases its own message can drift again, so
+    callers pass this string through.
     """
     if all(_is_valid_arg(arg) for arg in args):
         return None
@@ -3086,6 +3090,19 @@ def classify_query(
         load_logic_policy() if policy_program is None else policy_program
     )
     allowed_predicates = {"relation", "path", "count", "review_required"} | policy_query_predicates
+    # `conflict` is a reserved report predicate whose implementation is supplied
+    # by policy.  Even when no policy declares it, its signature is known: reject
+    # malformed uses consistently before reporting that the well-formed predicate
+    # is unavailable.  A declared conflict deliberately skips this block and is
+    # validated below as a policy query, preserving its established wording.
+    if predicate == "conflict" and predicate not in policy_query_predicates:
+        undeclared_args = _query_args(query)
+        arity_error = _query_arity_error("conflict", undeclared_args)
+        if arity_error:
+            return False, QUERY_BAD_ARITY, arity_error
+        shape_error = _query_shape_error("conflict", undeclared_args)
+        if shape_error:
+            return False, QUERY_MALFORMED, shape_error
     if predicate not in allowed_predicates:
         return False, QUERY_UNKNOWN_PREDICATE, f"unknown predicate: {predicate}"
 

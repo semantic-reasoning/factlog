@@ -51,6 +51,7 @@ import ask_router
 import run_logic_check as rlc
 from factlog import common
 from factlog.common import (
+    QUERY_BAD_ARITY,
     QUERY_MALFORMED,
     QUERY_OK,
     QUERY_REVIEW_REQUIRED,
@@ -163,6 +164,104 @@ def _router_answer(monkeypatch, line):
 
 def _gate(line):
     return classify_query(line, FACTS, POLICY_PROGRAM)
+
+
+class TestUndeclaredConflictSignature:
+    @pytest.mark.parametrize(
+        ("line", "code", "reason"),
+        [
+            (
+                'conflict("Alice" "Bob")?',
+                QUERY_BAD_ARITY,
+                "conflict query must have entity and reason arguments",
+            ),
+            (
+                "conflict(x, Y)?",
+                QUERY_MALFORMED,
+                "conflict arguments must be variables or quoted strings",
+            ),
+            (
+                "conflict(\"Alice\", 'reason')?",
+                QUERY_MALFORMED,
+                "conflict arguments must be variables or quoted strings",
+            ),
+        ],
+    )
+    def test_every_consumer_uses_the_shared_signature(
+        self, monkeypatch, line, code, reason
+    ):
+        assert _gate(line) == (False, code, reason)
+        assert _report_errors(line) == [f"{reason}: {line}"]
+        assert _report_answer(monkeypatch, line) == []
+        with pytest.raises(NotImplementedError, match=f"^{reason}$"):
+            _router_answer(monkeypatch, line)
+
+    def test_well_formed_query_keeps_each_existing_unsupported_boundary(
+        self, monkeypatch
+    ):
+        line = "conflict(X, Y)?"
+        assert _gate(line) == (
+            False,
+            common.QUERY_UNKNOWN_PREDICATE,
+            "unknown predicate: conflict",
+        )
+        assert _report_errors(line) == []
+        assert _report_answer(monkeypatch, line) == []
+        with pytest.raises(
+            NotImplementedError,
+            match="^engine evaluation of predicate 'conflict' is not supported$",
+        ):
+            _router_answer(monkeypatch, line)
+
+    @pytest.mark.parametrize(
+        ("line", "reason"),
+        [
+            (
+                "conflict(X)?",
+                "policy query must have entity and reason arguments",
+            ),
+            (
+                "conflict(x, Y)?",
+                "policy query arguments must be variables or quoted strings",
+            ),
+        ],
+    )
+    def test_declared_conflict_keeps_policy_query_wording(
+        self, monkeypatch, line, reason
+    ):
+        program = ".decl conflict(entity: symbol, reason: symbol)\n"
+        assert classify_query(line, FACTS, program) == (
+            False,
+            QUERY_BAD_ARITY if line == "conflict(X)?" else QUERY_MALFORMED,
+            reason,
+        )
+        errors, warnings = rlc.validate_query(line, ENTITIES, {"conflict"})
+        assert errors == [f"{reason}: {line}"]
+        assert warnings == []
+
+        monkeypatch.setattr(ask_router, "policy_predicates", lambda _program: {"conflict"})
+        with pytest.raises(NotImplementedError, match=f"^{reason}$"):
+            ask_router.evaluate(line, FACTS)
+
+    def test_declared_valid_conflict_still_renders_policy_rows(self, monkeypatch):
+        line = 'conflict("Marie Curie", R)?'
+        program = ".decl conflict(entity: symbol, reason: symbol)\n"
+        inferred = {"conflict": {("Marie Curie", "stale")}}
+        assert classify_query(line, FACTS, program) == (True, QUERY_OK, "passed")
+        errors, warnings = rlc.validate_query(line, ENTITIES, {"conflict"})
+        assert errors == []
+        assert warnings == []
+
+        monkeypatch.setattr(rlc, "query_lines", lambda: [line])
+        assert rlc.evaluate_queries(FACTS, inferred, {"conflict"}) == [
+            f"conflict results (query: {line}): 1 rows; R=stale"
+        ]
+        monkeypatch.setattr(ask_router, "policy_predicates", lambda _program: {"conflict"})
+        monkeypatch.setattr(ask_router, "run_wirelog", lambda: inferred)
+        assert ask_router.evaluate(line, FACTS) == {
+            "rows": [["Marie Curie", "stale"]],
+            "count": 1,
+        }
 
 
 class TestBadSignatureIsRefusedByEveryPath:

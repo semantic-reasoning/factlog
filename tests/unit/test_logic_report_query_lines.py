@@ -255,6 +255,33 @@ class TestQueryFileFallbackText:
         assert "no answerable queries" not in report
         assert "errors: 0" not in report  # unrelated incomplete-row error is present
 
+    def test_malformed_undeclared_conflict_is_an_error_not_a_vocabulary_accident(
+        self, tmp_path, monkeypatch, attrs
+    ):
+        line = 'conflict("Alice" "Bob")?'
+        report = self._report(tmp_path, monkeypatch, f"{line}\n")
+        assert (
+            "conflict query must have entity and reason arguments: " + line
+        ) in report
+        assert "query references non-engine entity or relation: Alice" not in report
+        assert "- no answerable queries in facts/query.dl (see Errors)" in report
+        assert "no query results were rendered" not in report
+
+    def test_valid_and_malformed_undeclared_conflict_keep_the_neutral_fallback(
+        self, tmp_path, monkeypatch, attrs
+    ):
+        malformed = "conflict(x, Y)?"
+        report = self._report(
+            tmp_path,
+            monkeypatch,
+            f"conflict(X, Y)?\n{malformed}\n",
+        )
+        assert (
+            "conflict arguments must be variables or quoted strings: " + malformed
+        ) in report
+        assert "- no query results were rendered for facts/query.dl" in report
+        assert "no answerable queries" not in report
+
     def test_unrendered_and_refused_mix_uses_neutral_fallback(
         self, tmp_path, monkeypatch, attrs
     ):

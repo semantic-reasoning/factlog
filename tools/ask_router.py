@@ -729,6 +729,11 @@ def evaluate(draft: str, facts: list[dict[str, str]]) -> dict[str, object]:
             if policy_row_matches(args, row)
         ]
         return {"rows": rows, "count": len(rows)}
+    if predicate == "conflict":
+        # A well-formed undeclared conflict remains unsupported below.  Its
+        # signature is nevertheless reserved, so direct `evaluate` callers get
+        # the same precise arity/shape failure as the gate and logic report.
+        _require_signature("conflict", args)
     raise NotImplementedError(f"engine evaluation of predicate '{predicate}' is not supported")
 
 
