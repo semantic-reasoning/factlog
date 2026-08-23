@@ -67,6 +67,14 @@ class TestPredicateExactDispatch:
     def test_review_required_prefix_does_not_enter_review_branch(self, monkeypatch):
         assert self._run(monkeypatch, 'review_required_extra("q")?') == []
 
+    def test_invalid_review_required_does_not_render_an_answer(self, monkeypatch):
+        for line in [
+            "review_required(Q)?",
+            'review_required("a", "b")?',
+            'review_required("")?',
+        ]:
+            assert self._run(monkeypatch, line) == []
+
     def test_exact_predicates_still_evaluate(self, monkeypatch):
         facts = [_fact("A", "knows", "B")]
         inferred = {"path": {("A", "B")}}

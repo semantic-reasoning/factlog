@@ -2622,6 +2622,30 @@ def _is_valid_arg(arg: str) -> bool:
     return _is_variable(arg) or _is_quoted_string(arg)
 
 
+REVIEW_REQUIRED_QUESTION_ERROR = (
+    "review_required must include the original question string"
+)
+
+
+def _review_required_question(
+    args: Sequence[str],
+) -> tuple[str | None, str | None]:
+    """Return the decoded non-empty question, or the shared malformed reason.
+
+    ``review_required`` deliberately keeps one malformed class for wrong arity,
+    wrong argument shape, and a decoded empty string. Whitespace is authored
+    content and remains valid. Keeping this parser shared prevents the gate,
+    report validator, and answer renderer from disagreeing about which lines may
+    produce an answer.
+    """
+    if len(args) != 1 or not _is_quoted_string(args[0]):
+        return None, REVIEW_REQUIRED_QUESTION_ERROR
+    question = _arg_value(args[0])
+    if question == "":
+        return None, REVIEW_REQUIRED_QUESTION_ERROR
+    return question, None
+
+
 # label -> (expected argument count, the message for a query that misses it).
 # The label is also what _query_shape_error puts in front of its message, so one
 # label selects both of a predicate's signature rules.
@@ -2701,6 +2725,7 @@ is_valid_arg = _is_valid_arg
 query_arity_error = _query_arity_error
 query_shape_error = _query_shape_error
 quoted_constants = _quoted_constants
+review_required_question = _review_required_question
 
 
 # Query-constant spelling resolution ------------------------------------------
@@ -3071,8 +3096,9 @@ def classify_query(
     values = value_set(facts)
     relations = allowed_relations(facts)
     if predicate == "review_required":
-        if len(args) != 1 or len(_quoted_constants(query)) != 1:
-            return False, QUERY_MALFORMED, "review_required must include the original question string"
+        _question, review_error = _review_required_question(args)
+        if review_error:
+            return False, QUERY_MALFORMED, review_error
         return True, QUERY_REVIEW_REQUIRED, "passed"
     if predicate == "relation":
         arity_error = _query_arity_error("relation", args)

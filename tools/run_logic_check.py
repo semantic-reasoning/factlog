@@ -51,7 +51,7 @@ from common import (  # noqa: E402
     query_arity_error,
     query_args,
     query_shape_error,
-    quoted_constants,
+    review_required_question,
 )
 
 
@@ -238,11 +238,9 @@ def validate_query(
     if not line.endswith("?"):
         errors.append(f"query must end with ?: {one_line(line)}")
     if predicate == "review_required":
-        constants = quoted_constants(line)
-        if len(constants) != 1:
-            errors.append(
-                f"review_required must include the original question string: {one_line(line)}"
-            )
+        _question, review_error = review_required_question(query_args(line))
+        if review_error:
+            errors.append(f"{review_error}: {one_line(line)}")
         return errors, warnings
     if predicate in policy_query_predicates:
         policy_error = query_error("policy query", line)
@@ -859,12 +857,12 @@ def evaluate_queries(
             # Measured on three of main's, each reachable with bytes this site's
             # set excludes:
             #
-            #   - the `review_required` question echo and the
-            #     `query must end with ?` error are query-derived, but neither
-            #     passes through the `json.loads` gate the derivation rests on.
-            #     The first reads `quoted_constants`, a raw regex; the second
-            #     fires before any `query_error`. So raw C0 reaches both:
-            #     `review_required("갑\x01봇")?` echoes as `'갑\x01봇'`.
+            #   - the `review_required` question echo is query-derived and now
+            #     passes through `json.loads`; an escaped C0 value therefore
+            #     reaches rendering as a real control character even though its
+            #     physical query line contains only the escape. The `query must
+            #     end with ?` error fires before that parser guard, so raw C0 can
+            #     still reach it directly.
             #   - the path trace nodes are NOT query-derived at all. They come out
             #     of `dependency_path` over the FACTS (see the comment at the trace
             #     itself), so their carrier is the facts decoder, not query.dl, and
@@ -882,9 +880,10 @@ def evaluate_queries(
                 f"count results (query: {one_line(line)}): {len(objects)} (distinct objects)"
             )
         elif predicate == "review_required":
-            constants = quoted_constants(line)
-            question = one_line(constants[0]) if constants else "(missing question)"
-            results.append(f"review_required: {question}")
+            question, review_error = review_required_question(query_args(line))
+            if review_error is not None or question is None:
+                continue
+            results.append(f"review_required: {one_line(question)}")
     return results
 
 

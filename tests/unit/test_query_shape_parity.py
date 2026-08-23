@@ -50,7 +50,13 @@ import pytest
 import ask_router
 import run_logic_check as rlc
 from factlog import common
-from factlog.common import QUERY_OK, classify_query
+from factlog.common import (
+    QUERY_MALFORMED,
+    QUERY_OK,
+    QUERY_REVIEW_REQUIRED,
+    REVIEW_REQUIRED_QUESTION_ERROR,
+    classify_query,
+)
 
 
 def _fact(subject, relation, object_):
@@ -115,7 +121,17 @@ MALFORMED_SHAPE = [
     f"{POLICY_PREDICATE}(x, R)?",
 ]
 
-REFUSED = BAD_ARITY + MALFORMED_SHAPE
+REVIEW_REQUIRED_REFUSED = [
+    "review_required()?",
+    "review_required(Q)?",
+    "review_required('q')?",
+    "review_required(q)?",
+    'review_required("q"junk)?',
+    'review_required("a", "b")?',
+    'review_required("")?',
+]
+
+REFUSED = BAD_ARITY + MALFORMED_SHAPE + REVIEW_REQUIRED_REFUSED
 
 WELL_FORMED = [
     'relation("Marie Curie", "born_in", O)?',
@@ -169,7 +185,7 @@ class TestBadSignatureIsRefusedByEveryPath:
         # number is what a reader takes away, not the Errors section.
         assert _report_answer(monkeypatch, line) == []
 
-    @pytest.mark.parametrize("line", REFUSED)
+    @pytest.mark.parametrize("line", BAD_ARITY + MALFORMED_SHAPE)
     def test_router_raises_the_gates_message(self, monkeypatch, line):
         # `ask_router.py evaluate` calls evaluate() with no classify in front of
         # it, so the gate's verdict does not protect this path.
@@ -219,6 +235,57 @@ class TestWellFormedUnchanged:
         assert _report_errors('count("Marie Curie")?') == [
             'count query must have subject and relation arguments: count("Marie Curie")?'
         ]
+
+
+class TestReviewRequiredSharedContract:
+    @pytest.mark.parametrize("line", REVIEW_REQUIRED_REFUSED)
+    def test_every_invalid_shape_is_one_error_and_no_answer(self, monkeypatch, line):
+        assert _gate(line) == (False, QUERY_MALFORMED, REVIEW_REQUIRED_QUESTION_ERROR)
+        assert _report_errors(line) == [f"{REVIEW_REQUIRED_QUESTION_ERROR}: {line}"]
+        assert _report_answer(monkeypatch, line) == []
+
+    @pytest.mark.parametrize("line", REVIEW_REQUIRED_REFUSED)
+    def test_invalid_router_mapping_stays_wiki_malformed(self, monkeypatch, line):
+        monkeypatch.setattr(ask_router, "_policy_program_optional", str)
+        monkeypatch.setattr(ask_router, "_policy_uncompiled", lambda: False)
+        result = ask_router.classify(line, FACTS)
+        assert result == {
+            "ok": False,
+            "code": QUERY_MALFORMED,
+            "reason": REVIEW_REQUIRED_QUESTION_ERROR,
+            "route": "wiki",
+            "negative": False,
+            "predicate": "review_required",
+            "policy_uncompiled": False,
+        }
+
+    @pytest.mark.parametrize(
+        ("line", "question"),
+        [
+            ('review_required(" ")?', " "),
+            ('review_required("  질문  ")?', "  질문  "),
+            ('review_required("A, B")?', "A, B"),
+            ('review_required("say \\"hi\\"")?', 'say "hi"'),
+            ('review_required("\\n")?', "\n"),
+        ],
+    )
+    def test_nonempty_decoded_questions_pass_every_consumer(
+        self, monkeypatch, line, question
+    ):
+        assert _gate(line) == (True, QUERY_REVIEW_REQUIRED, "passed")
+        assert _report_errors(line) == []
+        assert _report_answer(monkeypatch, line) == [
+            f"review_required: {rlc.one_line(question)}"
+        ]
+
+        monkeypatch.setattr(ask_router, "_policy_program_optional", str)
+        monkeypatch.setattr(ask_router, "_policy_uncompiled", lambda: False)
+        routed = ask_router.classify(line, FACTS)
+        assert routed["ok"] is True
+        assert routed["code"] == QUERY_REVIEW_REQUIRED
+        assert routed["reason"] == "passed"
+        assert routed["route"] == "wiki"
+        assert routed["negative"] is False
 
 
 class TestCountResultLineNamesItsQuery:
@@ -317,4 +384,25 @@ class TestUnacceptedVocabularyStillWarns:
         _errors, warnings = rlc.validate_query(
             'count("Marie Curie", "born_in")?', ENTITIES, POLICY_PREDICATES
         )
+        assert warnings == []
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            'count("", "born_in")?',
+            'count("Marie Curie", "")?',
+        ],
+    )
+    def test_empty_count_constant_does_not_fabricate_a_warning(self, line):
+        errors, warnings = rlc.validate_query(line, ENTITIES, POLICY_PREDICATES)
+        assert errors == []
+        assert warnings == []
+
+    def test_comma_inside_count_constant_is_one_decoded_argument(self):
+        errors, warnings = rlc.validate_query(
+            'count("Marie, Curie", "born_in")?',
+            ENTITIES | {"Marie, Curie"},
+            POLICY_PREDICATES,
+        )
+        assert errors == []
         assert warnings == []
