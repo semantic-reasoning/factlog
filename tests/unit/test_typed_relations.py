@@ -5,6 +5,7 @@ from __future__ import annotations
 import unicodedata
 
 import common
+import factlog.common as fcommon
 import pytest
 
 EXAMPLE = (
@@ -47,6 +48,18 @@ class TestValidation:
         specs = common._parse_typed_relations("- `x` : date\n- `y` : date as ay\n")  # missing 'as alias'
         assert set(specs) == {"y"}
         assert "malformed" in capsys.readouterr().err
+
+    def test_quiet_parse_suppresses_only_skippable_warnings(self, capsys):
+        text = "- `x` : weirdtype as ax\n- `broken` : date\n- `y` : date as ay\n"
+        specs = common._parse_typed_relations(text, emit_warnings=False)
+        assert set(specs) == {"y"}
+        assert capsys.readouterr().err == ""
+
+    def test_quiet_parse_keeps_hard_errors(self):
+        with pytest.raises(common.FactlogError, match="ASCII"):
+            common._parse_typed_relations(
+                "- `x` : date as 별칭\n", emit_warnings=False
+            )
 
     def test_non_ascii_alias_errors(self):
         with pytest.raises(common.FactlogError, match="ASCII"):
@@ -138,3 +151,59 @@ class TestKbContext:
         ctx = self._kb(tmp_path, typed="- `정식_운영` : date as launch_date\n", attrs="")
         ctx.typed_relations()
         assert "attribute-relations.md" in capsys.readouterr().err
+
+    def test_quiet_suppresses_parser_and_attribute_warnings(self, tmp_path, capsys):
+        ctx = self._kb(
+            tmp_path,
+            typed="- `bad` : unknown as nope\n- `정식_운영` : date as launch_date\n",
+            attrs="",
+        )
+        assert set(ctx.typed_relations(emit_warnings=False)) == {"정식_운영"}
+        assert capsys.readouterr().err == ""
+
+    def test_quiet_skips_attribute_alias_read(self, tmp_path, capsys):
+        ctx = self._kb(
+            tmp_path,
+            typed="- `정식_운영` : date as launch_date\n",
+            attrs="- `정식_운영`\n",
+        )
+        (tmp_path / "policy" / "relation-aliases.md").write_text(
+            "- `same` -> `same`\n", encoding="utf-8"
+        )
+        assert set(ctx.typed_relations(emit_warnings=False)) == {"정식_운영"}
+        assert capsys.readouterr().err == ""
+
+    def test_quiet_loader_keeps_hard_errors(self, tmp_path):
+        ctx = self._kb(tmp_path, typed="- `x` : date as 별칭\n", attrs="")
+        with pytest.raises(common.FactlogError, match="ASCII"):
+            ctx.typed_relations(emit_warnings=False)
+
+
+class TestModuleLoaderWarnings:
+    def test_default_warns_and_quiet_is_silent(self, tmp_path, monkeypatch, capsys):
+        policy = tmp_path / "policy"
+        policy.mkdir()
+        (policy / "typed-relations.md").write_text(
+            "- `bad` : unknown as nope\n- `정식_운영` : date as launch_date\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(fcommon, "POLICY_DIR", policy)
+        quiet = common.typed_relations(emit_warnings=False)
+        assert set(quiet) == {"정식_운영"}
+        assert capsys.readouterr().err == ""
+
+        default = common.typed_relations()
+        err = capsys.readouterr().err
+        assert default == quiet
+        assert "unknown type" in err
+        assert "attribute-relations.md" in err
+
+    def test_quiet_keeps_hard_errors(self, tmp_path, monkeypatch):
+        policy = tmp_path / "policy"
+        policy.mkdir()
+        (policy / "typed-relations.md").write_text(
+            "- `x` : date as 별칭\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(fcommon, "POLICY_DIR", policy)
+        with pytest.raises(common.FactlogError, match="ASCII"):
+            common.typed_relations(emit_warnings=False)

@@ -2471,6 +2471,8 @@ def cmd_status(args: argparse.Namespace) -> int:
     from pathlib import Path
 
     import factlog.common as common
+    from factlog.conflicts import collect_conflicts
+    from factlog.common import FactlogError
 
     target_str, source = factlog_config.resolve_root(args.target)
     target = Path(target_str)
@@ -2537,7 +2539,13 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"  facts:      none ({why} — run /factlog sync)")
 
     # Vocabulary
-    attr = ctx.attribute_relations()
+    alias_policy_failed = False
+    try:
+        aliases = common.relation_aliases(target)
+    except (FactlogError, OSError, ValueError):
+        aliases = {}
+        alias_policy_failed = True
+    attr = ctx.attribute_relations(aliases=aliases)
     sv = ctx.single_valued_relations()
     # Pass attr so entity_set reads THIS KB's attribute relations, not the module
     # default (cmd_status may target a KB other than the ambient FACTLOG_ROOT).
@@ -2616,44 +2624,26 @@ def cmd_status(args: argparse.Namespace) -> int:
     empty_note = f", {empty_conv} converted-but-empty (likely scanned/needs OCR)" if empty_conv else ""
     print(f"  sources:    {total} file(s), {covered} with facts{via_note}, {total - covered} with none{excl_note}{empty_note}")
 
-    # Conflicts (single-valued relations with >1 distinct object)
+    # Conflicts use the same authoritative equivalence, typed-scalar, alias, and
+    # Unicode grouping as the finalize gate.
     if sv:
-        by_key: dict[tuple, set] = {}
-        # Membership folded, matching the gate (check_conflicts), and so are the
-        # two axes the gate folds for grouping: the subject and the untyped
-        # object. Leaving the grouping raw made this count disagree with the gate
-        # in BOTH directions once the gate started folding — it printed 0 on a
-        # mixed-subject KB finalize refuses to compile, and 1 with
-        # "⚠ resolve via superseded" on a KB whose only defect is two spellings
-        # of one value, where superseding is the wrong repair and would drop a
-        # source's corroboration. The relation axis stays raw, matching the gate,
-        # which defers that decision (#210).
-        #
-        # This is still a count, not the gate: it does not parse typed literals,
-        # so a #116 cross-notation pair (5400억 / 0.54조) is two values here and
-        # one to check_conflicts. Closing that needs the checker's grouping
-        # shared rather than reimplemented — a follow-up, since `tools/` is not
-        # importable from the installed package (pyproject packages = ["factlog"]).
-        #
-        # FOLLOW-UP, and note that #325 WIDENED this divergence rather than only
-        # inheriting it. An NFD-authored typed literal (`매출` ordinal, Acme =
-        # NFD('제3호') and '3위') agreed on main — status 1, gate 1 — and now
-        # reads status 1, gate 0, because the gate folds the object before
-        # parsing and this count does not. The two then give OPPOSITE repairs:
-        # "resolve via superseded" here, "unify the spelling in sources/ and
-        # re-collect" from the gate's disclosure. The gate is the authority
-        # (`finalize` calls it) and this message points the reader at it, and the
-        # divergence direction is over-reporting here, which is why it is not
-        # treated as a release blocker — but the follow-up that shares the
-        # grouping owns this input specifically.
-        sv_folded = common.folded_relation_names(sv)
-        for r in engine_rows:
-            if common.fold_relation_name(r["relation"]) in sv_folded:
-                key = (unicodedata.normalize("NFC", r["subject"]), r["relation"])
-                by_key.setdefault(key, set()).add(unicodedata.normalize("NFC", r["object"]))
-        conflicts = {k: v for k, v in by_key.items() if len(v) > 1}
+        degraded: list[str] = []
+        try:
+            typed = ctx.typed_relations(emit_warnings=False)
+        except (FactlogError, OSError, ValueError):
+            typed = {}
+            degraded.append("typed-relations.md")
+        if alias_policy_failed:
+            degraded.append("relation-aliases.md")
+        scan = collect_conflicts(engine_rows, sv, typed, aliases)
+        conflicts = scan.conflicts
         msg = f"  conflicts:  {len(conflicts)} (over {len(sv)} single-valued relation(s))"
-        if conflicts:
+        if degraded:
+            msg += (
+                "  ⚠ analysis degraded (" + ", ".join(degraded)
+                + " unavailable); fix policy and rerun tools/check_conflicts.py"
+            )
+        elif conflicts:
             msg += "  ⚠ resolve via superseded / see tools/check_conflicts.py"
         print(msg)
         # Under a TYPED relation, a conflicting value carrying non-ASCII digits
@@ -2667,45 +2657,22 @@ def cmd_status(args: argparse.Namespace) -> int:
         # fact, and superseding the outdated row IS the fix — warning there would
         # steer the user away from the one action that works.
         #
-        # Digit test FIRST, typed lookup only if it can matter. ctx.typed_relations()
-        # is not a pure read: it warns when a typed relation is missing from
-        # attribute-relations.md, and re-reads facts + logic policy to compute
-        # reserved names. Resolving it unconditionally put that warning on every
-        # status run for such a KB — including one with zero conflicts.
+        # Inspect the raw spellings behind conflicting representatives: the
+        # representative can be ASCII even when another row in its value class
+        # contains the unreadable digits that need correction.
         flagged: dict[str, set[str]] = {}
-        for (_subject, relation), objs in conflicts.items():
-            hits = {o for o in objs if literal_types.has_non_ascii_digits(o)}
+        for pair in conflicts:
+            relation = pair[1]
+            hits = {
+                raw
+                for variants in scan.object_variants[pair].values()
+                for raw in variants
+                if literal_types.has_non_ascii_digits(raw)
+            }
             if hits:
                 flagged.setdefault(relation, set()).update(hits)
         odd: set[str] = set()
         if flagged:
-            # typed_relations() FAILS LOUDLY on a broken policy (non-ASCII alias,
-            # alias collision/duplicate, a units clause on a non-amount line). That
-            # is right for the commands that must not run on a bad policy, but
-            # `status` is the command you run to find out WHAT is bad, so it has to
-            # stay total: a policy error costs this supplementary warning only, and
-            # the report (conflicts, logic freshness, engine) still prints in full.
-            # The error itself is not swallowed — every other entry point still
-            # raises it, and status has no output line to attach it to here.
-            # Resolved lazily for the same reason `main` does it (see the comment
-            # there): the class must match the one `common` currently exports.
-            from factlog.common import FactlogError
-
-            # OSError/ValueError too, and not only for tidiness: typed_relations()
-            # reads logic-policy.dl to compute reserved names, so a policy file
-            # that is not UTF-8 (cp949 is realistic here) raises
-            # UnicodeDecodeError — a ValueError, which main()'s handler re-raises
-            # as a raw traceback. This call site is the only thing that made
-            # `status` decode that file at all.
-            #
-            # Widened HERE and not in common._try: every other caller of
-            # typed_relations() (finalize, check_conflicts, vocab) must keep
-            # failing loudly on an unreadable policy. Only `status` trades the
-            # warning for finishing the report.
-            try:
-                typed = ctx.typed_relations()
-            except (FactlogError, OSError, ValueError):
-                typed = {}
             for relation, hits in flagged.items():
                 # typed_relations() keys are NFC; a CSV-sourced name may be NFD.
                 spec = typed.get(unicodedata.normalize("NFC", relation))
@@ -2732,6 +2699,11 @@ def cmd_status(args: argparse.Namespace) -> int:
             )
     else:
         print("  conflicts:  n/a (no single-valued relations declared in policy/single-valued.md)")
+        if alias_policy_failed:
+            print(
+                "              ⚠ analysis degraded (relation-aliases.md unavailable);"
+                " fix policy and rerun factlog status"
+            )
 
     # Logic report freshness
     report = ctx.facts_dir / "logic_report.txt"

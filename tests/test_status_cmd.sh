@@ -230,10 +230,124 @@ printf '%s' "$out" | grep -qF "resolve via superseded" \
   && bad "status advises superseding a row whose only defect is its spelling" \
   || ok "no superseded advice when folding resolves the pair"
 
+# --- #341: status uses the gate's typed grouping and degrades explicitly ------
+typed_status_case() {  # $1 = second ordinal; sets $TSKB
+  TSKB="$(mktemp -d)/wiki"
+  "$PYTHON" -m factlog init --target "$TSKB" >/dev/null
+  printf 'x\n' > "$TSKB/sources/a.md"
+  "$PYTHON" - "$TSKB" "$1" <<'PY'
+import sys, unicodedata
+from pathlib import Path
+kb, second = Path(sys.argv[1]), sys.argv[2]
+(kb / "policy" / "single-valued.md").write_text("- 순위\n", encoding="utf-8")
+(kb / "policy" / "attribute-relations.md").write_text("- 순위\n", encoding="utf-8")
+(kb / "policy" / "typed-relations.md").write_text(
+    "- `순위` : ordinal as rank_value\n", encoding="utf-8"
+)
+(kb / "facts" / "candidates.csv").write_text(
+    "subject,relation,object,source,status,confidence,note\n"
+    f"갑사,순위,{unicodedata.normalize('NFD', '제3호')},sources/a.md,confirmed,0.9,\n"
+    f"갑사,순위,{second},sources/a.md,confirmed,0.9,\n",
+    encoding="utf-8",
+)
+PY
+}
+typed_status_case '3위'
+set +e; "$PYTHON" "$CHK" --wiki "$TSKB" >/dev/null 2>&1; grc=$?; set -e
+out="$("$PYTHON" -m factlog status --target "$TSKB" 2>&1)"
+[ "$grc" -eq 0 ] && printf '%s' "$out" | grep -qE "conflicts: +0 " \
+  && ok "#341: typed NFD ordinal equivalence agrees with the gate" \
+  || bad "#341: typed-equivalent ordinals diverge: gate rc=$grc, $(printf '%s' "$out" | grep conflicts)"
+printf '%s' "$out" | grep -qF "resolve via superseded" \
+  && bad "#341: typed-equivalent ordinals get supersession advice" \
+  || ok "#341: typed-equivalent ordinals get no supersession advice"
+printf '%s' "$out" | grep -qF "analysis degraded" \
+  && bad "#341: healthy policy is marked degraded" \
+  || ok "#341: healthy policy has no degraded marker"
+
+typed_status_case '4위'
+set +e; "$PYTHON" "$CHK" --wiki "$TSKB" >/dev/null 2>&1; grc=$?; set -e
+out="$("$PYTHON" -m factlog status --target "$TSKB" 2>&1)"
+[ "$grc" -eq 1 ] && printf '%s' "$out" | grep -qE "conflicts: +1 " \
+  && ok "#341: distinct typed ordinal agrees with the gate" \
+  || bad "#341: distinct ordinals diverge: gate rc=$grc, $(printf '%s' "$out" | grep conflicts)"
+
+# A broken typed policy must not discard a working alias policy. The surface
+# row joins the canonical row only when aliases are actually retained.
+DTKB="$(mktemp -d)/wiki"
+"$PYTHON" -m factlog init --target "$DTKB" >/dev/null
+printf 'x\n' > "$DTKB/sources/a.md"
+printf -- '- canonical\n' > "$DTKB/policy/single-valued.md"
+printf -- '- `surface` -> `canonical`\n' > "$DTKB/policy/relation-aliases.md"
+printf -- '- `x` : date as 별칭\n' > "$DTKB/policy/typed-relations.md"
+printf '%s\n%s\n%s\n' "$H" \
+  'S,surface,A,sources/a.md,confirmed,0.9,' \
+  'S,canonical,B,sources/a.md,confirmed,0.9,' > "$DTKB/facts/candidates.csv"
+dt_err="$("$PYTHON" -m factlog status --target "$DTKB" 2>&1 >/dev/null)"
+set +e; dt_out="$("$PYTHON" -m factlog status --target "$DTKB" 2>/dev/null)"; dt_rc=$?; set -e
+[ "$dt_rc" -eq 0 ] && [ -z "$dt_err" ] && printf '%s' "$dt_out" | grep -qE "conflicts: +1 " \
+  && ok "#341: typed failure preserves alias grouping and a quiet full report" \
+  || bad "#341: typed failure lost aliases or status totality"
+printf '%s' "$dt_out" | grep -qF "analysis degraded (typed-relations.md unavailable)" \
+  && ok "#341: typed-only degradation is explicit" || bad "#341: typed degradation marker missing"
+printf '%s' "$dt_out" | grep -qE "logic: +" \
+  && ok "#341: typed degradation reaches the logic line" || bad "#341: typed degradation truncates status"
+printf '%s' "$dt_out" | grep -qF "resolve via superseded" \
+  && bad "#341: degraded analysis recommends supersession" \
+  || ok "#341: degraded analysis withholds supersession advice"
+
+# Conversely, a broken alias policy must not discard working typed equivalence.
+typed_status_case '3위'
+printf -- '- `same` -> `same`\n' > "$TSKB/policy/relation-aliases.md"
+da_err="$("$PYTHON" -m factlog status --target "$TSKB" 2>&1 >/dev/null)"
+set +e; da_out="$("$PYTHON" -m factlog status --target "$TSKB" 2>/dev/null)"; da_rc=$?; set -e
+[ "$da_rc" -eq 0 ] && [ -z "$da_err" ] && printf '%s' "$da_out" | grep -qE "conflicts: +0 " \
+  && ok "#341: alias failure preserves typed grouping and a quiet full report" \
+  || bad "#341: alias failure lost typing or status totality"
+printf '%s' "$da_out" | grep -qF "analysis degraded (relation-aliases.md unavailable)" \
+  && ok "#341: alias-only degradation is explicit" || bad "#341: alias degradation marker missing"
+printf '%s' "$da_out" | grep -qE "logic: +" \
+  && ok "#341: alias degradation reaches the logic line" || bad "#341: alias degradation truncates status"
+
+# Both failures use a fixed policy-name order and still suppress parser output.
+printf -- '- `x` : date as 별칭\n' > "$TSKB/policy/typed-relations.md"
+both_err="$("$PYTHON" -m factlog status --target "$TSKB" 2>&1 >/dev/null)"
+both_out="$("$PYTHON" -m factlog status --target "$TSKB" 2>/dev/null)"
+[ -z "$both_err" ] && printf '%s' "$both_out" | grep -qF "analysis degraded (typed-relations.md, relation-aliases.md unavailable)" \
+  && ok "#341: both-policy degradation is quiet and ordered" \
+  || bad "#341: both-policy degradation marker/output wrong"
+
+# Skippable typed lines are quiet but do not mark the analysis degraded.
+printf -- '- `순위` : unknown as ignored\n' > "$TSKB/policy/typed-relations.md"
+rm -f "$TSKB/policy/relation-aliases.md"
+skip_err="$("$PYTHON" -m factlog status --target "$TSKB" 2>&1 >/dev/null)"
+skip_out="$("$PYTHON" -m factlog status --target "$TSKB" 2>/dev/null)"
+[ -z "$skip_err" ] && ! printf '%s' "$skip_out" | grep -qF "analysis degraded" \
+  && ok "#341: skippable typed warnings stay quiet without false degradation" \
+  || bad "#341: skippable typed policy leaked output or degradation"
+
+# Alias loading also feeds attribute expansion before conflict analysis. Even
+# without a single-valued policy, failure must be visible rather than returning
+# a misleadingly healthy vocabulary summary.
+AVKB="$(mktemp -d)/wiki"
+"$PYTHON" -m factlog init --target "$AVKB" >/dev/null
+printf 'x\n' > "$AVKB/sources/a.md"
+printf -- '- canonical\n' > "$AVKB/policy/attribute-relations.md"
+printf '%s\n%s\n' '- `surface` -> `canonical`' '- `same` -> `same`' > "$AVKB/policy/relation-aliases.md"
+printf '%s\n%s\n' "$H" 'S,surface,literal,sources/a.md,confirmed,0.9,' > "$AVKB/facts/candidates.csv"
+av_err="$("$PYTHON" -m factlog status --target "$AVKB" 2>&1 >/dev/null)"
+set +e; av_out="$("$PYTHON" -m factlog status --target "$AVKB" 2>/dev/null)"; av_rc=$?; set -e
+[ "$av_rc" -eq 0 ] && [ -z "$av_err" ] && printf '%s' "$av_out" | grep -qF "analysis degraded (relation-aliases.md unavailable)" \
+  && ok "#341: attribute-only alias failure is explicit and status stays total" \
+  || bad "#341: attribute-only alias failure is silent or aborts status"
+printf '%s' "$av_out" | grep -qE "logic: +" \
+  && ok "#341: attribute-only degradation reaches the logic line" \
+  || bad "#341: attribute-only degradation truncates status"
+
 # --- #331: a conflicting value with non-ASCII digits is named -----------------
-# This path counts distinct RAW object strings, so it already saw the pair as two
-# values; what it never did was show WHICH one the engine cannot read. repr()
-# would not help — '１００억' and '100억' are indistinguishable in most fonts.
+# The authoritative scan preserves every raw spelling behind its grouped values,
+# so status can show WHICH one the engine cannot read. repr() would not help —
+# '１００억' and '100억' are indistinguishable in most fonts.
 printf '# single-valued\n- 매출\n' > "$KB/policy/single-valued.md"
 # The relation must be declared TYPED: that declaration is what makes the digits
 # (rather than a missing spec) the reason the value degrades to a raw key.
@@ -308,11 +422,10 @@ else
   ok "#331: ASCII-only conflict carries no non-ASCII note"
 fi
 
-# A clean ASCII-only KB must produce NO extra output. Resolving typed relations
-# is not free: KbContext.typed_relations warns when a typed relation is missing
-# from attribute-relations.md (and re-reads facts + logic policy to compute
-# reserved names). Resolving it unconditionally made `factlog status` print a
-# warning on a KB with zero conflicts and nothing wrong.
+# A clean ASCII-only KB must produce NO extra output. Status now resolves typed
+# relations for authoritative grouping on every single-valued KB, but uses the
+# warning-free loader path so a typed relation missing from
+# attribute-relations.md does not add an incidental diagnostic.
 #
 # COMPARE rather than grep: the assertions above ask whether a specific string is
 # present, which cannot see an unrelated line appearing. Here the whole of stderr
@@ -339,9 +452,8 @@ printf '%s' "$clean_out" | grep -qE "conflicts: +0 \(over 1 single-valued" && ok
 
 # A BROKEN typed-relations policy must not abort the report. `status` is the
 # command you run to find out what is wrong with a KB, so it has to be total:
-# typed_relations() raises FactlogError on a non-ASCII alias (among others), and
-# the flagging block above is the first status code path ever to call it. Left
-# unguarded that exception costs the `logic:` line and turns rc 0 into 1 —
+# typed_relations() raises FactlogError on a non-ASCII alias (among others).
+# Left unguarded that exception costs the `logic:` line and turns rc 0 into 1 —
 # a regression against everything documented in docs/reference/active-kb.md.
 BROKEN="$(mktemp -d)/wiki"
 "$PYTHON" -m factlog init --target "$BROKEN" >/dev/null
@@ -363,9 +475,7 @@ printf '%s' "$broken_out" | grep -qE "conflicts: +1 \(over 1 single-valued" && o
 # raises UnicodeDecodeError. Nothing caught it: it is not a FactlogError, so
 # main()'s friendly handler re-raised and the user got a raw traceback.
 #
-# The widened catch covers typed-relations.md itself too — this block is the only
-# place cmd_status reads that file, so on main a cp949 copy was simply never
-# decoded (rc=0, full report) and HEAD now matches. What it cannot cover is a
+# The widened catch covers typed-relations.md itself too. What it cannot cover is a
 # cp949 single-valued.md or attribute-relations.md: those abort status on main
 # too (measured, rc=1 on both trees) and are read at cli.py:1692-1693, long
 # before this block, so they are out of reach here by construction.

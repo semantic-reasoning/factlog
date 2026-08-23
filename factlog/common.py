@@ -173,10 +173,21 @@ class KbContext:
     def single_valued_relations(self) -> set[str]:
         return _relation_names_from(self.policy_dir / "single-valued.md")
 
-    def attribute_relations(self) -> set[str]:
-        return _attribute_relations_from(self.policy_dir, lambda: relation_aliases(self.root))
+    def attribute_relations(
+        self, *, aliases: dict[str, str] | None = None
+    ) -> set[str]:
+        return _attribute_relations_from(
+            self.policy_dir,
+            (lambda: relation_aliases(self.root)) if aliases is None else (lambda: aliases),
+        )
 
-    def typed_relations(self) -> dict[str, TypedRelSpec]:
+    def typed_relations(self, *, emit_warnings: bool = True) -> dict[str, TypedRelSpec]:
+        """Load this KB's typed policy; optionally silence skippable diagnostics.
+
+        ``emit_warnings=False`` does not weaken validation: malformed and
+        unknown-type lines remain skipped, and hard policy errors still raise.
+        It also avoids the warning-only attribute/alias lookup entirely.
+        """
         path = self.policy_dir / "typed-relations.md"
         if not path.is_file():
             return {}
@@ -184,8 +195,11 @@ class KbContext:
             relations=_try(lambda: allowed_relations(self.load_facts())),
             predicates=_try(lambda: policy_predicates(self.load_logic_policy())),
         )
-        specs = _parse_typed_relations(path.read_text(encoding="utf-8"), reserved)
-        _warn_typed_not_attribute(specs, self.attribute_relations())
+        specs = _parse_typed_relations(
+            path.read_text(encoding="utf-8"), reserved, emit_warnings=emit_warnings
+        )
+        if emit_warnings:
+            _warn_typed_not_attribute(specs, self.attribute_relations())
         return specs
 
 
@@ -1198,7 +1212,12 @@ def _parse_amount_units(body: str) -> dict[str, int]:
     return units
 
 
-def _parse_typed_relations(text: str, reserved: frozenset[str] | set[str] = frozenset()) -> dict[str, TypedRelSpec]:
+def _parse_typed_relations(
+    text: str,
+    reserved: frozenset[str] | set[str] = frozenset(),
+    *,
+    emit_warnings: bool = True,
+) -> dict[str, TypedRelSpec]:
     """Pure parser for typed-relations.md. *reserved* is the set of names the
     alias must not collide with (built-ins + existing relations/predicates).
 
@@ -1219,6 +1238,8 @@ def _parse_typed_relations(text: str, reserved: frozenset[str] | set[str] = froz
             continue
         m = _TYPED_REL_RE.match(stripped)
         if not m:
+            if not emit_warnings:
+                continue
             print(f"typed-relations: skipping malformed line: {stripped!r}", file=sys.stderr)
             continue
         name = unicodedata.normalize("NFC", (m.group("qname") or m.group("name")).strip())
@@ -1226,7 +1247,8 @@ def _parse_typed_relations(text: str, reserved: frozenset[str] | set[str] = froz
         alias = m.group("alias")
         units_body = m.group("units")  # None if no clause, "" if empty `()`
         if type_tag not in literal_types.TYPES:
-            print(f"typed-relations: unknown type {type_tag!r} for {name!r}; skipping", file=sys.stderr)
+            if emit_warnings:
+                print(f"typed-relations: unknown type {type_tag!r} for {name!r}; skipping", file=sys.stderr)
             continue
         # A units clause is valid ONLY on an amount line (fail loudly otherwise).
         if units_body is not None and type_tag != "amount":
@@ -1254,12 +1276,13 @@ def _warn_typed_not_attribute(specs: dict[str, TypedRelSpec], attrs: set[str]) -
             )
 
 
-def typed_relations() -> dict[str, TypedRelSpec]:
+def typed_relations(*, emit_warnings: bool = True) -> dict[str, TypedRelSpec]:
     """Relations declared typed in policy/typed-relations.md → {name: TypedRelSpec}.
 
     Absent (or all-comment) file → empty mapping (no typed relations; behaviour
     is byte-identical to a KB without the feature). See KbContext.typed_relations
-    for the per-KB variant.
+    for the per-KB variant. ``emit_warnings=False`` suppresses only skippable
+    parser and typed-not-attribute diagnostics; hard policy errors still raise.
     """
     path = POLICY_DIR / "typed-relations.md"
     if not path.is_file():
@@ -1268,8 +1291,11 @@ def typed_relations() -> dict[str, TypedRelSpec]:
         relations=_try(allowed_relations),
         predicates=_try(policy_predicates),
     )
-    specs = _parse_typed_relations(path.read_text(encoding="utf-8"), reserved)
-    _warn_typed_not_attribute(specs, attribute_relations())
+    specs = _parse_typed_relations(
+        path.read_text(encoding="utf-8"), reserved, emit_warnings=emit_warnings
+    )
+    if emit_warnings:
+        _warn_typed_not_attribute(specs, attribute_relations())
     return specs
 
 
