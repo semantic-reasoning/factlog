@@ -114,6 +114,26 @@ def run_init(sandbox, *args, cwd: Path | None = None, env_root: str | None = Non
     return (proc.stdout + proc.stderr).splitlines()
 
 
+def run_lang(
+    sandbox, *args, cwd: Path | None = None
+) -> tuple[int, list[str], list[str]]:
+    """Run ``factlog lang`` with its config, fallback root and streams isolated."""
+    env = dict(os.environ)
+    env["XDG_CONFIG_HOME"] = str(sandbox["cfg_home"])
+    env["PYTHONPATH"] = str(REPO_ROOT)
+    env.pop("FACTLOG_ROOT", None)
+    proc = subprocess.run(
+        [sys.executable, "-m", "factlog", "lang", *args],
+        cwd=str(cwd or sandbox["wiki"]),
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+        timeout=15,
+    )
+    return proc.returncode, proc.stdout.splitlines(), proc.stderr.splitlines()
+
+
 def run_setup(sandbox, monkeypatch, capsys, *args) -> tuple[int, list[str]]:
     """Drive ``factlog setup`` in-process; only doctor/pip are stubbed.
 
@@ -189,6 +209,96 @@ def test_a_damaged_config_is_left_alone(sandbox):
             "  repair that file,",
         )
     )
+
+
+def test_lang_refusal_is_documented_with_rc_and_unchanged_bytes(sandbox):
+    damaged = b'{"root": "/Users/me/recoverable-kb",'
+    sandbox["config"].write_bytes(damaged)
+
+    rc, stdout, stderr = run_lang(sandbox, "ko")
+
+    assert rc == 1
+    assert stdout == []
+    assert sandbox["config"].read_bytes() == damaged
+    documented = as_documented(sandbox, stderr, "factlog lang:")
+    assert documented == [
+        "factlog lang: narration language NOT set: "
+        f"{DOC_CONFIG} could not be read — leaving its bytes untouched, because "
+        "writing it would destroy the KB root it may still hold. Repair that file, "
+        "or overwrite it deliberately: factlog lang ko --force"
+    ]
+    assert_pages_quote(documented)
+
+
+def test_forced_lang_replacement_documents_root_loss_and_fallback(sandbox, monkeypatch):
+    sandbox["config"].write_bytes(b'{"root": "/Users/me/recoverable-kb",')
+
+    rc, stdout, stderr = run_lang(sandbox, "ko", "--force")
+
+    assert rc == 0
+    assert stderr == []
+    assert json.loads(sandbox["config"].read_text(encoding="utf-8")) == {"lang": "ko"}
+    assert sandbox["config"].is_file() and not sandbox["config"].is_symlink()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(sandbox["cfg_home"]))
+    assert cli.factlog_config.read_root() is None
+    documented = as_documented(
+        sandbox,
+        stdout,
+        "factlog lang:",
+        "  replaced an unreadable config",
+        "  the config now records no KB root",
+        "  config:",
+    )
+    assert documented == [
+        "factlog lang: narration language set to ko",
+        "  replaced an unreadable config (any KB root it may still have held is gone)",
+        "  the config now records no KB root — a flagless command would target "
+        f"{DOC_WIKI} (from the current directory); record one with: factlog use <kb>",
+        f"  config: {DOC_CONFIG}",
+    ]
+    assert sum("KB root it may still have held is gone" in line for line in stdout) == 1
+    assert_pages_quote(documented)
+
+
+def test_damaged_config_prose_names_lang_exit_and_force_scope():
+    korean_section = (
+        PAGES[0]
+        .read_text(encoding="utf-8")
+        .split("### 깨진 설정 파일", 1)[1]
+        .split("\n### ", 1)[0]
+    )
+    english_section = (
+        PAGES[1]
+        .read_text(encoding="utf-8")
+        .split("### A damaged config file", 1)[1]
+        .split("\n### ", 1)[0]
+    )
+    korean = " ".join(
+        (
+            "`factlog lang <code>`"
+            + korean_section.split("`factlog lang <code>`", 1)[1].split(
+                "`setup --lang`", 1
+            )[0]
+        ).split()
+    )
+    english = " ".join(
+        (
+            "`factlog lang <code>`"
+            + english_section.split("`factlog lang <code>`", 1)[1].split(
+                "`setup --lang`", 1
+            )[0]
+        ).split()
+    )
+    assert "`factlog lang <code>`" in korean
+    assert "**종료 코드 1**" in korean
+    assert "손상된 일반 파일" in korean
+    assert "언어만" in korean
+    assert "활성 KB root를 다시 기록" in korean
+    assert "`factlog lang <code>`" in english
+    assert "**exits 1**" in english
+    assert "damaged regular file" in english
+    assert "only the language" in english
+    assert "record an active KB root again" in english
 
 
 def test_a_broken_symlink_config_is_described_as_a_link(sandbox):

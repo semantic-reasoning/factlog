@@ -121,6 +121,27 @@ factlog init: active-KB config at /Users/me/.config/factlog/config.json could no
   repair that file, or overwrite it deliberately: factlog use /tmp/scratch
 ```
 
+`factlog lang <code>` 도 이 손상된 일반 파일에는 쓰지 않습니다. 언어 설정이 명령의
+전부인데 적용하지 않았으므로 **종료 코드 1** 로 끝나며, 파일의 바이트는 그대로 둔 채
+같은 위험과 명시적인 탈출구를 알립니다.
+
+```text
+factlog lang: narration language NOT set: /Users/me/.config/factlog/config.json could not be read — leaving its bytes untouched, because writing it would destroy the KB root it may still hold. Repair that file, or overwrite it deliberately: factlog lang ko --force
+```
+
+이 잘린 일반 파일을 복구하지 않고 버리기로 결정한 경우에만 `--force` 를 사용하세요.
+이것은 복구가 아니라 명시적인 교체입니다. 성공하면 종료 코드 0으로 언어만 기록하고,
+파일 안에 텍스트로 남아 복구할 수도 있던 KB root는 사라집니다. 교체된 config에는
+root가 없으므로 그 전까지 flagless 명령은 출력에 적힌 fallback을 향합니다. 활성 KB
+root를 다시 기록하려면 `factlog use <kb>` 를 실행하세요.
+
+```text
+factlog lang: narration language set to ko
+  replaced an unreadable config (any KB root it may still have held is gone)
+  the config now records no KB root — a flagless command would target /Users/me/wiki (from the current directory); record one with: factlog use <kb>
+  config: /Users/me/.config/factlog/config.json
+```
+
 `setup --lang` 도 같은 이유로 함께 보류됩니다. 언어를 기록하는 쓰기가 설정 파일 전체를
 다시 세우므로, 읽지 못한 root 바이트를 똑같이 지우기 때문입니다 — 방금 "손대지 않았다" 고
 적어 놓고 손대는 셈이 됩니다. 요청한 `--lang` 이 적용되지 않았으므로 `setup` 은 **종료

@@ -119,6 +119,28 @@ factlog init: active-KB config at /Users/me/.config/factlog/config.json could no
   repair that file, or overwrite it deliberately: factlog use /tmp/scratch
 ```
 
+`factlog lang <code>` also refuses to write this damaged regular file. Setting
+the language is the whole command, so a refusal **exits 1**. It leaves the bytes
+in place and names both the risk and the deliberate escape hatch.
+
+```text
+factlog lang: narration language NOT set: /Users/me/.config/factlog/config.json could not be read — leaving its bytes untouched, because writing it would destroy the KB root it may still hold. Repair that file, or overwrite it deliberately: factlog lang ko --force
+```
+
+Use `--force` only after deciding to discard this truncated regular file rather
+than repair it. This is an explicit replacement, not recovery: a successful run
+exits 0 and records only the language, while potentially recoverable KB-root
+bytes in the old file are lost. The replacement config records no root, so until
+one is recorded, flagless commands target the fallback named in the output. To
+record an active KB root again, run `factlog use <kb>`.
+
+```text
+factlog lang: narration language set to ko
+  replaced an unreadable config (any KB root it may still have held is gone)
+  the config now records no KB root — a flagless command would target /Users/me/wiki (from the current directory); record one with: factlog use <kb>
+  config: /Users/me/.config/factlog/config.json
+```
+
 `setup --lang` is withheld for the same reason: recording a language rebuilds the
 whole config file, so it would erase the root bytes that could not be read — the
 command would be touching the file one line after saying it left it alone. The
