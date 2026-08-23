@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import pytest
 
+import ask_router
 import common
 import run_logic_check as rlc
 from factlog import common as fl_common
@@ -144,3 +145,82 @@ class TestMainSuppliesPathNodes:
     def test_warning_reaches_the_report(self, report):
         assert "- query path argument is not an accepted entity: 2030.1" in report
         assert "warnings: 1" in report
+
+
+ENGINE_FACTS = [
+    R("A", "연결", "B"),
+    R("B", "연결", "C"),
+    R("C", "연결", "A"),
+    R("D", "정식_운영", "2030.1"),
+]
+
+
+class TestVariableRowsAgreeWithRealEngineAndRouter:
+    @pytest.fixture
+    def path_extent(self, monkeypatch, tmp_path):
+        pytest.importorskip("pyrewire")
+        accepted = tmp_path / "accepted.dl"
+        accepted.write_text(
+            "\n".join(common.dl_atom(row) for row in ENGINE_FACTS) + "\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(fl_common, "ACCEPTED_DL", accepted)
+        monkeypatch.setattr(
+            fl_common, "load_accepted_facts", lambda: list(ENGINE_FACTS)
+        )
+        monkeypatch.setattr(fl_common, "load_logic_policy", str)
+        monkeypatch.setattr(fl_common, "typed_relations", dict)
+        monkeypatch.setattr(fl_common, "relation_aliases", dict)
+        monkeypatch.setattr(
+            fl_common, "attribute_relations", lambda: {"정식_운영"}
+        )
+        inferred = fl_common.run_wirelog()
+        engine_rows = {tuple(row) for row in inferred["path"]}
+        router_rows = {
+            tuple(row)
+            for row in ask_router.evaluate("path(X, Y)?", ENGINE_FACTS)["rows"]
+        }
+        assert engine_rows == router_rows
+        assert ("A", "A") in engine_rows  # a real cycle, not zero-hop reflexivity
+        assert ("A", "C") in engine_rows  # transitive
+        assert all("2030.1" not in row for row in engine_rows)
+        return inferred
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "path(X, Y)?",
+            'path("A", Y)?',
+            'path(X, "C")?',
+            'path("D", Y)?',
+            "path(X, X)?",
+        ],
+    )
+    def test_report_count_and_rows_match_router(
+        self, monkeypatch, path_extent, query
+    ):
+        monkeypatch.setattr(rlc, "query_lines", lambda: [query])
+        [report_line] = rlc.evaluate_queries(
+            ENGINE_FACTS,
+            path_extent,
+            set(),
+            fl_common.entity_set(ENGINE_FACTS, {"정식_운영"}),
+        )
+        router = ask_router.evaluate(query, ENGINE_FACTS)
+        assert f": {router['count']} rows" in report_line
+        for row in router["rows"]:
+            for arg, value in zip(fl_common.query_args(query), row, strict=True):
+                if fl_common.is_variable(arg):
+                    assert f"{arg}={value}" in report_line
+
+    def test_repeated_variable_keeps_both_positional_bindings(
+        self, monkeypatch, path_extent
+    ):
+        monkeypatch.setattr(rlc, "query_lines", lambda: ["path(X, X)?"])
+        [line] = rlc.evaluate_queries(
+            ENGINE_FACTS,
+            path_extent,
+            set(),
+            fl_common.entity_set(ENGINE_FACTS, {"정식_운영"}),
+        )
+        assert "X=A, X=B" in line

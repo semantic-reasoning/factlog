@@ -86,23 +86,110 @@ class TestEmptyStringEndpoint:
             FACTS, {"path": {("갑봇", "을서비스")}}, set(), NODES
         ) == ["path 갑봇 -> 을서비스: 갑봇 -> 을서비스"]
 
-    def test_a_variable_endpoint_still_produces_no_line(self, attrs, queries):
-        # CONTROL — path_endpoints counts only quoted args, so a half-bound query
-        # produces no result line rather than a malformed one.
+    def test_a_variable_endpoint_renders_a_zero_row(self, attrs, queries):
         queries('path("갑봇", Y)?')
-        assert rlc.evaluate_queries(FACTS, {"path": set()}, set(), NODES) == []
+        assert rlc.evaluate_queries(FACTS, {"path": set()}, set(), NODES) == [
+            'path results (query: path("갑봇", Y)?): 0 rows'
+        ]
+
+
+class TestVariablePathResults:
+    PATHS = {
+        ("갑봇", "을서비스"),
+        ("갑봇", "병사"),
+        ("병사", "을서비스"),
+    }
+
+    @pytest.mark.parametrize(
+        ("query", "expected"),
+        [
+            (
+                "path(X, Y)?",
+                "path results (query: path(X, Y)?): 3 rows; "
+                "X=갑봇, Y=병사; X=갑봇, Y=을서비스; X=병사, Y=을서비스",
+            ),
+            (
+                'path("갑봇", Y)?',
+                'path results (query: path("갑봇", Y)?): 2 rows; '
+                "Y=병사; Y=을서비스",
+            ),
+            (
+                'path(X, "을서비스")?',
+                'path results (query: path(X, "을서비스")?): 2 rows; '
+                "X=갑봇; X=병사",
+            ),
+            (
+                'path("을서비스", Y)?',
+                'path results (query: path("을서비스", Y)?): 0 rows',
+            ),
+            (
+                "path(X, X)?",
+                "path results (query: path(X, X)?): 3 rows; "
+                "X=갑봇, X=병사; X=갑봇, X=을서비스; X=병사, X=을서비스",
+            ),
+            (
+                "path(_, _)?",
+                "path results (query: path(_, _)?): 3 rows; "
+                "_=갑봇, _=병사; _=갑봇, _=을서비스; _=병사, _=을서비스",
+            ),
+        ],
+    )
+    def test_rows_are_filtered_and_rendered_deterministically(
+        self, queries, query, expected
+    ):
+        queries(query)
+        assert rlc.evaluate_queries(
+            FACTS, {"path": self.PATHS}, set(), NODES
+        ) == [expected]
+
+    @pytest.mark.parametrize(
+        ("query", "reason"),
+        [
+            ('path("2030.1", Y)?', "2030.1"),
+            ('path(X, "2030.1")?', "2030.1"),
+            ('path("", Y)?', '""'),
+        ],
+    )
+    def test_bound_non_node_is_not_rendered_as_a_zero(
+        self, queries, query, reason
+    ):
+        queries(query)
+        assert rlc.evaluate_queries(
+            FACTS, {"path": self.PATHS}, set(), NODES
+        ) == [
+            f"path results (query: {query}): "
+            f"(not evaluated — not an accepted entity: {reason})"
+        ]
+
+    def test_path_nodes_none_preserves_compatibility(self, queries):
+        query = 'path("2030.1", Y)?'
+        queries(query)
+        assert rlc.evaluate_queries(
+            FACTS, {"path": {("2030.1", "끝")}}, set(), None
+        ) == [f"path results (query: {query}): 1 rows; Y=끝"]
 
 
 class TestQueryFileFallbackText:
     """`- no facts/query.dl found` may only be printed when it is not there."""
 
-    def _report(self, tmp_path, monkeypatch, query_text):
+    def _report(
+        self,
+        tmp_path,
+        monkeypatch,
+        query_text,
+        *,
+        facts=FACTS,
+        policy_program="",
+        inferred=None,
+    ):
         monkeypatch.setattr(rlc, "FACTS_DIR", tmp_path)
         monkeypatch.setattr(rlc, "ensure_dirs", lambda: None)
-        monkeypatch.setattr(rlc, "load_accepted_facts", lambda: list(FACTS))
-        monkeypatch.setattr(rlc, "load_facts", lambda: list(FACTS))
-        monkeypatch.setattr(rlc, "load_logic_policy", lambda: "")
-        monkeypatch.setattr(rlc, "run_wirelog", lambda: {"path": set()})
+        monkeypatch.setattr(rlc, "load_accepted_facts", lambda: list(facts))
+        monkeypatch.setattr(rlc, "load_facts", lambda: list(facts))
+        monkeypatch.setattr(rlc, "load_logic_policy", lambda: policy_program)
+        monkeypatch.setattr(
+            rlc, "run_wirelog", lambda: inferred or {"path": set()}
+        )
         if query_text is not None:
             (tmp_path / "query.dl").write_text(query_text, encoding="utf-8")
         rlc.main()
@@ -111,26 +198,81 @@ class TestQueryFileFallbackText:
     def test_variable_form_path_query_does_not_claim_the_file_is_missing(
         self, tmp_path, monkeypatch, attrs
     ):
-        # A path result line names its two endpoints, so `path(X, Y)?` renders
-        # nothing — which is not the same as the file being absent.
         report = self._report(tmp_path, monkeypatch, "path(X, Y)?\n")
         assert "- no facts/query.dl found" not in report
-        assert "- no answerable queries in facts/query.dl (see Errors)" in report
+        assert "- path results (query: path(X, Y)?): 0 rows" in report
+        assert "- no answerable queries" not in report
 
     def test_missing_file_still_says_so(self, tmp_path, monkeypatch, attrs):
         # CONTROL — the original message survives for the case it describes.
         report = self._report(tmp_path, monkeypatch, None)
         assert "- no facts/query.dl found" in report
 
+    def test_missing_file_ignores_unrelated_error_count(
+        self, tmp_path, monkeypatch, attrs
+    ):
+        report = self._report(tmp_path, monkeypatch, None, facts=FACTS[:2])
+        assert "errors: 0" in report
+        assert "- no facts/query.dl found" in report
+
     def test_comment_only_file_is_not_reported_as_missing(
         self, tmp_path, monkeypatch, attrs
     ):
-        # #348 keys the fallback on `query_lines()`, so a comment-only file — which
-        # has no query lines either — was still called missing. The condition is
-        # file existence; the wording is #348's.
         report = self._report(tmp_path, monkeypatch, "// only a comment\n")
         assert "- no facts/query.dl found" not in report
+        assert "- no query statements in facts/query.dl" in report
+
+    def test_empty_file_uses_the_same_neutral_statement(self, tmp_path, monkeypatch, attrs):
+        report = self._report(tmp_path, monkeypatch, "", facts=FACTS[:2])
+        assert "- no query statements in facts/query.dl" in report
+        assert "(see Errors)" not in report
+
+    def test_valid_zero_row_policy_query_renders_normally(
+        self, tmp_path, monkeypatch, attrs
+    ):
+        program = ".decl stale_entity(entity: symbol, reason: symbol)\n"
+        report = self._report(
+            tmp_path,
+            monkeypatch,
+            "stale_entity(E, R)?\n",
+            facts=FACTS[:2],
+            policy_program=program,
+            inferred={"path": set(), "stale_entity": set()},
+        )
+        assert "- stale_entity results: 0 rows" in report
+        assert "no query results were rendered" not in report
+
+    def test_every_refused_line_points_to_query_errors(self, tmp_path, monkeypatch, attrs):
+        report = self._report(tmp_path, monkeypatch, 'path("갑봇")?\n')
         assert "- no answerable queries in facts/query.dl (see Errors)" in report
+        assert "path query must have start and target arguments" in report
+
+    def test_unrendered_answerable_line_makes_no_answerability_claim(
+        self, tmp_path, monkeypatch, attrs
+    ):
+        report = self._report(tmp_path, monkeypatch, "conflict(X, Y)?\n")
+        assert "- no query results were rendered for facts/query.dl" in report
+        assert "no answerable queries" not in report
+        assert "errors: 0" not in report  # unrelated incomplete-row error is present
+
+    def test_unrendered_and_refused_mix_uses_neutral_fallback(
+        self, tmp_path, monkeypatch, attrs
+    ):
+        report = self._report(
+            tmp_path, monkeypatch, 'conflict(X, Y)?\npath("갑봇")?\n'
+        )
+        assert "- no query results were rendered for facts/query.dl" in report
+        assert "path query must have start and target arguments" in report
+        assert "no answerable queries" not in report
+
+    def test_rendered_and_refused_mix_keeps_result_and_error_without_fallback(
+        self, tmp_path, monkeypatch, attrs
+    ):
+        report = self._report(tmp_path, monkeypatch, 'path(X, Y)?\npath("갑봇")?\n')
+        assert "- path results (query: path(X, Y)?): 0 rows" in report
+        assert "path query must have start and target arguments" in report
+        assert "no query results were rendered" not in report
+        assert "no answerable queries" not in report
 
 
 class TestWarningFilterTargetsTheRightWarnings:

@@ -727,13 +727,14 @@ def evaluate_queries(
             # path_endpoints at all.
             if query_error("path", line) is not None:
                 continue
+            written_args = query_args(line)
             constants = path_endpoints(line)
             # Display from the WRITTEN line, evaluation from the RESOLVED one:
             # the head echoes the endpoints the author typed, while membership,
             # reachability and the trace all have to use the spelling the engine
             # joined on.
             evaluated = _paired_constants(constants, path_endpoints(resolved))
-            if len(constants) >= 2:
+            if all(is_quoted_string(arg) for arg in written_args):
                 # An endpoint that is a literal (object of a declared attribute
                 # relation) is not a path node at all. Name the reason instead of
                 # reporting "(not found)", which claims the facts were searched
@@ -772,6 +773,63 @@ def evaluate_queries(
                 # in the first place.
                 value = " -> ".join(one_line(node) for node in trace) if trace else "(not found)"
                 results.append(f"{head}: {value}")
+            else:
+                # Variable and half-bound queries enumerate the engine's path/2
+                # extent, mirroring ask_router's positional-wildcard contract.
+                # Match with resolved constants but name the authored query and
+                # variable occurrences; repeated names intentionally do not
+                # unify because the unchanged router treats each position as an
+                # independent wildcard.
+                resolved_args = query_args(resolved)
+                if len(resolved_args) != len(written_args):
+                    resolved_args = written_args
+
+                not_nodes = (
+                    [
+                        arg_value(written)
+                        for written, tested in zip(
+                            written_args, resolved_args, strict=True
+                        )
+                        if is_quoted_string(tested)
+                        and arg_value(tested) not in path_nodes
+                    ]
+                    if path_nodes is not None
+                    else []
+                )
+                echo = one_line(line)
+                if not_nodes:
+                    # Vocabulary refusal precedes row filtering. Reporting zero
+                    # here would look like an engine-verified negative even
+                    # though classify_query routes the same line to the wiki.
+                    reason = ", ".join(display_value(node) for node in not_nodes)
+                    results.append(
+                        f"path results (query: {echo}): "
+                        f"(not evaluated — not an accepted entity: {reason})"
+                    )
+                    continue
+
+                rows = [
+                    row
+                    for row in sorted(inferred.get("path", set()))
+                    if all(
+                        not is_quoted_string(arg) or arg_value(arg) == value
+                        for arg, value in zip(resolved_args, row, strict=True)
+                    )
+                ]
+                rendered_rows = []
+                for row in rows:
+                    bindings = [
+                        f"{one_line(written)}={one_line(value)}"
+                        for written, tested, value in zip(
+                            written_args, resolved_args, row, strict=True
+                        )
+                        if not is_quoted_string(tested)
+                    ]
+                    rendered_rows.append(", ".join(bindings))
+                suffix = "; " + "; ".join(rendered_rows) if rendered_rows else ""
+                results.append(
+                    f"path results (query: {echo}): {len(rows)} rows{suffix}"
+                )
         elif predicate == "relation":
             if query_error("relation", line) is not None:
                 continue
@@ -1276,10 +1334,14 @@ def build_report_text() -> str:
         for target, reason in sorted(inferred[predicate]):
             policy_findings.append(f"{one_line(predicate)}: {one_line(target)} ({one_line(reason)})")
 
-    for line in query_lines():
+    active_query_lines = query_lines()
+    rejected_query_lines = 0
+    for line in active_query_lines:
         query_errors, query_warnings = validate_query(
             line, entities, policy_query_predicates, path_nodes, spelling
         )
+        if query_errors:
+            rejected_query_lines += 1
         errors.extend(query_errors)
         warnings.extend(
             [item for item in query_warnings if not names_a_relation(item, relations)]
@@ -1319,21 +1381,22 @@ def build_report_text() -> str:
     query_results = evaluate_queries(facts, inferred, policy_query_predicates, path_nodes, spelling)
     if query_results:
         report.extend([f"- {item}" for item in query_results])
-    elif not (FACTS_DIR / "query.dl").is_file() and not query_lines():
+    elif not (FACTS_DIR / "query.dl").is_file() and not active_query_lines:
         report.append("- no facts/query.dl found")
-    else:
+    elif not active_query_lines:
+        report.append("- no query statements in facts/query.dl")
+    elif rejected_query_lines == len(active_query_lines):
         # A file whose every line was refused is not a missing file. SKILL.md
         # reads "no facts/query.dl found" as "the /factlog query step was
         # skipped", so printing it here would send the reader to re-run a step
         # they already ran instead of to the Errors section above.
         #
-        # "Missing" needs BOTH signals absent. Keying on `query_lines()` alone
-        # called a comment-only query.dl missing, which is the same false claim;
-        # keying on the file alone would call a line set supplied by a caller
-        # missing. A query.dl holding only variable-form path queries
-        # (`path(X, Y)?`) lands here too — those are answerable, they just render
-        # no result line, because a path result names its two endpoints.
         report.append("- no answerable queries in facts/query.dl (see Errors)")
+    else:
+        # Some accepted predicate names have no report renderer unless a policy
+        # declaration supplies one (for example undeclared conflict). Do not
+        # call those lines unanswerable or point at unrelated Errors.
+        report.append("- no query results were rendered for facts/query.dl")
 
     return "\n".join(report) + "\n"
 

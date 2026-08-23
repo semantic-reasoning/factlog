@@ -124,6 +124,25 @@ class TestEchoIsWhatTheAuthorWrote:
         [line] = evaluate(query)
         assert line.startswith(f"path {nfd('삼성')} -> {nfd('서울')}: ")
 
+    def test_half_bound_path_filters_resolved_but_echoes_written(self, evaluate) -> None:
+        query = f'path("{nfd("삼성")}", Y)?'
+        [line] = evaluate(query)
+        assert line == (
+            f"path results (query: {query}): 2 rows; "
+            f"Y={nfd('서울')}; Y={nfc('이재용')}"
+        )
+        assert nfd("삼성") in line
+        assert f'path("{nfc("삼성")}", Y)?' not in line
+
+    def test_half_bound_refusal_names_written_spelling(self, evaluate) -> None:
+        query = f'path(X, "{nfc("서울")}")?'
+        [line] = evaluate(query, path_nodes={nfc("삼성"), nfc("이재용")})
+        assert line == (
+            f"path results (query: {query}): "
+            f"(not evaluated — not an accepted entity: {nfc('서울')})"
+        )
+        assert nfd("서울") not in line
+
     def test_path_refusal_names_a_constant_that_DID_move(self, evaluate) -> None:
         """The refusal message must name the WRITTEN endpoint even when that
         endpoint was resolved on the way to the verdict.
