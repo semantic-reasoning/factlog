@@ -18,6 +18,7 @@ PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export PYTHONPATH="$PLUGIN_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 PYTHON="${PYTHON:-python3}"
 CORR="$PLUGIN_ROOT/tools/corroboration.py"
+CHK="$PLUGIN_ROOT/tools/check_conflicts.py"
 HEADER="subject,relation,object,source,status,confidence,note"
 
 pass=0
@@ -294,6 +295,115 @@ co="$("$PYTHON" "$CORR" --wiki "$SKB2" 2>&1)"
 printf '%s' "$co" | grep -qF "1 fact(s); 0 backed by >1 source" \
   && ok "two spellings from one file stay one source" \
   || bad "source double-counted: $(printf '%s' "$co" | head -2)"
+
+# --- #341: typed and alias competition uses the authoritative core ------------
+typed_competing_case() {  # $1 = second value, $2 = source for 3위; sets $TCKB
+  TCKB="$(mktemp -d)/wiki"
+  "$PYTHON" -m factlog init --target "$TCKB" >/dev/null
+  printf 'x\n' > "$TCKB/sources/a.md"
+  "$PYTHON" - "$TCKB" "$1" "$2" <<'PY'
+import sys, unicodedata
+from pathlib import Path
+kb, last, second_source = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+(kb / "policy" / "single-valued.md").write_text("- 순위\n", encoding="utf-8")
+(kb / "policy" / "attribute-relations.md").write_text("- 순위\n", encoding="utf-8")
+(kb / "policy" / "typed-relations.md").write_text(
+    "- `순위` : ordinal as rank_value\n", encoding="utf-8"
+)
+rows = [
+    (unicodedata.normalize("NFD", "제3호"), "sources/a.md"),
+    ("3위", second_source),
+]
+if last:
+    rows.append((last, "sources/c.md"))
+(kb / "facts" / "candidates.csv").write_text(
+    "subject,relation,object,source,status,confidence,note\n"
+    + "".join(f"갑사,순위,{value},{source},confirmed,0.9,\n" for value, source in rows),
+    encoding="utf-8",
+)
+PY
+}
+typed_competing_case '' 'sources/b.md'
+set +e; "$PYTHON" "$CHK" --wiki "$TCKB" >/dev/null 2>&1; grc=$?; set -e
+co="$("$PYTHON" "$CORR" --wiki "$TCKB" 2>&1)"
+[ "$grc" -eq 0 ] && ! printf '%s' "$co" | grep -qF "competing values" \
+  && ok "#341: typed NFD ordinal equivalence agrees with the gate" \
+  || bad "#341: typed-equivalent ordinals diverge (gate rc=$grc)"
+
+typed_competing_case '4위' 'sources/b.md'
+set +e; "$PYTHON" "$CHK" --wiki "$TCKB" >/dev/null 2>&1; grc=$?; set -e
+co="$("$PYTHON" "$CORR" --wiki "$TCKB" 2>&1)"
+[ "$grc" -eq 1 ] && printf '%s' "$co" | grep -qF "갑사 / 순위: 3위 (2 src); 4위 (1 src)" \
+  && ok "#341: typed competing values union distinct source support" \
+  || bad "#341: typed support diverges: $(printf '%s' "$co" | tail -2)"
+printf '%s' "$co" | grep -qF "3 fact(s); 0 backed by >1 source" \
+  && ok "#341: authoritative competition leaves the general headline unchanged" \
+  || bad "#341: general corroboration headline changed"
+
+typed_competing_case '4위' 'sources/a.md'
+co="$("$PYTHON" "$CORR" --wiki "$TCKB" 2>&1)"
+printf '%s' "$co" | grep -qF "갑사 / 순위: 3위 (1 src); 4위 (1 src)" \
+  && ok "#341: one source across typed spellings counts once" \
+  || bad "#341: typed spelling source was double-counted"
+
+ALKB="$(mktemp -d)/wiki"
+"$PYTHON" -m factlog init --target "$ALKB" >/dev/null
+printf 'x\n' > "$ALKB/sources/a.md"
+printf -- '- canonical\n' > "$ALKB/policy/single-valued.md"
+printf -- '- `surface` -> `canonical`\n' > "$ALKB/policy/relation-aliases.md"
+printf '%s\n%s\n%s\n%s\n' "$HEADER" \
+  'S,surface,A,sources/a.md,confirmed,0.9,' \
+  'S,canonical,A,sources/b.md,confirmed,0.9,' \
+  'S,canonical,B,sources/c.md,accepted,0.9,' > "$ALKB/facts/candidates.csv"
+co="$("$PYTHON" "$CORR" --wiki "$ALKB" 2>&1)"
+printf '%s' "$co" | grep -qF "S / canonical: A (2 src); B (1 src)" \
+  && ok "#341: alias variants group canonically with source provenance" \
+  || bad "#341: alias support grouping wrong: $(printf '%s' "$co" | tail -2)"
+
+# Policy errors leave the already-rendered general report intact, never emit a
+# raw fallback competition, and name every failed policy in fixed order.
+PFKB="$(mktemp -d)/wiki"
+"$PYTHON" -m factlog init --target "$PFKB" >/dev/null
+printf 'x\n' > "$PFKB/sources/a.md"
+printf -- '- r\n' > "$PFKB/policy/single-valued.md"
+printf '%s\n%s\n%s\n' "$HEADER" \
+  'S,r,A,sources/a.md,confirmed,0.9,' \
+  'S,r,B,sources/b.md,confirmed,0.9,' > "$PFKB/facts/candidates.csv"
+assert_unavailable() {  # $1 = expected policy list, $2 = label
+  err="$("$PYTHON" "$CORR" --wiki "$PFKB" 2>&1 >/dev/null)"
+  set +e; report="$("$PYTHON" "$CORR" --wiki "$PFKB" 2>/dev/null)"; prc=$?; set -e
+  [ "$prc" -eq 0 ] && [ -z "$err" ] \
+    && printf '%s' "$report" | grep -qF "competing-values analysis unavailable ($1)" \
+    && printf '%s' "$report" | grep -qF "1 source(s): S, r, A" \
+    && ! printf '%s' "$report" | grep -qF "with competing values" \
+    && ok "#341: $2 failure preserves a quiet informational report" \
+    || bad "#341: $2 failure contract broken"
+}
+printf -- '- `x` : date as 별칭\n' > "$PFKB/policy/typed-relations.md"
+rm -f "$PFKB/policy/relation-aliases.md"
+assert_unavailable 'typed-relations.md' 'typed-policy'
+printf -- '- `r` : date as r_date\n' > "$PFKB/policy/typed-relations.md"
+printf -- '- `same` -> `same`\n' > "$PFKB/policy/relation-aliases.md"
+assert_unavailable 'relation-aliases.md' 'alias-policy'
+printf -- '- `x` : date as 별칭\n' > "$PFKB/policy/typed-relations.md"
+assert_unavailable 'typed-relations.md, relation-aliases.md' 'both-policy'
+rm -f "$PFKB/policy/typed-relations.md" "$PFKB/policy/relation-aliases.md"
+"$PYTHON" -c "import pathlib,sys; pathlib.Path(sys.argv[1]).write_bytes(b'\xff')" "$PFKB/policy/single-valued.md"
+assert_unavailable 'single-valued.md' 'single-valued-policy'
+printf -- '- `x` : date as 별칭\n' > "$PFKB/policy/typed-relations.md"
+printf -- '- `same` -> `same`\n' > "$PFKB/policy/relation-aliases.md"
+assert_unavailable 'single-valued.md, typed-relations.md, relation-aliases.md' 'all-policy'
+
+NSKB="$(mktemp -d)/wiki"
+"$PYTHON" -m factlog init --target "$NSKB" >/dev/null
+printf 'x\n' > "$NSKB/sources/a.md"
+printf '%s\n%s\n' "$HEADER" 'S,r,A,sources/a.md,confirmed,0.9,' > "$NSKB/facts/candidates.csv"
+printf -- '- `x` : date as 별칭\n' > "$NSKB/policy/typed-relations.md"
+printf -- '- `same` -> `same`\n' > "$NSKB/policy/relation-aliases.md"
+co="$("$PYTHON" "$CORR" --wiki "$NSKB" 2>&1)"
+printf '%s' "$co" | grep -qF "analysis unavailable" \
+  && bad "#341: undeclared single-valued policy loads unrelated broken policies" \
+  || ok "#341: no-single-valued report does not load typed or alias policy"
 
 # --- genuinely different values still compete (control) ----------------------
 DKB="$(mktemp -d)/wiki"

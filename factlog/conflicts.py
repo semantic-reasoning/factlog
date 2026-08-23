@@ -372,6 +372,66 @@ class ConflictScan(NamedTuple):
     object_relations: dict[tuple[str, str], dict[str, list[str]]]
 
 
+ConflictSupport = dict[tuple[str, str], dict[str, tuple[str, ...]]]
+
+
+class _ConflictGroups(NamedTuple):
+    """Private result of one authoritative pass over engine-input rows."""
+
+    by_key: dict[tuple[str, str], dict[tuple, set[str]]]
+    unfolded: dict[tuple[str, str], dict[str, tuple]]
+    raw_subjects: dict[tuple[str, str], set[str]]
+    object_relations: dict[tuple[str, str], dict[str, set[str]]]
+    raw_relations: dict[tuple[str, str], set[str]]
+    relation_subjects: dict[tuple[str, str], set[str]]
+    sources: dict[tuple[str, str], dict[tuple, set[str]]]
+
+
+def _group_conflict_rows(
+    facts: list[dict[str, str]],
+    single_valued: set[str],
+    typed: dict[str, TypedRelSpec] | None = None,
+    aliases: dict[str, str] | None = None,
+) -> _ConflictGroups:
+    """Build every conflict and source channel in one engine-row iteration."""
+    typed = typed or {}
+    aliases = aliases or {}
+    sv = folded_relation_names(_canonicalize(r, aliases) for r in single_valued)
+    by_key: dict[tuple[str, str], dict[tuple, set[str]]] = {}
+    unfolded: dict[tuple[str, str], dict[str, tuple]] = {}
+    raw_subjects: dict[tuple[str, str], set[str]] = {}
+    object_relations: dict[tuple[str, str], dict[str, set[str]]] = {}
+    raw_relations: dict[tuple[str, str], set[str]] = {}
+    relation_subjects: dict[tuple[str, str], set[str]] = {}
+    sources: dict[tuple[str, str], dict[tuple, set[str]]] = {}
+    for row in engine_facts(facts):
+        relation = row["relation"]
+        canon = _canonicalize(relation, aliases)
+        if fold_relation_name(canon) not in sv:
+            continue
+        obj = row["object"]
+        spec = typed.get(canon) or typed.get(_fold(relation))
+        key = _group_key(obj, spec)
+        pair = (_fold(row["subject"]), canon)
+        by_key.setdefault(pair, {}).setdefault(key, set()).add(obj)
+        unfolded.setdefault(pair, {})[obj] = _group_key_unfolded(obj, spec)
+        raw_subjects.setdefault(pair, set()).add(row["subject"])
+        object_relations.setdefault(pair, {}).setdefault(obj, set()).add(relation)
+        split = (pair[0], _fold(canon))
+        raw_relations.setdefault(split, set()).add(canon)
+        relation_subjects.setdefault(split, set()).add(row["subject"])
+        sources.setdefault(pair, {}).setdefault(key, set()).add(row.get("source", ""))
+    return _ConflictGroups(
+        by_key,
+        unfolded,
+        raw_subjects,
+        object_relations,
+        raw_relations,
+        relation_subjects,
+        sources,
+    )
+
+
 def collect_conflicts(
     facts: list[dict[str, str]],
     single_valued: set[str],
@@ -507,60 +567,13 @@ def collect_conflicts(
     decided first. What belongs *here* is that the checker never merges on that
     basis in silence — see ``_parse_merge`` and ``_report_resolved_merges``.
     """
-    typed = typed or {}
-    aliases = aliases or {}
-    # Precompute the set of canonical single-valued relation names so the
-    # per-row membership test is O(1). Folded on both sides: this test is the
-    # only thing standing between a row and the grouping loop, and
-    # ``common._relation_names_from`` does not normalize the names it parses out
-    # of policy/single-valued.md, so comparing raw would make it a byte
-    # comparison between two hand-written files. Membership only — the folded
-    # name is never used as a grouping key (see the loop below). Shared with the
-    # other membership consumers (``factlog status``/``vocab``, ``corroboration``)
-    # through ``common``, so "which predicate decides membership" has one answer.
-    sv = folded_relation_names(_canonicalize(r, aliases) for r in single_valued)
-    # (folded subject, canonical_relation) -> group key -> set of raw objects.
-    by_key: dict[tuple[str, str], dict[tuple, set[str]]] = {}
-    # Same pair -> raw object -> the key that object would have had unfolded.
-    # Per raw object rather than per group: the disclosure has to know *which*
-    # rows the fold pulled together, not just that it pulled (_parse_merge).
-    unfolded: dict[tuple[str, str], dict[str, tuple]] = {}
-    # Same pair -> set of raw subject spellings folded into it.
-    raw_subjects: dict[tuple[str, str], set[str]] = {}
-    # Same pair -> raw object -> the raw relation spellings written for it.
-    # Grouping canonicalizes the relation; ``common.engine_atom_key`` keeps it
-    # verbatim, so alias-merged rows are one group here and two atoms there.
-    # Per raw object, because the disclosure has to gate its "single atom" claim
-    # on the rows behind the spelling group it is printing, not on the pair.
-    object_relations: dict[tuple[str, str], dict[str, set[str]]] = {}
-    # (folded subject, folded relation) -> raw relation spellings seen, and the
-    # raw subjects under them. Grouping does not fold the relation axis, so these
-    # rows sit in separate pairs and never meet; the disclosure is what says so.
-    raw_relations: dict[tuple[str, str], set[str]] = {}
-    relation_subjects: dict[tuple[str, str], set[str]] = {}
-    for row in engine_facts(facts):
-        relation = row["relation"]
-        canon = _canonicalize(relation, aliases)
-        # `fold_relation_name`, not the local `_fold`: this is the membership
-        # test, and the rule stated in `_fold`'s docstring is that every one of
-        # those goes through the shared helper. Same operation today — the point
-        # is that the two folds stay one decision if either ever moves.
-        if fold_relation_name(canon) not in sv:
-            continue
-        obj = row["object"]
-        # Typed-spec lookup (#210), NOT a fold of the relation axis: the spec dict
-        # is keyed by NFC names, so the lookup normalizes to find it. The relation
-        # used for grouping stays `canon`, verbatim.
-        spec = typed.get(canon) or typed.get(_fold(relation))
-        key = _group_key(obj, spec)
-        pair = (_fold(row["subject"]), canon)
-        by_key.setdefault(pair, {}).setdefault(key, set()).add(obj)
-        unfolded.setdefault(pair, {})[obj] = _group_key_unfolded(obj, spec)
-        raw_subjects.setdefault(pair, set()).add(row["subject"])
-        object_relations.setdefault(pair, {}).setdefault(obj, set()).add(relation)
-        split = (pair[0], _fold(canon))
-        raw_relations.setdefault(split, set()).add(canon)
-        relation_subjects.setdefault(split, set()).add(row["subject"])
+    groups_result = _group_conflict_rows(facts, single_valued, typed, aliases)
+    by_key = groups_result.by_key
+    unfolded = groups_result.unfolded
+    raw_subjects = groups_result.raw_subjects
+    object_relations = groups_result.object_relations
+    raw_relations = groups_result.raw_relations
+    relation_subjects = groups_result.relation_subjects
     conflicts: dict[tuple[str, str], list[str]] = {}
     subject_variants: dict[tuple[str, str], list[str]] = {}
     object_variants: dict[tuple[str, str], dict[str, list[str]]] = {}
@@ -629,6 +642,40 @@ def collect_conflicts(
         relation_variants,
         reported_relations,
     )
+
+
+def collect_conflict_support(
+    facts: list[dict[str, str]],
+    single_valued: set[str],
+    typed: dict[str, TypedRelSpec] | None = None,
+    aliases: dict[str, str] | None = None,
+) -> ConflictSupport:
+    """Return distinct source provenance for each authoritative conflict value.
+
+    The nested shape is ``{reported pair: {reported object: sorted sources}}``.
+    Only contested pairs are included. Pair and object spellings use the same
+    input-preserving representative rule as :func:`collect_conflicts`; source
+    strings are preserved exactly, de-duplicated, and sorted. Both dictionary
+    levels have sorted insertion order, so row permutations return equal and
+    identically ordered results.
+
+    This function and :func:`collect_conflicts` each call the same private
+    builder exactly once. Each individual call therefore performs one
+    authoritative ``engine_facts`` grouping pass; calling both APIs performs two
+    independent passes, as expected.
+    """
+    grouped = _group_conflict_rows(facts, single_valued, typed, aliases)
+    entries: list[tuple[tuple[str, str], dict[str, tuple[str, ...]]]] = []
+    for pair, value_groups in grouped.by_key.items():
+        if len(value_groups) <= 1:
+            continue
+        reported = (_representative(grouped.raw_subjects[pair]), pair[1])
+        support = {
+            _representative(raw_objects): tuple(sorted(grouped.sources[pair][key]))
+            for key, raw_objects in value_groups.items()
+        }
+        entries.append((reported, dict(sorted(support.items()))))
+    return dict(sorted(entries, key=lambda item: item[0]))
 
 
 def detect_conflicts(

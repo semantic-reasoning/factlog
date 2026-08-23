@@ -17,7 +17,6 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-import unicodedata
 from pathlib import Path
 
 _TOOLS_DIR = Path(__file__).parent
@@ -32,15 +31,17 @@ import factlog_config  # noqa: E402
 os.environ["FACTLOG_ROOT"] = factlog_config.resolve_root_from_argv("--wiki")
 
 from common import (  # noqa: E402
+    FactlogError,
     composed_spelling,
     engine_atom_key,
     engine_facts,
     ensure_dirs,
-    fold_relation_name,
-    folded_relation_names,
     load_facts,
+    relation_aliases,
     single_valued_relations,
+    typed_relations,
 )
+from factlog.conflicts import collect_conflict_support  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -92,63 +93,43 @@ def main(argv: list[str] | None = None) -> int:
 
     # Source-level view of single-valued competition: same (subject, relation)
     # given different objects (each with its own source support).
-    single_valued = single_valued_relations()
-    if single_valued:
-        # (folded subject, relation) -> folded object -> distinct backing sources,
-        # plus the raw spellings folded into each, so the report can name a row
-        # that was actually written.
-        competing: dict[tuple[str, str], dict[str, set[str]]] = {}
-        subject_spellings: dict[tuple[str, str], set[str]] = {}
-        object_spellings: dict[tuple[str, str], dict[str, set[str]]] = {}
-        # Membership folded, matching the gate (check_conflicts): policy names are
-        # stored verbatim, so a uniformly-NFD KB matches nothing raw and its
-        # competing values are silently never surfaced. The subject and untyped
-        # object axes fold too, for the same reason the gate folds them — left
-        # raw, two spellings of one value are listed as two competing values
-        # ("한국대 (1 src); 한국대 (1 src)", indistinguishable on screen), which
-        # invites superseding a row that says the same thing as its twin. The
-        # relation axis stays raw, matching the gate's deferred #210 decision.
-        #
-        # This is a source-level view, not the gate: like `factlog status` it does
-        # not parse typed literals, so a #116 cross-notation pair
-        # (`amount(5400,"억")` and `amount(0.54,"조")`, one value to
-        # check_conflicts) is still listed here as two competing values while the
-        # gate exits 0. Closing that needs the checker's grouping shared rather
-        # than reimplemented — a follow-up, since `tools/` is not importable from
-        # the installed package (pyproject packages = ["factlog"]).
-        #
-        # That follow-up owns an input #325 WIDENED, not only inherited: an
-        # NFD-authored typed literal, where the gate folds the object before
-        # parsing and this view does not. See the same note in
-        # `factlog/cli.py`'s status block for the measured case.
-        sv_folded = folded_relation_names(single_valued)
-        for row in engine_facts(facts):
-            if fold_relation_name(row["relation"]) not in sv_folded:
-                continue
-            # NFC, the same fold the gate applies to these two axes. Not
-            # `common._canonical_value`, which layers amount-quote normalization on
-            # top and would diverge from check_conflicts._fold.
-            pair = (unicodedata.normalize("NFC", row["subject"]), row["relation"])
-            obj = unicodedata.normalize("NFC", row["object"])
-            # Sources are collected here rather than read out of `counts`
-            # because this loop walks only the single-valued rows and wants the
-            # set, not the total. Both partitions agree — `counts` is keyed on
-            # `engine_atom_key`, and (pair, obj) above spells out the same
-            # (NFC subject, raw relation, NFC object) — so a source backing two
-            # spellings of one value counts once on either path.
-            competing.setdefault(pair, {}).setdefault(obj, set()).add(row["source"])
-            subject_spellings.setdefault(pair, set()).add(row["subject"])
-            object_spellings.setdefault(pair, {}).setdefault(obj, set()).add(row["object"])
-        contested = {k: v for k, v in competing.items() if len(v) > 1}
-        if contested:
-            print(f"\ncorroboration: {len(contested)} single-valued relation(s) with competing values")
-            for pair, objs in sorted(contested.items()):
-                subject = composed_spelling(subject_spellings[pair])
-                detail = "; ".join(
-                    f"{composed_spelling(object_spellings[pair][obj])} ({len(srcs)} src)"
-                    for obj, srcs in sorted(objs.items())
-                )
-                print(f"  {subject} / {pair[1]}: {detail}")
+    failed: list[str] = []
+    try:
+        single_valued = single_valued_relations()
+    except (FactlogError, OSError, ValueError):
+        single_valued = set()
+        failed.append("single-valued.md")
+    if not failed and not single_valued:
+        return 0
+
+    # Policy inputs are independent: collect every failure in a deterministic
+    # order and never fall back to a raw grouping that could claim a false
+    # competition. The general corroboration report above remains useful.
+    try:
+        typed = typed_relations(emit_warnings=False)
+    except (FactlogError, OSError, ValueError):
+        typed = {}
+        failed.append("typed-relations.md")
+    try:
+        aliases = relation_aliases()
+    except (FactlogError, OSError, ValueError):
+        aliases = {}
+        failed.append("relation-aliases.md")
+    if failed:
+        print(
+            "\ncorroboration: competing-values analysis unavailable ("
+            + ", ".join(failed) + "); fix policy"
+        )
+        return 0
+
+    support = collect_conflict_support(facts, single_valued, typed, aliases)
+    if support:
+        print(f"\ncorroboration: {len(support)} single-valued relation(s) with competing values")
+        for pair, objects in support.items():
+            detail = "; ".join(
+                f"{obj} ({len(sources)} src)" for obj, sources in objects.items()
+            )
+            print(f"  {pair[0]} / {pair[1]}: {detail}")
     return 0
 
 
