@@ -116,10 +116,11 @@ def test_support_is_order_stable_and_uses_written_subject_representative():
     expected = conflicts.collect_conflict_support(facts, {"소속"})
     assert next(iter(expected)) == ("김철수", "소속")
     assert list(expected[("김철수", "소속")]) == ["A", "B"]
-    assert all(
-        conflicts.collect_conflict_support(list(permutation), {"소속"}) == expected
-        for permutation in itertools.permutations(facts)
-    )
+    for permutation in itertools.permutations(facts):
+        support = conflicts.collect_conflict_support(list(permutation), {"소속"})
+        assert support == expected
+        assert tuple(support) == (("김철수", "소속"),)
+        assert tuple(support[("김철수", "소속")]) == ("A", "B")
 
 
 def test_each_public_projection_calls_the_shared_builder_once(monkeypatch):

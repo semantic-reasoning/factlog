@@ -362,6 +362,9 @@ class ConflictScan(NamedTuple):
       written under. Same key set as *object_variants*. Grouping canonicalizes
       the relation and ``common.engine_atom_key`` does not, so a group here can
       be more than one atom there; this is what lets the disclosure say which.
+
+    Every public mapping is inserted in sorted key order, including both levels
+    of nested mappings. Iterating a scan therefore never exposes input row order.
     """
 
     conflicts: dict[tuple[str, str], list[str]]
@@ -597,6 +600,7 @@ def collect_conflicts(
                 for raws in groups.values()
                 if (names := _parse_merge(raws, unfolded[pair]))
             }
+            merged = dict(sorted(merged.items()))
             if merged or any(_fold_classes(sorted(raws)) for raws in groups.values()):
                 reported = (_representative(subjects), pair[1])
                 object_variants[reported] = _variant_map(groups)
@@ -627,6 +631,7 @@ def collect_conflicts(
             for raws in groups.values()
             if (names := _parse_merge(raws, unfolded[pair]))
         }
+        merged = dict(sorted(merged.items()))
         if merged:
             parse_merges[reported] = merged
     relation_variants = {
@@ -635,12 +640,12 @@ def collect_conflicts(
         if len(names) > 1
     }
     return ConflictScan(
-        conflicts,
-        subject_variants,
-        object_variants,
-        parse_merges,
-        relation_variants,
-        reported_relations,
+        dict(sorted(conflicts.items())),
+        dict(sorted(subject_variants.items())),
+        dict(sorted(object_variants.items())),
+        dict(sorted(parse_merges.items())),
+        dict(sorted(relation_variants.items())),
+        dict(sorted(reported_relations.items())),
     )
 
 

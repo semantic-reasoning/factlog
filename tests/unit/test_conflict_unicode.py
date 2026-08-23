@@ -380,6 +380,88 @@ class TestVariantChannels:
             orders.add(tuple(objects[("갑", "속성")]))
         assert orders == {("a", "b", "c", "d")}
 
+    def test_outer_variant_maps_are_independent_of_row_order(self):
+        base = [
+            _fact("김철수", "소속", "A사"),
+            _fact("김철수", "소속", "B사"),
+            _fact("갑", "속성", "x"),
+            _fact("갑", "속성", "y"),
+            _fact("을", "속성", "p"),
+            _fact("을", "속성", "q"),
+        ]
+        expected_keys = (("갑", "속성"), ("김철수", "소속"), ("을", "속성"))
+        orders = set()
+        for perm in itertools.permutations(base):
+            scan = check_conflicts.collect_conflicts(list(perm), {"소속", "속성"}, {})
+            assert scan.conflicts == {
+                ("갑", "속성"): ["x", "y"],
+                ("김철수", "소속"): ["A사", "B사"],
+                ("을", "속성"): ["p", "q"],
+            }
+            orders.add(
+                (
+                    tuple(scan.conflicts),
+                    tuple(scan.subject_variants),
+                    tuple(scan.object_variants),
+                    tuple(scan.object_relations),
+                )
+            )
+        assert orders == {(expected_keys, expected_keys, expected_keys, expected_keys)}
+
+    def test_relation_variant_outer_order_is_independent_of_row_order(self):
+        relation = "소속"
+        spellings = [relation, _nfd(relation)]
+        base = [
+            _fact(subject, spelling, "A사")
+            for subject in ("갑", "을")
+            for spelling in spellings
+        ]
+        expected = {
+            ("갑", relation): sorted(spellings),
+            ("을", relation): sorted(spellings),
+        }
+        orders = set()
+        for perm in itertools.permutations(base):
+            variants = check_conflicts.collect_conflicts(
+                list(perm), {relation}, {}
+            ).relation_variants
+            assert variants == expected
+            orders.add(tuple(variants))
+        assert orders == {tuple(expected)}
+
+    def test_parse_merge_orders_are_independent_of_row_order(self):
+        resolved = [
+            _fact("갑", "순위", _nfd("제3호")),
+            _fact("갑", "순위", "3위"),
+            _fact("을", "순위", _nfd("제4호")),
+            _fact("을", "순위", "4위"),
+        ]
+        expected_outer = (("갑", "순위"), ("을", "순위"))
+        outer_orders = set()
+        for perm in itertools.permutations(resolved):
+            merges = check_conflicts.collect_conflicts(
+                list(perm), {"순위"}, _TYPED_ORDINAL
+            ).parse_merges
+            assert set(merges) == set(expected_outer)
+            outer_orders.add(tuple(merges))
+        assert outer_orders == {expected_outer}
+
+        conflicting = [
+            _fact("갑", "순위", _nfd("제3호")),
+            _fact("갑", "순위", "3위"),
+            _fact("갑", "순위", _nfd("제4호")),
+            _fact("갑", "순위", "4위"),
+        ]
+        pair = ("갑", "순위")
+        inner_orders = set()
+        for perm in itertools.permutations(conflicting):
+            merges = check_conflicts.collect_conflicts(
+                list(perm), {"순위"}, _TYPED_ORDINAL
+            ).parse_merges
+            assert set(merges[pair]) == {"3위", "4위"}
+            inner_orders.add(tuple(merges[pair]))
+        assert inner_orders == {("3위", "4위")}
+
     def test_variant_map_is_per_subject_relation_pair(self):
         # A per-folded-subject (global) map would let the mixed spelling of one
         # relation rewrite the reported subject of an unrelated relation.
