@@ -127,10 +127,11 @@ summarizes the conflict count and some correction guidance; corroboration is an
 exit-0 report of distinct-source support per competing value. If a typed or alias
 policy used by conflict analysis fails to load, status marks a degraded fallback;
 if corroboration cannot load a relevant policy, it omits its competing-values
-section. Do not read those cases as the same verdict. The engine's typed
-side-relation projection still passes an authored NFD object unchanged to the
-normalizer and commonly fails to parse it, while the conflict core first applies
-NFC and may parse it successfully, so the results can still diverge.
+section. Do not read those cases as the same verdict. Engine typed side-relation
+projection uses the conflict core's NFC-and-alias spec boundary. It parses an NFC
+shadow of the object while preserving authored spelling in general `relation/3`
+facts and diagnostics. This does not add NFKC, casefold, or full-width-digit
+acceptance.
 
 Both spell the offending characters as `\uXXXX` (`\UXXXXXXXX` above the BMP), so
 you can see which one to correct.

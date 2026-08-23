@@ -150,11 +150,12 @@ def _report_resolved_merges(scan: ConflictScan) -> None:
     the second "canonically equivalent" would be a false statement about the
     strings (``NFD('제3호')`` and ``'3위'`` are not equivalent — the fold merely let
     the first one parse as ordinal rank 3). It also carries a warning the first
-    does not: the engine folds nowhere, so it cannot reproduce that merge — it
-    loads the decomposed literal untyped, and every one of them when the relation
-    name is decomposed as well (see ``collect_conflicts``). Keying the disclosure on
-    ``_fold_classes`` left that path completely silent, which is how a KB that
-    reported a CONFLICT on the previous release became "no contradictions".
+    did not before #387: typed projection now applies the same NFC+alias spec
+    boundary and reaches the same scalar, while the raw authored ``relation/3``
+    atoms remain separate when the notations are not canonically equivalent.
+    Keying the disclosure on ``_fold_classes`` left that path completely silent,
+    which is how a KB that reported a CONFLICT on the previous release became
+    "no contradictions".
 
     Printed on **stdout**, not stderr: this is an advisory rather than the
     failure report, and ``finalize`` forwards our stdout unconditionally (it
@@ -235,12 +236,11 @@ def _report_resolved_merges(scan: ConflictScan) -> None:
     print(
         "  These notations are NOT canonically equivalent: a decomposed literal does not "
         "parse as its declared type, and folding is what let it reach the scalar its "
-        "counterpart already had. So they stay two separate atoms, and the engine's typed "
-        "projection does not fold either — it hands the object as written to "
-        "literal_types.normalize — so it loads the decomposed literal untyped (and, when "
-        "the relation name is decomposed too, every one of them), and the notations never "
-        "meet there. Unify the spelling in sources/ and re-collect, then re-run to see "
-        "whether a contradiction remains."
+        "counterpart already had. They stay separate raw relation/3 atoms when the "
+        "notations are not canonically equivalent, but typed projection applies the same "
+        "NFC-aware normalization and inserts their shared scalar into the same side-relation. "
+        "Unify the spelling in sources/ and re-collect if the authored notation difference "
+        "is unintended, then re-run to see whether a contradiction remains."
     )
 
 

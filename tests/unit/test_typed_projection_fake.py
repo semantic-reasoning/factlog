@@ -128,15 +128,7 @@ def test_shuffled_accepted_inserts_in_sorted_key_order():
     ]
 
 
-# --- The engine folds nowhere (#325) -----------------------------------------
-# check_conflicts folds the object to NFC *before* literal_types.normalize, so a
-# decomposed typed literal parses there and not here. Its exit-0 advisory makes a
-# claim about this function, and the earlier wording ("loads every one of them
-# untyped") was true of only one of the two branches below.
-#
-# CONTROLS: both pass before that wording was corrected — they pin the engine
-# behaviour the message describes, which is unchanged. Their job is to make the
-# next edit to that sentence fail here if it drifts from what the loop does.
+# --- #387: projection shares the conflict core's NFC + alias boundary --------
 
 
 def _nfd(value: str) -> str:
@@ -146,37 +138,26 @@ def _nfd(value: str) -> str:
 _ORDINAL = {"순위": common.TypedRelSpec("ordinal", "rank")}
 
 
-def test_composed_literal_still_loads_typed_when_the_relation_is_composed(capsys):
-    # The projection runs per row and the spec lookup hits, so '3위' IS inserted
-    # as rank 3; only the decomposed twin degrades. The two notations land on
-    # opposite sides of the typed table, which is why the checker's merge is not
-    # reproducible here — not because nothing loads.
+def test_nfc_relation_and_nfd_object_project_without_warning(capsys):
     accepted = [_row("갑", "순위", _nfd("제3호")), _row("갑", "순위", "3위")]
     fake = FakeSession()
     common._project_typed_relations(fake, _ORDINAL, accepted)
-    id_to_value = {v: k for k, v in fake._ids.items()}
-    assert [(a, id_to_value[p[0]], p[1]) for a, p in fake.inserts] == [("rank", "갑", 3)]
-    err = capsys.readouterr().err
-    assert "does not parse as ordinal" in err
-    assert err.count("does not parse") == 1  # the composed row did not warn
+    assert fake.inserts == [("rank", (0, 3)), ("rank", (0, 3))]
+    assert capsys.readouterr().err == ""
 
 
-def test_nothing_loads_typed_when_the_relation_name_is_decomposed(capsys):
-    # specs.get(row["relation"]) is a raw lookup, so a decomposed relation name
-    # misses its spec on EVERY row — including the composed literal's. This is the
-    # branch where "every one of them untyped" holds, and it warns about none of
-    # them because the spec is never found.
+def test_uniformly_nfd_relation_and_objects_project(capsys):
     accepted = [
         _row("갑", _nfd("순위"), _nfd("제3호")),
         _row("갑", _nfd("순위"), "3위"),
     ]
     fake = FakeSession()
     common._project_typed_relations(fake, _ORDINAL, accepted)
-    assert fake.inserts == []
+    assert fake.inserts == [("rank", (0, 3)), ("rank", (0, 3))]
     assert capsys.readouterr().err == ""
 
 
-def test_dedup_does_not_expand_typed_projection_across_unrelated_atoms(capsys):
+def test_dedup_preserves_authored_relation_but_both_atoms_project(capsys):
     accepted = common.dedup_engine_atoms(
         [
             _row("갑", _nfd("순위"), "3위"),
@@ -187,5 +168,89 @@ def test_dedup_does_not_expand_typed_projection_across_unrelated_atoms(capsys):
 
     fake = FakeSession()
     common._project_typed_relations(fake, _ORDINAL, accepted)
-    assert _decode_inserts(fake) == {("rank", "을", 4)}
+    assert _decode_inserts(fake) == {("rank", "갑", 3), ("rank", "을", 4)}
+    assert capsys.readouterr().err == ""
+
+
+def test_alias_surface_uses_canonical_spec_and_canonical_wins(capsys):
+    surface = "게재순위"
+    canonical = "순위"
+    aliases = {surface: canonical}
+    canonical_spec = common.TypedRelSpec("ordinal", "canonical_rank")
+    surface_spec = common.TypedRelSpec("ordinal", "surface_rank")
+    specs = {canonical: canonical_spec, surface: surface_spec}
+    fake = FakeSession()
+
+    common._project_typed_relations(
+        fake,
+        specs,
+        [_row("갑", _nfd(surface), _nfd("제3호"))],
+        aliases=aliases,
+    )
+
+    assert _decode_inserts(fake) == {("canonical_rank", "갑", 3)}
+    assert capsys.readouterr().err == ""
+
+
+def test_surface_spec_is_fallback_when_canonical_spec_is_absent():
+    surface = "게재순위"
+    fake = FakeSession()
+    common._project_typed_relations(
+        fake,
+        {surface: common.TypedRelSpec("ordinal", "surface_rank")},
+        [_row("갑", _nfd(surface), "3위")],
+        aliases={surface: "순위"},
+    )
+    assert _decode_inserts(fake) == {("surface_rank", "갑", 3)}
+
+
+def test_alias_custom_units_and_nfd_object_use_canonical_spec(capsys):
+    spec = common.TypedRelSpec(
+        "amount", "budget_minor", {"달러": 100, "센트": 1}
+    )
+    fake = FakeSession()
+    common._project_typed_relations(
+        fake,
+        {"예산": spec},
+        [_row("갑", _nfd("책정액"), _nfd("2달러"))],
+        aliases={"책정액": "예산"},
+    )
+    assert _decode_inserts(fake) == {("budget_minor", "갑", 200)}
+    assert capsys.readouterr().err == ""
+
+
+def test_invalid_value_warns_with_authored_relation_and_object(capsys):
+    relation = _nfd("순위")
+    object_ = _nfd("미정")
+    fake = FakeSession()
+    common._project_typed_relations(
+        fake, _ORDINAL, [_row("갑", relation, object_)]
+    )
+    assert fake.inserts == []
+    err = capsys.readouterr().err
+    assert repr(relation) in err
+    assert repr(object_) in err
+    assert err.count("does not parse") == 1
+
+
+def test_non_ascii_digits_still_reject_with_authored_marker(capsys):
+    object_ = "제３호"
+    fake = FakeSession()
+    common._project_typed_relations(fake, _ORDINAL, [_row("갑", "순위", object_)])
+    assert fake.inserts == []
+    err = capsys.readouterr().err
+    assert repr(object_) in err
+    assert "\\uff13" in err
+    assert err.count("does not parse") == 1
+
+
+def test_case_and_nfkc_relation_lookalikes_do_not_find_a_spec(capsys):
+    specs = {"Rank": common.TypedRelSpec("ordinal", "rank")}
+    fake = FakeSession()
+    common._project_typed_relations(
+        fake,
+        specs,
+        [_row("갑", "rank", "3위"), _row("을", "Ｒａｎｋ", "4위")],
+    )
+    assert fake.inserts == []
     assert capsys.readouterr().err == ""

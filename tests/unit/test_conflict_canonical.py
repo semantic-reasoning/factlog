@@ -141,6 +141,78 @@ class TestTypedEqualAcrossVariants:
         assert conflicts == {}
 
 
+class TestSharedTypedSpecResolution:
+    _ALIASES = {"게재순위": "순위"}
+    _ORDINAL = common.TypedRelSpec("ordinal", "canonical_rank")
+    _SURFACE_NUMBER = common.TypedRelSpec("number", "surface_number")
+
+    def test_canonical_spec_wins_over_surface_spec(self):
+        typed = {
+            "순위": self._ORDINAL,
+            "게재순위": self._SURFACE_NUMBER,
+        }
+        facts = [
+            _fact("갑", unicodedata.normalize("NFD", "게재순위"), "제3호"),
+            _fact("갑", "게재순위", "3위"),
+        ]
+        assert check_conflicts.detect_conflicts(
+            facts, {"순위"}, typed, self._ALIASES
+        ) == {}
+
+    def test_surface_spec_is_fallback_without_canonical_spec(self):
+        typed = {"게재순위": self._ORDINAL}
+        facts = [
+            _fact("갑", unicodedata.normalize("NFD", "게재순위"), "제3호"),
+            _fact("갑", "게재순위", "3위"),
+        ]
+        assert check_conflicts.detect_conflicts(
+            facts, {"순위"}, typed, self._ALIASES
+        ) == {}
+
+    def test_nfd_canonical_relation_finds_nfc_spec(self):
+        facts = [
+            _fact("갑", unicodedata.normalize("NFD", "순위"), "제3호"),
+            _fact("갑", unicodedata.normalize("NFD", "순위"), "3위"),
+        ]
+        assert check_conflicts.detect_conflicts(
+            facts, {"순위"}, {"순위": self._ORDINAL}, {}
+        ) == {}
+
+    def test_nfd_keyed_spec_accepts_both_relation_normalization_forms(self):
+        nfd_relation = unicodedata.normalize("NFD", "순위")
+        typed = {nfd_relation: self._ORDINAL}
+        assert common.resolve_typed_relation_spec("순위", typed) is self._ORDINAL
+        assert (
+            common.resolve_typed_relation_spec(nfd_relation, typed)
+            is self._ORDINAL
+        )
+
+    def test_nfd_alias_keys_prefer_canonical_spec_then_fall_back_to_surface(self):
+        nfd_surface = unicodedata.normalize("NFD", "게재순위")
+        nfd_canonical = unicodedata.normalize("NFD", "순위")
+        aliases = {nfd_surface: nfd_canonical}
+        typed = {
+            nfd_surface: self._SURFACE_NUMBER,
+            nfd_canonical: self._ORDINAL,
+        }
+        for relation in ("게재순위", nfd_surface):
+            assert (
+                common.resolve_typed_relation_spec(relation, typed, aliases)
+                is self._ORDINAL
+            )
+            assert (
+                common.resolve_typed_relation_spec(
+                    relation, {nfd_surface: self._SURFACE_NUMBER}, aliases
+                )
+                is self._SURFACE_NUMBER
+            )
+
+    def test_supplied_keys_do_not_widen_to_case_or_nfkc_lookalikes(self):
+        typed = {"Rank": self._ORDINAL}
+        assert common.resolve_typed_relation_spec("rank", typed) is None
+        assert common.resolve_typed_relation_spec("Ｒａｎｋ", typed) is None
+
+
 class TestTypedDifferentAcrossVariants:
     """Typed-different values across alias variants must produce a conflict
     with verbatim object representatives."""

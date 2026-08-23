@@ -57,9 +57,13 @@ def engine_paths(policy_text, monkeypatch, tmp_path):
     # Bypasses the guard on purpose: load_logic_policy is where it runs, and the
     # point here is what happens downstream of it.
     monkeypatch.setattr(fl_common, "load_logic_policy", lambda: policy_text)
-    monkeypatch.setattr(fl_common, "typed_relations", lambda: {})
+    monkeypatch.setattr(fl_common, "typed_relations", lambda *, aliases=None: {})
     monkeypatch.setattr(fl_common, "relation_aliases", lambda: {})
-    monkeypatch.setattr(fl_common, "attribute_relations", lambda: {"정식_운영"})
+    monkeypatch.setattr(
+        fl_common,
+        "attribute_relations",
+        lambda *, aliases=None: {"정식_운영"},
+    )
     return {tuple(row) for row in fl_common.run_wirelog()["path"]}
 
 
@@ -132,9 +136,13 @@ def engine_inferred(policy_text, monkeypatch, tmp_path):
     monkeypatch.setattr(fl_common, "ACCEPTED_DL", accepted)
     monkeypatch.setattr(fl_common, "load_accepted_facts", lambda: list(FACTS))
     monkeypatch.setattr(fl_common, "load_logic_policy", lambda: policy_text)
-    monkeypatch.setattr(fl_common, "typed_relations", lambda: {})
+    monkeypatch.setattr(fl_common, "typed_relations", lambda *, aliases=None: {})
     monkeypatch.setattr(fl_common, "relation_aliases", lambda: {})
-    monkeypatch.setattr(fl_common, "attribute_relations", lambda: {"정식_운영"})
+    monkeypatch.setattr(
+        fl_common,
+        "attribute_relations",
+        lambda *, aliases=None: {"정식_운영"},
+    )
     return fl_common.run_wirelog()
 
 

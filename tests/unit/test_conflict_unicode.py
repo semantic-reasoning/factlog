@@ -879,16 +879,10 @@ class TestFoldEnabledTypedParseIsDisclosed:
     signal at all: exit 0, empty stderr, and ``finalize`` reporting "done — no
     contradictions" where it used to delete ``facts/accepted.dl``.
 
-    The engine makes it worse, not better: ``common._project_typed_relations``
-    hands ``normalize`` the object as written, so it cannot reproduce the merge
-    and loads both literals untyped. The checker is entitled to be more willing to
-    merge than the engine only while it says so.
-
-    #342 does not touch this. It folds engine-atom identity on canonical
-    equivalence, and ``NFD('제3호')`` and ``'3위'`` are not canonically equivalent —
-    two atoms before, two atoms after. Only the wording moved: the message names
-    the *typed projection* as the half that does not fold, because engine atoms
-    now do.
+    Typed projection now uses the same NFC-aware normalization and reaches the
+    same scalar. ``NFD('제3호')`` and ``'3위'`` are still not canonically equivalent,
+    so the raw atoms and authored notation remain distinct and the disclosure is
+    still useful without claiming an engine divergence.
     """
 
     def test_nfd_typed_literal_merged_with_its_notation_twin_is_disclosed(
@@ -901,31 +895,20 @@ class TestFoldEnabledTypedParseIsDisclosed:
         assert "merged only because a Unicode fold made a typed literal parse" in out
         assert ascii(nfd_ordinal) in out and ascii("3위") in out
 
-    def test_disclosure_names_the_engine_divergence(self, monkeypatch, capsys):
-        # The actionable half: the reader must not conclude the engine agrees.
-        # Named as the TYPED PROJECTION since #342: engine atoms do fold now, so
-        # a flat "the engine does not fold" would be false in general — and the
-        # divergence this message is about survives it, because a parse merge is
-        # not canonical equivalence and the atom fold never reaches it.
+    def test_disclosure_names_projection_alignment(self, monkeypatch, capsys):
         facts = [_fact("갑", "순위", _nfd("제3호")), _fact("갑", "순위", "3위")]
         _run_main(monkeypatch, facts, {"순위"}, _TYPED_ORDINAL)
         out = capsys.readouterr().out
-        assert "typed projection does not fold" in out
-        assert "they stay two separate atoms" in out
-        assert "Unify the spelling in sources/" in out
+        assert "typed projection applies the same NFC-aware normalization" in out
+        assert "separate raw relation/3 atoms" in out
+        assert "if the authored notation difference is unintended" in out
+        assert "typed projection does not fold" not in out
 
-    def test_engine_claim_is_narrowed_to_the_decomposed_literal(self, monkeypatch, capsys):
-        # `_project_typed_relations` runs per row: with an NFC relation name the
-        # spec lookup hits and the COMPOSED literal is inserted typed (pinned in
-        # tests/unit/test_typed_projection_fake.py). An unconditional "loads every
-        # one of them untyped" is therefore false on this KB — exactly the shape
-        # the message is printed for. The conclusion is unchanged; the mechanism
-        # sentence has to be true as well.
+    def test_stale_projection_divergence_claims_are_absent(self, monkeypatch, capsys):
         facts = [_fact("갑", "순위", _nfd("제3호")), _fact("갑", "순위", "3위")]
         _run_main(monkeypatch, facts, {"순위"}, _TYPED_ORDINAL)
         out = capsys.readouterr().out
-        assert "loads the decomposed literal untyped" in out
-        assert "when the relation name is decomposed too, every one of them" in out
+        assert "loads the decomposed literal untyped" not in out
         assert "loads every one of them untyped" not in out
 
     def test_merged_notations_are_not_called_canonically_equivalent(self, monkeypatch, capsys):
@@ -939,9 +922,8 @@ class TestFoldEnabledTypedParseIsDisclosed:
     def test_all_nfd_ordinal_kb_is_disclosed(self, monkeypatch, capsys):
         # The most likely shape of all: normalization is a property of the source
         # document, so a whole KB arrives decomposed. `_ORDINAL_KO_RE` spells its
-        # markers composed (제/호/위), so neither NFD literal parses as written,
-        # both parse folded, and they collapse onto rank 3 — a merge only this
-        # module makes, hence a disclosure.
+        # markers composed (제/호/위), so both parse only after folding and
+        # collapse onto rank 3 in both conflict grouping and typed projection.
         raws = [_nfd("제3호"), _nfd("3위")]
         facts = [_fact("갑", "순위", raws[0]), _fact("갑", "순위", raws[1])]
         assert _run_main(monkeypatch, facts, {"순위"}, _TYPED_ORDINAL) == 0

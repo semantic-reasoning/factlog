@@ -169,10 +169,16 @@ class TestVariableRowsAgreeWithRealEngineAndRouter:
             fl_common, "load_accepted_facts", lambda: list(ENGINE_FACTS)
         )
         monkeypatch.setattr(fl_common, "load_logic_policy", str)
-        monkeypatch.setattr(fl_common, "typed_relations", dict)
+        monkeypatch.setattr(
+            fl_common,
+            "typed_relations",
+            lambda *, aliases=None: {},
+        )
         monkeypatch.setattr(fl_common, "relation_aliases", dict)
         monkeypatch.setattr(
-            fl_common, "attribute_relations", lambda: {"정식_운영"}
+            fl_common,
+            "attribute_relations",
+            lambda *, aliases=None: {"정식_운영"},
         )
         inferred = fl_common.run_wirelog()
         engine_rows = {tuple(row) for row in inferred["path"]}

@@ -18,6 +18,7 @@ from factlog.common import (
     engine_facts,
     fold_relation_name,
     folded_relation_names,
+    resolve_typed_relation_spec,
 )
 
 
@@ -398,16 +399,6 @@ class _ConflictGroups(NamedTuple):
     sources: dict[tuple[str, str], dict[tuple, set[str]]]
 
 
-def _resolve_typed_spec(
-    relation: str,
-    typed: dict[str, TypedRelSpec],
-    aliases: dict[str, str],
-) -> TypedRelSpec | None:
-    """Resolve the exact spec used for one authored relation spelling."""
-    canonical = _canonicalize(relation, aliases)
-    return typed.get(canonical) or typed.get(_fold(relation))
-
-
 def _group_conflict_rows(
     facts: list[dict[str, str]],
     single_valued: set[str],
@@ -431,7 +422,7 @@ def _group_conflict_rows(
         if fold_relation_name(canon) not in sv:
             continue
         obj = row["object"]
-        spec = _resolve_typed_spec(relation, typed, aliases)
+        spec = resolve_typed_relation_spec(relation, typed, aliases)
         key = _group_key(obj, spec)
         pair = (_fold(row["subject"]), _fold(canon))
         by_key.setdefault(pair, {}).setdefault(key, set()).add(obj)
@@ -557,30 +548,17 @@ def collect_conflicts(
     The atom-count check therefore distinguishes NFC spelling variants (one
     atom) from semantic alias/canonical surfaces (two raw atoms).
 
-    **The typed projection still does not fold (#325 follow-up).** ``_group_key``
-    folds *before* ``literal_types.normalize``; the engine's counterpart,
-    ``common._project_typed_relations``, hands ``normalize`` the object of the
-    atom as written (and looks its spec up under the raw relation name). So an
-    NFD-authored typed literal can still parse here and nowhere else, and this
-    module can declare two values equal on grounds the engine cannot reproduce.
+    **Typed projection now shares this NFC+alias boundary (#387).** Both this
+    module and ``common._project_typed_relations`` resolve a relation through
+    ``resolve_typed_relation_spec`` and NFC-fold the object before typed
+    normalization. A uniformly decomposed row and an alias surface therefore
+    reach the same spec and scalar side-relation the conflict gate used.
 
-    #342 narrows this without closing it. Two *canonically equivalent* spellings
-    are now one atom, written in the composed spelling wherever the KB authored
-    one, so they no longer land on opposite sides of the typed table — the case
-    that used to insert the composed literal typed and degrade the decomposed one
-    with a warning. What survives is everything the atom fold does not reach: a
-    uniformly decomposed KB keeps its decomposed spelling (there is no composed
-    member to prefer), so ``normalize`` still fails on it, and with the relation
-    name decomposed the spec lookup still misses every row and none load typed at
-    all. A *parse* merge is untouched by construction — ``NFD('제3호')`` and
-    ``'3위'`` are not canonically equivalent, so they are two atoms here and two
-    atoms in the engine, and only this module ever calls them one value.
-
-    Aligning the typed projection too is the root fix and a follow-up of its
-    own (#387): it changes which rows enter the typed side-relations, hence what
-    ``factlog ask`` answers. What belongs *here* is that the checker never merges
-    on that basis in silence — see ``_parse_merge`` and
-    ``_report_resolved_merges``.
+    A *parse* merge still deserves disclosure: ``NFD('제3호')`` and ``'3위'`` are
+    not canonically equivalent and remain two authored ``relation/3`` atoms even
+    though both project as ordinal rank 3. See ``_parse_merge`` and
+    ``_report_resolved_merges``. Projection alignment changes execution meaning,
+    not source provenance or the raw triple representation.
     """
     groups_result = _group_conflict_rows(facts, single_valued, typed, aliases)
     by_key = groups_result.by_key
@@ -688,7 +666,7 @@ def collect_conflict_digit_width_offenders(
         for variants in scan.object_variants[pair].values():
             for raw in variants:
                 for relation in scan.object_relations[pair].get(raw, ()):
-                    spec = _resolve_typed_spec(relation, typed, aliases)
+                    spec = resolve_typed_relation_spec(relation, typed, aliases)
                     if spec is not None and literal_types.digit_width_causes_parse_failure(
                         spec.type, raw, spec.units
                     ):

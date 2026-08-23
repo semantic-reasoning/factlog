@@ -221,12 +221,19 @@ class KbContext:
             (lambda: relation_aliases(self.root)) if aliases is None else (lambda: aliases),
         )
 
-    def typed_relations(self, *, emit_warnings: bool = True) -> dict[str, TypedRelSpec]:
+    def typed_relations(
+        self,
+        *,
+        emit_warnings: bool = True,
+        aliases: dict[str, str] | None = None,
+    ) -> dict[str, TypedRelSpec]:
         """Load this KB's typed policy; optionally silence skippable diagnostics.
 
         ``emit_warnings=False`` does not weaken validation: malformed and
         unknown-type lines remain skipped, and hard policy errors still raise.
         It also avoids the warning-only attribute/alias lookup entirely.
+        Pass a preloaded *aliases* mapping to keep the attribute warning on the
+        caller's policy snapshot.
         """
         path = self.policy_dir / "typed-relations.md"
         if not path.is_file():
@@ -239,7 +246,9 @@ class KbContext:
             path.read_text(encoding="utf-8"), reserved, emit_warnings=emit_warnings
         )
         if emit_warnings:
-            _warn_typed_not_attribute(specs, self.attribute_relations())
+            _warn_typed_not_attribute(
+                specs, self.attribute_relations(aliases=aliases)
+            )
         return specs
 
 
@@ -1150,7 +1159,7 @@ def _attribute_relations_from(policy_dir: Path, read_aliases) -> set[str]:
     }
 
 
-def attribute_relations() -> set[str]:
+def attribute_relations(*, aliases: dict[str, str] | None = None) -> set[str]:
     """Relation names whose object is a LITERAL value, not a first-class entity
     (policy/attribute-relations.md).
 
@@ -1166,7 +1175,10 @@ def attribute_relations() -> set[str]:
     → entity_set == value_set (fully backward compatible). Surface aliases of a
     declared relation count as declared — see _attribute_relations_from.
     """
-    return _attribute_relations_from(POLICY_DIR, relation_aliases)
+    return _attribute_relations_from(
+        POLICY_DIR,
+        relation_aliases if aliases is None else (lambda: aliases),
+    )
 
 
 # --- typed relations (policy/typed-relations.md) -----------------------------
@@ -1321,13 +1333,19 @@ def _warn_typed_not_attribute(specs: dict[str, TypedRelSpec], attrs: set[str]) -
             )
 
 
-def typed_relations(*, emit_warnings: bool = True) -> dict[str, TypedRelSpec]:
+def typed_relations(
+    *,
+    emit_warnings: bool = True,
+    aliases: dict[str, str] | None = None,
+) -> dict[str, TypedRelSpec]:
     """Relations declared typed in policy/typed-relations.md → {name: TypedRelSpec}.
 
     Absent (or all-comment) file → empty mapping (no typed relations; behaviour
     is byte-identical to a KB without the feature). See KbContext.typed_relations
     for the per-KB variant. ``emit_warnings=False`` suppresses only skippable
     parser and typed-not-attribute diagnostics; hard policy errors still raise.
+    A preloaded *aliases* mapping keeps that diagnostic on the caller's policy
+    snapshot instead of reading the alias file again.
     """
     path = POLICY_DIR / "typed-relations.md"
     if not path.is_file():
@@ -1340,8 +1358,45 @@ def typed_relations(*, emit_warnings: bool = True) -> dict[str, TypedRelSpec]:
         path.read_text(encoding="utf-8"), reserved, emit_warnings=emit_warnings
     )
     if emit_warnings:
-        _warn_typed_not_attribute(specs, attribute_relations())
+        _warn_typed_not_attribute(specs, attribute_relations(aliases=aliases))
     return specs
+
+
+def resolve_typed_relation_spec(
+    relation: str,
+    specs: dict[str, TypedRelSpec],
+    aliases: dict[str, str] | None = None,
+) -> TypedRelSpec | None:
+    """Resolve the typed spec for one authored relation spelling.
+
+    Relation identity is NFC-only, including NFC-equivalent authored keys in
+    supplied *specs* and *aliases* mappings. An explicit surface alias first
+    resolves to its canonical relation, whose typed declaration takes
+    precedence; when that declaration is absent, an NFC-equivalent declaration
+    on the authored surface is retained for backward compatibility. No NFKC,
+    casefold, or alias chains are inferred here.
+    """
+    folded = fold_relation_name(relation)
+    canonical = folded
+    for surface, target in (aliases or {}).items():
+        if fold_relation_name(surface) == folded:
+            canonical = fold_relation_name(target)
+            break
+
+    def lookup(name: str) -> TypedRelSpec | None:
+        direct = specs.get(name)
+        if direct is not None:
+            return direct
+        return next(
+            (
+                spec
+                for authored, spec in specs.items()
+                if fold_relation_name(authored) == name
+            ),
+            None,
+        )
+
+    return lookup(canonical) or lookup(folded)
 
 
 # Per-type engine column for a projectable typed side-relation. This pyrewire
@@ -2012,15 +2067,11 @@ def dedup_engine_atoms(rows: list[dict[str, str]]) -> list[dict[str, str]]:
     inside the group instead breaks the join to the rest of the KB — see that
     docstring for the measured shape and for why their pool cannot be per-axis.
 
-    The composed spelling is the one a reader greps for from an NFC editor, and
-    the one the engine's typed projection can parse
-    (``_project_typed_relations`` hands ``literal_types.normalize`` the object as
-    written, so a decomposed ``NFD('7위')`` normalizes to ``None`` and the fact
-    silently leaves the typed table). Preferring it only *rescues a value the KB
-    spells that way somewhere*. Where every occurrence is decomposed there is
-    nothing to prefer, the atom stays decomposed, and the typed literal is
-    dropped exactly as before — see the byte-invariance note below, which is the
-    same fact stated as a guarantee.
+    The composed spelling is the one a reader greps for from an NFC editor.
+    Typed projection no longer depends on this representative choice: it parses
+    an NFC shadow while preserving the authored object in ``relation/3`` and in
+    diagnostics (#387). Where every occurrence is decomposed there is nothing to
+    prefer and the atom stays decomposed byte-for-byte.
 
     Ranking whole rows instead — picking the group member that sorts first — is
     what an earlier revision did, and it is wrong on a *cross* group: one row
@@ -2060,8 +2111,8 @@ def dedup_engine_atoms(rows: list[dict[str, str]]) -> list[dict[str, str]]:
     spelling of the relation, and then only to a spelling the KB already wrote.
     The value pool is KB-wide, so a singleton atom can still inherit another
     fact's subject/object spelling. The relation pool is group-local so an
-    unrelated atom cannot acquire a relation spelling that would also change the
-    exact-match typed projection (#387).
+    unrelated atom keeps its authored relation bytes. Typed projection resolves
+    NFC and aliases independently without rewriting that raw atom (#387).
 
     **Agreeing with itself is the correction only because the query side moves
     too.** Collapsing the atoms without that is half a move: it picks one
@@ -2472,7 +2523,13 @@ def decode_wirelog_value(session: EasySession, value: object) -> object:
     return value
 
 
-def _project_typed_relations(session, specs, accepted) -> None:
+def _project_typed_relations(
+    session,
+    specs: dict[str, TypedRelSpec],
+    accepted: list[dict[str, str]],
+    *,
+    aliases: dict[str, str] | None = None,
+) -> None:
     """Insert each parseable typed-relation object into its int64 side-relation,
     deterministically ordered so the run is reproducible (#116 invariant 3). A
     non-parsing object warns and skips ONLY that row — the fact still loads
@@ -2481,6 +2538,12 @@ def _project_typed_relations(session, specs, accepted) -> None:
 
     Touches *session* only via intern/insert — no step/close — so it is
     unit-testable with a fake session and no engine.
+
+    Relation lookup uses :func:`resolve_typed_relation_spec`. The object is NFC
+    folded only for parsing; the authored row is never rewritten and every
+    warning below quotes its original relation/object spelling. This aligns the
+    scalar side-relation with conflict grouping without changing raw
+    ``relation/3`` or provenance.
 
     NB: hand-authored comparison-predicate rules (#120) use arity-2
     (subject, reason) heads with a quoted reason string; the scalar stays in
@@ -2492,10 +2555,11 @@ def _project_typed_relations(session, specs, accepted) -> None:
     if not specs:
         return
     for row in sorted(accepted, key=lambda r: (r["relation"], r["subject"], r["object"])):
-        spec = specs.get(row["relation"])
+        spec = resolve_typed_relation_spec(row["relation"], specs, aliases)
         if spec is None or spec.type not in _TYPED_COL:
             continue
-        scalar = literal_types.normalize(spec.type, row["object"], spec.units)
+        object_nfc = unicodedata.normalize("NFC", row["object"])
+        scalar = literal_types.normalize(spec.type, object_nfc, spec.units)
         if scalar is None:
             # This is the one surfacing path that runs unconditionally, and the
             # remedy it points at ("correct the source to ASCII and re-collect")
@@ -2543,13 +2607,18 @@ def run_wirelog() -> dict[str, set[tuple[str, ...]]]:
 
     accepted_program = ACCEPTED_DL.read_text(encoding="utf-8")
     policy_program = load_logic_policy()
-    specs = typed_relations()
+    # One fail-loud policy snapshot, fixed before session creation. Attribute
+    # expansion, typed warnings, canonical atoms, and typed projection must not
+    # observe different alias files if policy changes during a run.
+    aliases = relation_aliases()
+    specs = typed_relations(aliases=aliases)
+    attrs = attribute_relations(aliases=aliases)
     # attr_rel/1 is EDB, so it must be populated before the engine runs: it is what
     # keeps a declared literal out of entity_node — and therefore out of path (#329).
     # "" when nothing is declared, leaving the appended block empty.
     base_program = (
         WIRELOG_PROGRAM
-        + attribute_relation_program()
+        + attribute_relation_program(attrs)
         + "\n"
         + policy_program
         + "\n"
@@ -2583,14 +2652,13 @@ def run_wirelog() -> dict[str, set[tuple[str, ...]]]:
     # Intern canonical-atom symbols so decode_wirelog_value round-trips for any
     # canonical/3 tuple the engine emits or a rule references.  canonical/3 is
     # pure EDB — never a rule head — so we only intern, never insert.
-    _c_aliases = relation_aliases()
-    if _c_aliases:
-        for s, canon, o in canonical_atoms(accepted, _c_aliases):
+    if aliases:
+        for s, canon, o in canonical_atoms(accepted, aliases):
             session.intern(s)
             session.intern(canon)
             session.intern(o)
 
-    _project_typed_relations(session, specs, accepted)
+    _project_typed_relations(session, specs, accepted, aliases=aliases)
 
     inferred: dict[str, set[tuple[str, ...]]] = defaultdict(set)
     for relation_name, row, diff in session.step():

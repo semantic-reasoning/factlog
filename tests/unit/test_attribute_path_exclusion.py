@@ -69,7 +69,11 @@ def attrs(monkeypatch):
     """Bind the ambient attribute-relation policy without touching the filesystem."""
 
     def _bind(names: set[str]) -> set[str]:
-        monkeypatch.setattr(fl_common, "attribute_relations", lambda: set(names))
+        monkeypatch.setattr(
+            fl_common,
+            "attribute_relations",
+            lambda *, aliases=None: set(names),
+        )
         return set(names)
 
     return _bind
@@ -86,7 +90,7 @@ def engine_path_pairs(facts: list[dict[str, str]], monkeypatch, tmp_path) -> set
     monkeypatch.setattr(fl_common, "ACCEPTED_DL", accepted_dl)
     monkeypatch.setattr(fl_common, "load_accepted_facts", lambda: list(facts))
     monkeypatch.setattr(fl_common, "load_logic_policy", lambda: "")
-    monkeypatch.setattr(fl_common, "typed_relations", lambda: {})
+    monkeypatch.setattr(fl_common, "typed_relations", lambda *, aliases=None: {})
     monkeypatch.setattr(fl_common, "relation_aliases", lambda: {})
     inferred = fl_common.run_wirelog()
     return {tuple(row) for row in inferred["path"]}

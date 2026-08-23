@@ -7,10 +7,12 @@ import os
 import subprocess
 import sys
 import textwrap
+import unicodedata
 from pathlib import Path
 
 import common
 import pytest
+from factlog import common as fcommon
 
 
 def _run_child(command: list[str], *, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
@@ -75,6 +77,99 @@ class TestAliasCollision:
         program = ".decl version_num(s: symbol, v: int64)\n"
         with pytest.raises(common.FactlogError):
             common._assert_no_alias_collision(specs, program)
+
+
+class TestRunWirelogAliasSnapshot:
+    class _Session:
+        def __init__(self, _program):
+            self._intern = type(
+                "Intern",
+                (),
+                {"contains_id": lambda _self, _value: False},
+            )()
+
+        def intern(self, _value):
+            return 0
+
+        def step(self):
+            return []
+
+        def close(self):
+            return None
+
+    def _minimal_run(self, monkeypatch, tmp_path):
+        accepted = tmp_path / "accepted.dl"
+        accepted.write_text("", encoding="utf-8")
+        monkeypatch.setattr(fcommon, "ACCEPTED_DL", accepted)
+        monkeypatch.setattr(fcommon, "require_pyrewire_version", lambda: None)
+        monkeypatch.setattr(fcommon, "load_logic_policy", lambda: "")
+        monkeypatch.setattr(fcommon, "load_accepted_facts", lambda: [])
+        monkeypatch.setattr(fcommon, "EasySession", self._Session)
+
+    def test_one_alias_snapshot_is_shared_before_session_creation(
+        self, monkeypatch, tmp_path
+    ):
+        self._minimal_run(monkeypatch, tmp_path)
+        aliases = {"표면": "정준"}
+        reads = []
+        seen = []
+
+        def load_aliases():
+            reads.append(1)
+            return aliases
+
+        def load_typed(*, aliases=None, **_kwargs):
+            seen.append(("typed", aliases))
+            return {}
+
+        def load_attrs(*, aliases=None):
+            seen.append(("attribute", aliases))
+            return set()
+
+        monkeypatch.setattr(fcommon, "relation_aliases", load_aliases)
+        monkeypatch.setattr(fcommon, "typed_relations", load_typed)
+        monkeypatch.setattr(fcommon, "attribute_relations", load_attrs)
+        monkeypatch.setattr(
+            fcommon,
+            "canonical_atoms",
+            lambda _rows, aliases_arg: seen.append(("canonical", aliases_arg)) or [],
+        )
+        monkeypatch.setattr(
+            fcommon,
+            "_project_typed_relations",
+            lambda _session, _specs, _rows, *, aliases=None: seen.append(
+                ("projection", aliases)
+            ),
+        )
+
+        assert fcommon.run_wirelog() == {}
+        assert reads == [1]
+        assert [name for name, _snapshot in seen] == [
+            "typed",
+            "attribute",
+            "canonical",
+            "projection",
+        ]
+        assert all(snapshot is aliases for _name, snapshot in seen)
+
+    def test_malformed_alias_fails_before_session_creation(
+        self, monkeypatch, tmp_path
+    ):
+        self._minimal_run(monkeypatch, tmp_path)
+        sessions = []
+        monkeypatch.setattr(
+            fcommon,
+            "EasySession",
+            lambda _program: sessions.append(1),
+        )
+
+        def fail_aliases():
+            raise fcommon.FactlogError("malformed aliases")
+
+        monkeypatch.setattr(fcommon, "relation_aliases", fail_aliases)
+        with pytest.raises(fcommon.FactlogError, match="malformed aliases"):
+            fcommon.run_wirelog()
+        assert sessions == []
 
 
 class TestUnscaledNumberThreshold:
@@ -192,6 +287,70 @@ def test_end_to_end_threshold_inference(tmp_path: Path):
     # 병 ("미정") does not parse -> skipped (graceful degrade).
     assert result == ["갑서비스"]
     assert "does not parse" in proc.stderr  # 병서비스 warned
+
+
+_RANK_RUNNER = textwrap.dedent(
+    """
+    import json, os, sys
+    sys.path.insert(0, os.path.join(os.environ["KB_TOOLS"]))
+    import common
+    rows = common.run_wirelog().get("top_ranked", set())
+    print(json.dumps(sorted([list(row) for row in rows])))
+    """
+)
+
+
+def _run_nfd_rank_kb(root: Path, *, surface_alias: bool) -> tuple[list[list[str]], str]:
+    (root / "facts").mkdir(parents=True, exist_ok=True)
+    (root / "policy").mkdir(parents=True, exist_ok=True)
+    nfd = lambda value: unicodedata.normalize("NFD", value)  # noqa: E731
+    relation = nfd("게재순위" if surface_alias else "순위")
+    object_ = nfd("제3호")
+    accepted_text = f'relation("갑", "{relation}", "{object_}").\n'
+    if surface_alias:
+        accepted_text += 'relation("을", "순위", "4위").\n'
+    (root / "facts" / "accepted.dl").write_text(accepted_text, encoding="utf-8")
+    (root / "policy" / "typed-relations.md").write_text(
+        "- `순위` : ordinal as rank\n", encoding="utf-8"
+    )
+    (root / "policy" / "attribute-relations.md").write_text(
+        "- `순위`\n", encoding="utf-8"
+    )
+    (root / "policy" / "logic-policy.dl").write_text(
+        ".decl top_ranked(entity: symbol, reason: symbol)\n"
+        'top_ranked(S, "rank_le_10") :- rank(S, V), V <= 10.\n',
+        encoding="utf-8",
+    )
+    if surface_alias:
+        (root / "policy" / "relation-aliases.md").write_text(
+            "- `게재순위` -> `순위`\n", encoding="utf-8"
+        )
+    env = dict(os.environ)
+    env["FACTLOG_ROOT"] = str(root)
+    env["KB_TOOLS"] = str(Path(common.__file__).resolve().parent)
+    proc = _run_child([sys.executable, "-c", _RANK_RUNNER], env=env)
+    assert proc.returncode == 0, f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+    assert (root / "facts" / "accepted.dl").read_text(encoding="utf-8") == accepted_text
+    return json.loads(proc.stdout.strip().splitlines()[-1]), proc.stderr
+
+
+@pytest.mark.skipif(common.EasySession is None, reason="pyrewire not installed")
+def test_uniformly_nfd_relation_and_object_fire_typed_rule(tmp_path: Path):
+    values, stderr = _run_nfd_rank_kb(tmp_path, surface_alias=False)
+    assert len(values) == 1
+    assert unicodedata.normalize("NFC", values[0][0]) == "갑"
+    assert values[0][1] == "rank_le_10"
+    assert "does not parse" not in stderr
+
+
+@pytest.mark.skipif(common.EasySession is None, reason="pyrewire not installed")
+def test_nfd_alias_surface_uses_canonical_typed_spec_end_to_end(tmp_path: Path):
+    values, stderr = _run_nfd_rank_kb(tmp_path, surface_alias=True)
+    assert {
+        (unicodedata.normalize("NFC", subject), reason)
+        for subject, reason in values
+    } == {("갑", "rank_le_10"), ("을", "rank_le_10")}
+    assert "does not parse" not in stderr
 
 
 # --- #120: hand-authored comparison predicates surface in the report -----------

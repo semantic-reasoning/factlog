@@ -239,6 +239,66 @@ ok = ok and not any(f'"{nfc(v)}"' in lines[0] for v in ("삼성", "대표", "이
 sys.exit(0 if ok else 1)
 PY
 
+# --- (g2) uniformly-NFD typed atom keeps raw bytes and fires typed rule ------
+KB4T="$(mktemp -d)/wiki"
+"$PYTHON" -m factlog init --target "$KB4T" >/dev/null
+printf 'rank source\n' > "$KB4T/sources/rank.md"
+"$PYTHON" - "$KB4T" <<'PY'
+import sys, unicodedata
+from pathlib import Path
+kb = Path(sys.argv[1])
+nfd = lambda s: unicodedata.normalize("NFD", s)
+kb.joinpath("facts/candidates.csv").write_text(
+    "subject,relation,object,source,status,confidence,note\n"
+    f"{nfd('갑')},{nfd('순위')},{nfd('제3호')},sources/rank.md,confirmed,0.9,\n",
+    encoding="utf-8",
+)
+kb.joinpath("policy/typed-relations.md").write_text(
+    "- `순위` : ordinal as rank\n", encoding="utf-8"
+)
+kb.joinpath("policy/attribute-relations.md").write_text(
+    "- `순위`\n", encoding="utf-8"
+)
+PY
+compile4t="$(FACTLOG_ROOT="$KB4T" "$PYTHON" -m factlog.compile_facts)"
+printf '%s' "$compile4t" | grep -qF 'sources=1' \
+  && ok "#387: uniformly-NFD typed atom keeps compile provenance" \
+  || bad "#387: uniformly-NFD typed atom lost compile provenance"
+"$PYTHON" - "$KB4T" <<'PY' \
+  && ok "#387: uniformly-NFD typed relation/3 keeps authored bytes" \
+  || bad "#387: compile rewrote uniformly-NFD typed relation/3"
+import sys, unicodedata
+from pathlib import Path
+nfd = lambda s: unicodedata.normalize("NFD", s)
+text = Path(sys.argv[1], "facts/accepted.dl").read_text(encoding="utf-8")
+assert text.count("relation(") == 1, text
+assert all(f'"{nfd(value)}"' in text for value in ("갑", "순위", "제3호")), text
+PY
+nfd_rank_query="$($PYTHON -c 'import unicodedata; print(unicodedata.normalize("NFD", "순위"))')"
+render4t="$(FACTLOG_ROOT="$KB4T" "$PYTHON" "$ROUTER" render "relation(S, \"$nfd_rank_query\", O)?" --target "$KB4T")"
+printf '%s' "$render4t" | grep -qF 'sources/rank.md' \
+  && ! printf '%s' "$render4t" | grep -qF 'no extraction backing' \
+  && ok "#387: uniformly-NFD typed atom keeps source_paths" \
+  || bad "#387: uniformly-NFD typed atom lost source_paths"
+if "$PYTHON" -c "import pyrewire" >/dev/null 2>&1; then
+  printf '.decl top_ranked(entity: symbol, reason: symbol)\ntop_ranked(S, "rank_le_10") :- rank(S, V), V <= 10.\n' \
+    > "$KB4T/policy/logic-policy.extra.dl"
+  ( cd "$PLUGIN_ROOT" && FACTLOG_ROOT="$KB4T" "$PYTHON" - <<'PY'
+from factlog import common
+import unicodedata
+rows = common.run_wirelog().get("top_ranked", set())
+assert any(
+    unicodedata.normalize("NFC", subject) == "갑" and reason == "rank_le_10"
+    for subject, reason in rows
+), rows
+PY
+  ) 2>/dev/null \
+    && ok "#387: uniformly-NFD typed atom fires its side-relation rule" \
+    || bad "#387: uniformly-NFD typed atom did not reach its side-relation"
+else
+  echo "SKIP: pyrewire unavailable — skipping #387 typed side-relation rule"
+fi
+
 # --- (h) a pre-fold accepted.dl must not decode as a bare intern id ---------
 # run_wirelog parses the FILE TEXT but interns from the loader's rows. If the
 # loader folds identity, the losing spelling stays in the program and never
@@ -343,7 +403,7 @@ specs = typed_relations()
 assert specs, 'typed-relations.md did not parse — the typed-table assertions below are vacuous'
 " ) && ok "typed spec parses (the typed-table premise holds)" || bad "typed-relations.md did not parse"
 
-  "$PYTHON" - "$KB6" <<'PY' && ok "cross group writes a composed object that normalizes as an ordinal" || bad "cross group wrote a decomposed object — the typed literal is dropped"
+  "$PYTHON" - "$KB6" <<'PY' && ok "cross group writes a composed object that normalizes as an ordinal" || bad "cross group wrote an unexpected object representative"
 import sys, unicodedata
 from pathlib import Path
 sys.path.insert(0, ".")

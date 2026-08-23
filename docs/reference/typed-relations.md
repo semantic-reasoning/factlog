@@ -113,9 +113,9 @@ JSON, 경로, 행 수와 종료 코드는 바뀌지 않으며 NFKC/호환성 접
 보고서입니다. 충돌 분석용 typed/alias 정책 로드가 실패하면 `status` 는 저하된
 fallback임을 표시하고, corroboration은 관련 정책 로드가 실패하면 competing-values
 절을 생략하므로 이때 세 출력이 같은 판정이라고 읽으면 안 됩니다. 엔진의 typed
-side-relation 투영은 작성된 NFD 객체를 그대로 normalizer에 넘겨 흔히 파싱하지
-못하지만, conflict core는 먼저 NFC fold한 뒤 파싱하므로 결과가 여전히 다를 수
-있습니다.
+side-relation 투영은 conflict core와 같은 NFC·alias spec 경계를 사용합니다. 객체의
+NFC shadow를 파싱하되 일반 `relation/3` 및 진단에는 작성된 표기를 유지합니다.
+NFKC·casefold·전각 숫자 허용으로 확장하지 않습니다.
 
 두 곳 모두 문제가 되는 문자를 `\uXXXX`(BMP 밖은 `\UXXXXXXXX`) 로 찍어 주므로 어느
 글자를 고쳐야 하는지 눈으로 확인할 수 있습니다.
