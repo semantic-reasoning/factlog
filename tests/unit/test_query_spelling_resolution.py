@@ -15,6 +15,7 @@ import unicodedata
 
 import pytest
 
+from factlog import common as factlog_common
 from factlog.common import kb_query_spellings, resolve_query_spellings
 
 
@@ -126,6 +127,14 @@ class TestKbQuerySpellings:
         assert spelling[nfc("이재용")] == nfc("이재용")
 
 
+class TestQueryValuePositionTable:
+    def test_every_builtin_except_policy_conflict_declares_its_positions(self) -> None:
+        assert set(factlog_common._QUERY_VALUE_POSITIONS) == (
+            factlog_common.QUERY_PREDICATES - {"conflict"}
+        )
+        assert "conflict" not in factlog_common._QUERY_VALUE_POSITIONS
+
+
 class TestResolveQuerySpellings:
     def test_rewrites_a_decomposed_constant_onto_the_composed_atom(self) -> None:
         spelling = kb_query_spellings(MIXED)
@@ -154,10 +163,35 @@ class TestResolveQuerySpellings:
         assert resolve_query_spellings(line, spelling) == line
 
     def test_review_required_question_is_never_rewritten(self) -> None:
-        """Its constant is the user's original question, not a KB value."""
-        spelling = kb_query_spellings(MIXED)
-        line = f'review_required("{nfd("서울")} 인구는?")?'
-        assert resolve_query_spellings(line, spelling) == line
+        """Its constant is the user's original question, not a KB value.
+
+        The whole question deliberately is a resolvable map key: changing the
+        table entry from ``()`` to ``(0,)`` therefore rewrites it and fails this
+        pin, unlike a longer question that merely contains a mapped substring.
+        """
+        spelling = {nfc("서울"): nfc("서울")}
+        line = f'review_required("{nfd("서울")}")?'
+        assert resolve_query_spellings(line, spelling) is line
+
+    def test_unknown_policy_predicate_resolves_every_position(self) -> None:
+        spelling = {
+            nfc("삼성"): nfd("삼성"),
+            nfc("보류"): nfd("보류"),
+        }
+        line = f'needs_review("{nfc("삼성")}", "{nfc("보류")}")?'
+        assert resolve_query_spellings(line, spelling) == (
+            f'needs_review("{nfd("삼성")}", "{nfd("보류")}")?'
+        )
+
+    def test_conflict_intentionally_uses_the_policy_fallback(self) -> None:
+        spelling = {
+            nfc("삼성"): nfd("삼성"),
+            nfc("보류"): nfd("보류"),
+        }
+        line = f'conflict("{nfc("삼성")}", "{nfc("보류")}")?'
+        assert resolve_query_spellings(line, spelling) == (
+            f'conflict("{nfd("삼성")}", "{nfd("보류")}")?'
+        )
 
     def test_variables_and_bare_tokens_are_left_alone(self) -> None:
         spelling = kb_query_spellings(MIXED)

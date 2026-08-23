@@ -2804,6 +2804,11 @@ _QUERY_VALUE_POSITIONS: dict[str, tuple[int, ...]] = {
     "count": (0,),
     "review_required": (),
 }
+# A table miss deliberately means "hand-authored policy predicate", whose every
+# argument is a value. Keep `conflict` on that path, but make a newly added
+# built-in declare its safe positions instead of silently inheriting the policy
+# fallback (which would include a relation or question-string axis).
+assert set(_QUERY_VALUE_POSITIONS) == QUERY_PREDICATES - {"conflict"}
 
 
 def query_amount_digit_near_matches(
@@ -2947,7 +2952,9 @@ def resolve_query_spellings(line: str, spelling: dict[str, str]) -> str:
     and ``review_required``'s question string are left alone.
 
     A predicate this module does not know is a policy predicate, and EVERY
-    position of one is resolved. Resolving only position 0 would leave a folded
+    position of one is resolved. The table-completeness assertion beside
+    ``_QUERY_VALUE_POSITIONS`` prevents a newly added built-in from reaching
+    this fallback by omission. Resolving only position 0 would leave a folded
     KB's hand-written policy queries unable to name their own values at the
     positions past it; both the report and the router call THIS function, so
     that choice would not make them disagree with each other — it would make
