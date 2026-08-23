@@ -16,6 +16,7 @@ never a normalized synthesis, so a uniformly decomposed KB keeps its spelling.
 """
 from __future__ import annotations
 
+from pathlib import Path
 import unicodedata
 
 import common
@@ -129,6 +130,47 @@ class TestCanonicallyEquivalentSpellingsCollapse:
         ]
         out = common.dedup_engine_atoms(rows)
         assert len(out) == 1
+
+    def test_skill_describes_the_live_object_and_relation_axis_boundary(self):
+        """The operator-facing skill must not drift back to pre-#342 behavior.
+
+        Bound the prose assertion to the resolved-merge bullet, then prove each
+        semantic anchor with the live identity function. This prevents a tidy
+        but false blanket claim that every Unicode/alias spelling now collapses.
+        The compiler call-site is covered end to end by test_compile_dedup.sh.
+        """
+        skill = (
+            Path(__file__).resolve().parents[2] / "skills" / "factlog" / "SKILL.md"
+        ).read_text(encoding="utf-8")
+        bullet = skill.split("- When the merge *resolved*", 1)[1].split(
+            "- A typed literal", 1
+        )[0]
+        said = " ".join(bullet.split())
+
+        assert "common.engine_atom_key" in said
+        assert "same relation spelling" in said
+        assert "**single** `accepted.dl` atom" in said
+        assert "alias and canonical names" in said
+        assert "separate atoms (#386)" in said
+        assert "dedup on the raw triple" not in said
+        assert "both spellings still reach `accepted.dl`" not in said
+
+        object_variants = [
+            _row("연구소", "소속", _nfc("한국대학교")),
+            _row("연구소", "소속", _nfd("한국대학교")),
+        ]
+        relation_variants = [
+            _row("연구소", _nfc("소속"), "한국대학교"),
+            _row("연구소", _nfd("소속"), "한국대학교"),
+        ]
+        alias_and_canonical = [
+            _row("삼성", "CEO", "이재용"),
+            _row("삼성", "대표", "이재용"),
+        ]
+
+        assert len(common.dedup_engine_atoms(object_variants)) == 1
+        assert len(common.dedup_engine_atoms(relation_variants)) == 2
+        assert len(common.dedup_engine_atoms(alias_and_canonical)) == 2
 
     def test_subject_axis_nfc_and_nfd_are_one_atom(self):
         rows = [
