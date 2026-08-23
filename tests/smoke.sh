@@ -22,6 +22,12 @@
 # Usage:
 #   bash tests/smoke.sh
 #
+# Every run builds a fresh venv and KB inside one private temporary workspace.
+# The workspace also owns the isolated config and is removed on normal exit,
+# failure, HUP, INT, or TERM. SIGKILL cannot be trapped and may leave it behind.
+# There is no venv cache to preserve: Step 1 has always rebuilt and reinstalled
+# the environment on every invocation.
+#
 # Returns 0 if all checks pass, 1 on first failure.
 #
 # Acceptance checks (from unit u12):
@@ -31,7 +37,74 @@
 
 set -euo pipefail
 
-export XDG_CONFIG_HOME="$(mktemp -d)/factlog-test-cfg"  # isolate active-KB config (#62) from the dev machine
+WORK_ROOT=""
+ACTIVE_CHILD=""
+
+cleanup_workspace() {
+  if [ -z "$WORK_ROOT" ]; then
+    return 0
+  fi
+  case "$WORK_ROOT" in
+    /*) ;;
+    *)
+      echo "WARNING: refusing to clean unsafe smoke workspace: '$WORK_ROOT'" >&2
+      return 1
+      ;;
+  esac
+  case "$WORK_ROOT" in
+    /|/tmp|/var/tmp|/private/tmp)
+      echo "WARNING: refusing to clean broad smoke workspace: '$WORK_ROOT'" >&2
+      return 1
+      ;;
+  esac
+  if ! rm -rf -- "$WORK_ROOT"; then
+    echo "WARNING: could not remove smoke workspace: $WORK_ROOT" >&2
+    return 1
+  fi
+}
+
+terminate_active_child() {
+  if [ -z "$ACTIVE_CHILD" ] || ! kill -0 "$ACTIVE_CHILD" 2>/dev/null; then
+    return 0
+  fi
+  kill -TERM "$ACTIVE_CHILD" 2>/dev/null || true
+  local attempt
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    if ! kill -0 "$ACTIVE_CHILD" 2>/dev/null; then
+      break
+    fi
+    sleep 0.05
+  done
+  if kill -0 "$ACTIVE_CHILD" 2>/dev/null; then
+    kill -KILL "$ACTIVE_CHILD" 2>/dev/null || true
+  fi
+  wait "$ACTIVE_CHILD" 2>/dev/null || true
+  ACTIVE_CHILD=""
+}
+
+exit_with_cleanup() {
+  local rc=$?
+  trap - EXIT HUP INT TERM
+  cleanup_workspace || true
+  exit "$rc"
+}
+
+signal_with_cleanup() {
+  local rc="$1"
+  trap - EXIT HUP INT TERM
+  terminate_active_child
+  cleanup_workspace || true
+  exit "$rc"
+}
+
+trap exit_with_cleanup EXIT
+trap 'signal_with_cleanup 129' HUP
+trap 'signal_with_cleanup 130' INT
+trap 'signal_with_cleanup 143' TERM
+
+WORK_ROOT="$(mktemp -d)"
+
+export XDG_CONFIG_HOME="$WORK_ROOT/config-home"  # isolate active-KB config (#62) from the dev machine
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -40,8 +113,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SAMPLE_KB="$PLUGIN_ROOT/examples/sample-kb"
 
-SMOKE_VENV="/tmp/factlog-smoke-venv"
-SMOKE_KB="/tmp/factlog-smoke-kb"
+SMOKE_VENV="$WORK_ROOT/venv"
+SMOKE_KB="$WORK_ROOT/kb"
 PYTHON="$SMOKE_VENV/bin/python"
 
 pass=0
@@ -70,10 +143,19 @@ assert_nonempty() {
   fi
 }
 
+run_step() {
+  "$@" &
+  ACTIVE_CHILD=$!
+  local rc=0
+  wait "$ACTIVE_CHILD" || rc=$?
+  ACTIVE_CHILD=""
+  return "$rc"
+}
+
 assert_exit0() {
   local label="$1"
   shift
-  if "$@"; then
+  if run_step "$@"; then
     ok "$label exit 0"
   else
     fail_msg "$label exited non-zero"
@@ -95,13 +177,12 @@ assert_grep() {
 # Step 1: fresh virtualenv + pip install
 # ---------------------------------------------------------------------------
 echo "=== Step 1: create venv + install requirements ==="
-rm -rf "$SMOKE_VENV"
-python3 -m venv "$SMOKE_VENV"
-"$SMOKE_VENV/bin/pip" install --quiet -r "$PLUGIN_ROOT/requirements.txt"
+run_step python3 -m venv "$SMOKE_VENV"
+run_step "$SMOKE_VENV/bin/pip" install --quiet -r "$PLUGIN_ROOT/requirements.txt"
 ok "pip install -r requirements.txt"
 
 # Install factlog package itself so 'python -m factlog' works from anywhere.
-"$SMOKE_VENV/bin/pip" install --quiet -e "$PLUGIN_ROOT"
+run_step "$SMOKE_VENV/bin/pip" install --quiet -e "$PLUGIN_ROOT"
 ok "pip install -e factlog"
 
 # ---------------------------------------------------------------------------
@@ -116,8 +197,7 @@ assert_exit0 "factlog doctor" "$PYTHON" -m factlog doctor
 # ---------------------------------------------------------------------------
 echo ""
 echo "=== Step 3: init KB + seed from sample-kb ==="
-rm -rf "$SMOKE_KB"
-"$PYTHON" -m factlog init --target "$SMOKE_KB"
+run_step "$PYTHON" -m factlog init --target "$SMOKE_KB"
 ok "factlog init --target $SMOKE_KB"
 
 # Seed deterministic content from sample-kb (candidates, sources, pages,
