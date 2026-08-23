@@ -95,6 +95,30 @@ LINK_TARGETS = [
     pytest.param(unreadable_target, id="reachable-but-unreadable"),
 ]
 
+SYMLINK_NOTICE = (
+    "the symlink is gone — the config path is a regular file now; its original "
+    "target was left unchanged"
+)
+
+
+def seed_readable_symlink(
+    config_home: Path, tmp_path: Path, *, root: str = "/real/kb", lang: str = "ko"
+) -> tuple[Path, Path, bytes, str]:
+    """A normal dotfiles-style config link with a relative, unresolved target."""
+    path = config_file(config_home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    target = tmp_path / "dotfiles" / "factlog-config.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        json.dumps({"root": root, "lang": lang}, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    before = target.read_bytes()
+    raw_target = os.path.relpath(target, path.parent)
+    path.symlink_to(raw_target)
+    assert factlog_config.config_status() == factlog_config.READABLE
+    return path, target, before, raw_target
+
 
 def resolved(path: Path) -> str:
     """The absolute form ``write_root`` stores, so a comparison is not testing
@@ -403,6 +427,7 @@ class TestDamagedConfigIsNotOverwritten:
         assert pointer(config_home) == resolved(scratch), proc.stdout
         assert not path.is_symlink(), "precondition: --activate replaces the link"
         assert "symlink" in proc.stdout, f"the destroyed link is not mentioned: {proc.stdout}"
+        assert proc.stdout.count("the symlink is gone") == 1, proc.stdout
         assert "narration language" not in proc.stdout, (
             f"claims a language was lost from bytes it never read: {proc.stdout}"
         )
@@ -655,9 +680,205 @@ class TestUseOwnsTheSameDisclosures:
         assert pointer(config_home) == resolved(newkb)
         assert not path.is_symlink(), "precondition: use replaces the link"
         assert "symlink" in proc.stdout, f"the destroyed link is not mentioned: {proc.stdout}"
+        assert proc.stdout.count("the symlink is gone") == 1, proc.stdout
         assert "narration language" not in proc.stdout, (
             f"claims a language was lost from bytes it never read: {proc.stdout}"
         )
+
+
+class TestReadableConfigSymlinkReplacementDisclosure:
+    def test_use_names_the_loss_and_preserves_the_far_end(
+        self, tmp_path, config_home, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+        path, far_end, before, raw_target = seed_readable_symlink(
+            config_home, tmp_path
+        )
+        newkb = tmp_path / "newkb"
+        (newkb / "sources").mkdir(parents=True)
+
+        assert cli.main(["use", str(newkb)]) == 0
+        out = capsys.readouterr().out
+        notice = f"{SYMLINK_NOTICE}: {raw_target!r}"
+
+        assert out.count(notice) == 1, out
+        assert not path.is_symlink()
+        assert far_end.read_bytes() == before
+        assert json.loads(path.read_text(encoding="utf-8")) == {
+            "root": resolved(newkb),
+            "lang": "ko",
+        }
+
+    def test_init_activate_names_the_loss_once(
+        self, tmp_path, config_home, monkeypatch
+    ):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+        path, far_end, before, raw_target = seed_readable_symlink(
+            config_home, tmp_path
+        )
+        newkb = tmp_path / "newkb"
+
+        proc = run_init(
+            "--target", str(newkb), "--activate", config_home=config_home
+        )
+        notice = f"{SYMLINK_NOTICE}: {raw_target!r}"
+
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert proc.stdout.count(notice) == 1, proc.stdout
+        assert not path.is_symlink()
+        assert far_end.read_bytes() == before
+        assert json.loads(path.read_text(encoding="utf-8")) == {
+            "root": resolved(newkb),
+            "lang": "ko",
+        }
+
+    def test_default_first_root_write_discloses_and_preserves_language(
+        self, tmp_path, config_home, monkeypatch
+    ):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+        path, far_end, before, raw_target = seed_readable_symlink(
+            config_home, tmp_path, root=""
+        )
+        newkb = tmp_path / "newkb"
+
+        proc = run_init("--target", str(newkb), config_home=config_home)
+
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert proc.stdout.count(f"{SYMLINK_NOTICE}: {raw_target!r}") == 1
+        assert far_end.read_bytes() == before
+        assert json.loads(path.read_text(encoding="utf-8")) == {
+            "root": resolved(newkb),
+            "lang": "ko",
+        }
+
+    def test_no_write_preserves_link_and_prints_no_notice(
+        self, tmp_path, config_home, monkeypatch
+    ):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+        path, far_end, before, _ = seed_readable_symlink(
+            config_home, tmp_path
+        )
+
+        proc = run_init(
+            "--target", str(tmp_path / "scratch"), config_home=config_home
+        )
+
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert SYMLINK_NOTICE not in proc.stdout
+        assert path.is_symlink()
+        assert far_end.read_bytes() == before
+
+    def test_regular_config_keeps_existing_output(self, tmp_path, config_home):
+        old = tmp_path / "old"
+        write_pointer(config_home, old, lang="ko")
+        proc = run_init(
+            "--target",
+            str(tmp_path / "new"),
+            "--activate",
+            config_home=config_home,
+        )
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert SYMLINK_NOTICE not in proc.stdout
+
+    def test_notice_escapes_control_characters(
+        self, tmp_path, config_home, monkeypatch
+    ):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+        path = config_file(config_home)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        raw_target = "../dot\nfiles/config\x1b.json"
+        path.symlink_to(raw_target)
+
+        notice = cli._config_symlink_replacement_notice()
+
+        assert notice == f"{SYMLINK_NOTICE}: {raw_target!r}"
+        assert len(notice.splitlines()) == 1
+
+    def test_readlink_failure_keeps_the_generic_notice(
+        self, tmp_path, config_home, monkeypatch
+    ):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+        path = config_file(config_home)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.symlink_to("../target.json")
+
+        def fail_readlink(_self):
+            raise OSError("lost race")
+
+        monkeypatch.setattr(type(path), "readlink", fail_readlink)
+        assert cli._config_symlink_replacement_notice() == SYMLINK_NOTICE
+
+    def test_root_write_failure_prints_no_false_notice(
+        self, tmp_path, config_home, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+        path, far_end, before, _ = seed_readable_symlink(config_home, tmp_path)
+        newkb = tmp_path / "newkb"
+        (newkb / "sources").mkdir(parents=True)
+
+        def fail_root(_target):
+            raise OSError(28, "disk full")
+
+        monkeypatch.setattr(factlog_config, "write_root", fail_root)
+        assert cli.main(["use", str(newkb)]) == 1
+        captured = capsys.readouterr()
+
+        assert SYMLINK_NOTICE not in captured.out + captured.err
+        assert path.is_symlink()
+        assert far_end.read_bytes() == before
+
+    def test_activation_root_failure_prints_no_false_notice(
+        self, tmp_path, config_home, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+        path, far_end, before, _ = seed_readable_symlink(config_home, tmp_path)
+
+        def fail_root(_target):
+            raise OSError(28, "disk full")
+
+        monkeypatch.setattr(factlog_config, "write_root", fail_root)
+        assert (
+            cli.main(
+                [
+                    "init",
+                    "--target",
+                    str(tmp_path / "newkb"),
+                    "--activate",
+                ]
+            )
+            == 1
+        )
+        captured = capsys.readouterr()
+
+        assert SYMLINK_NOTICE not in captured.out + captured.err
+        assert path.is_symlink()
+        assert far_end.read_bytes() == before
+
+    def test_language_write_failure_cannot_hide_successful_root_replacement(
+        self, tmp_path, config_home, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+        path, far_end, before, raw_target = seed_readable_symlink(
+            config_home, tmp_path
+        )
+        newkb = tmp_path / "newkb"
+        (newkb / "sources").mkdir(parents=True)
+
+        def fail_lang(_language):
+            raise OSError(28, "disk full")
+
+        monkeypatch.setattr(factlog_config, "write_lang", fail_lang)
+        assert cli.main(["use", str(newkb), "--lang", "en"]) == 1
+        captured = capsys.readouterr()
+        notice = f"{SYMLINK_NOTICE}: {raw_target!r}"
+
+        assert (captured.out + captured.err).count(notice) == 1
+        assert not path.is_symlink()
+        assert far_end.read_bytes() == before
+        assert json.loads(path.read_text(encoding="utf-8")) == {
+            "root": resolved(newkb),
+            "lang": "ko",
+        }
 
 
 class TestImplicitTargetNeverLandsInTheCurrentDirectory:
@@ -909,6 +1130,60 @@ class TestSetup:
 
         assert pointer(config_home) == resolved(scratch), out
         assert str(active) in out
+
+    def test_late_doctor_failure_does_not_hide_or_repeat_symlink_loss(
+        self, tmp_path, config_home, monkeypatch, capsys
+    ):
+        path, far_end, before, raw_target = seed_readable_symlink(
+            config_home, tmp_path
+        )
+        checks = iter([True, False])
+        monkeypatch.setattr(cli, "_run_doctor_checks", lambda *a, **k: next(checks))
+        scratch = tmp_path / "scratch"
+
+        assert cli.main(["setup", "--target", str(scratch), "--activate"]) == 1
+        out = capsys.readouterr().out
+        notice = f"{SYMLINK_NOTICE}: {raw_target!r}"
+
+        assert out.count(notice) == 1, out
+        assert not path.is_symlink()
+        assert far_end.read_bytes() == before
+        assert pointer(config_home) == resolved(scratch)
+
+    def test_language_failure_before_summary_cannot_hide_symlink_loss(
+        self, tmp_path, config_home, monkeypatch, capsys
+    ):
+        path, far_end, before, raw_target = seed_readable_symlink(
+            config_home, tmp_path
+        )
+
+        def fail_lang(_language):
+            raise OSError(28, "disk full")
+
+        monkeypatch.setattr(factlog_config, "write_lang", fail_lang)
+        scratch = tmp_path / "scratch"
+
+        assert (
+            cli.main(
+                [
+                    "setup",
+                    "--target",
+                    str(scratch),
+                    "--activate",
+                    "--lang",
+                    "en",
+                ]
+            )
+            == 1
+        )
+        captured = capsys.readouterr()
+        notice = f"{SYMLINK_NOTICE}: {raw_target!r}"
+
+        assert (captured.out + captured.err).count(notice) == 1
+        assert "=== factlog setup: summary ===" not in captured.out
+        assert not path.is_symlink()
+        assert far_end.read_bytes() == before
+        assert pointer(config_home) == resolved(scratch)
 
     def test_closing_line_names_the_target_when_it_is_not_recorded(self, tmp_path, config_home, capsys):
         """The last line is the one a user (or an LLM) acts on.

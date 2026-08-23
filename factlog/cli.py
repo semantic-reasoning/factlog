@@ -802,16 +802,10 @@ class _Unreadable(NamedTuple):
     symlink branch needs no mirror: ``os.replace`` swaps the link and leaves the
     far end intact, so losing the indirection is the whole loss either way.
 
-    Scope, because the sentence above is about the fragments and not about every
-    symlinked config: every caller of this reaches it only inside the
-    ``config_status() == UNREADABLE`` branch, so "loses its indirection" is
-    disclosed for the configs *this* module classifies as damaged. A symlink
-    pointing at a **valid** config — the ordinary dotfiles arrangement, and the
-    most valuable symlinked case — is ``READABLE``, never reaches here, and is
-    still replaced by a regular file with nothing said about it. That is a known
-    gap rather than a promise kept: it predates this branch, sits outside the
-    damaged-config contract these fragments serve, and closing it means changing
-    what the writing paths do, not what they say.
+    The same wording now also serves readable symlinks through
+    ``_config_symlink_replacement_notice``. Root-writing callers capture it
+    before the swap and print it only after that swap succeeds; this class still
+    supplies the larger damaged-config explanation around the shared fragment.
     """
 
     reason: str
@@ -822,13 +816,41 @@ class _Unreadable(NamedTuple):
     lost_root: str
 
 
+_CONFIG_SYMLINK_REPLACEMENT = (
+    "the symlink is gone — the config path is a regular file now; its original "
+    "target was left unchanged"
+)
+
+
+def _config_symlink_replacement_notice() -> str | None:
+    """Describe the loss an atomic config write causes to a symlink.
+
+    Capture this before writing: ``os.replace`` swaps the link itself for the
+    staged regular file and leaves its far end untouched.  The raw target text
+    is useful recovery evidence, but it is rendered with ``repr`` so a target
+    containing a newline, a control character, or surrogate-escaped bytes
+    cannot forge another CLI line.  A readlink race must not hide the loss or
+    turn an otherwise valid write into a failure, so the generic notice remains.
+    """
+    path = factlog_config.config_path()
+    if not path.is_symlink():
+        return None
+    try:
+        raw_target = str(path.readlink())
+    except OSError:
+        return _CONFIG_SYMLINK_REPLACEMENT
+    return f"{_CONFIG_SYMLINK_REPLACEMENT}: {raw_target!r}"
+
+
 def _unreadable() -> _Unreadable:
     path = factlog_config.config_path()
     # Two questions, two predicates — see the class docstring. What a write
     # destroys is decided by the link alone, because `os.replace` swaps the link
     # and not its target, so the indirection goes whatever the far end holds.
     if path.is_symlink():
-        lost = lost_root = "the symlink is gone — it is a regular file now"
+        lost = lost_root = (
+            _config_symlink_replacement_notice() or _CONFIG_SYMLINK_REPLACEMENT
+        )
     else:
         lost = "any narration language in it is gone"
         lost_root = "any KB root it may still have held is gone"
@@ -1121,9 +1143,21 @@ def _apply_activation(
     beside it, which is how a false closing line ended up with no counter-evidence
     on screen.
     """
+    status = factlog_config.config_status()
+    replacing_symlink = (
+        _config_symlink_replacement_notice()
+        if status == factlog_config.READABLE
+        else None
+    )
     plan = _plan_activation(target, activate)
     if plan.write:
         _write_root_or_explain(command, target)
+        # Say this immediately after the write that destroyed the link. Setup
+        # can still fail later (language or final doctor), and activation_notes
+        # are repeated in its final summary, so this notice deliberately is not
+        # put in that list.
+        if replacing_symlink is not None:
+            print(f"{command}: {replacing_symlink}")
     print(f"{command}: {plan.summary}")
     if plan.hint:
         print(f"  {plan.hint}")
@@ -1284,8 +1318,18 @@ def cmd_use(args: argparse.Namespace) -> int:
     # broken symlink with a regular file, so asking `_unreadable()` at print time
     # would describe the file this command just created instead of the link it
     # destroyed — and describe it in the words of the other class.
-    replacing = _unreadable() if factlog_config.config_status() == factlog_config.UNREADABLE else None
+    status = factlog_config.config_status()
+    replacing = _unreadable() if status == factlog_config.UNREADABLE else None
+    replacing_symlink = (
+        _config_symlink_replacement_notice()
+        if status == factlog_config.READABLE
+        else None
+    )
     _write_root_or_explain("factlog use", target)
+    # The root write has already replaced the link. Disclose that fact before a
+    # requested language write, which may fail independently afterwards.
+    if replacing_symlink is not None:
+        print(f"factlog use: {replacing_symlink}")
     # --lang, when given, is set (or cleared) alongside the root in the same config
     # file; when omitted the existing language is preserved by write_root, so `use`
     # never silently drops a configured narration language.
