@@ -1376,10 +1376,122 @@ class TestSetup:
         notice = f"{SYMLINK_NOTICE}: {raw_target!r}"
 
         assert (captured.out + captured.err).count(notice) == 1
-        assert "=== factlog setup: summary ===" not in captured.out
+        assert "=== factlog setup: final environment check ===" in captured.out
+        assert "=== factlog setup: summary ===" in captured.out
+        assert "narration language NOT set" in captured.out
+        assert "cannot write the active-KB config" in captured.err
+        assert "out of space" in captured.err
+        assert "--lang was not applied" in captured.err
+        assert "could not be read" not in captured.out + captured.err
+        assert "narration language set" not in captured.out
         assert not path.is_symlink()
         assert far_end.read_bytes() == before
         assert pointer(config_home) == resolved(scratch)
+
+    @pytest.mark.parametrize(
+        ("language", "refusal"),
+        [("ko", "narration language NOT set"), ("", "narration language NOT cleared")],
+    )
+    def test_language_write_failure_is_summarised_after_the_final_doctor(
+        self, language, refusal, tmp_path, config_home, monkeypatch, capsys
+    ):
+        active = tmp_path / "active"
+        active.mkdir()
+        before = write_pointer(config_home, active, lang="en")
+        checks = []
+
+        def doctor(*_args, **_kwargs):
+            checks.append(True)
+            return True
+
+        def fail_lang(_language):
+            raise OSError(13, "permission denied")
+
+        monkeypatch.setattr(cli, "_run_doctor_checks", doctor)
+        monkeypatch.setattr(factlog_config, "write_lang", fail_lang)
+        scratch = tmp_path / "scratch"
+
+        assert cli.main(["setup", "--target", str(scratch), "--lang", language]) == 1
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+
+        assert len(checks) == 2, "setup stopped before its final doctor"
+        assert scratch.joinpath("sources").is_dir()
+        assert config_file(config_home).read_bytes() == before
+        assert "=== factlog setup: summary ===" in captured.out
+        assert f"done: created KB layout at {scratch}" in captured.out
+        assert f"→ {refusal}" in captured.out
+        other_refusal = (
+            "narration language NOT cleared"
+            if refusal.endswith("NOT set")
+            else "narration language NOT set"
+        )
+        assert other_refusal not in captured.out
+        assert "narration language set" not in captured.out
+        assert "narration language cleared" not in captured.out
+        assert combined.count("factlog setup: cannot write the active-KB config") == 1
+        assert "--lang was not applied" in captured.err
+        assert "factlog setup complete" not in combined
+        assert "could not be read" not in combined
+        assert "repair that file" not in combined
+        assert "move or remove" not in combined
+        assert f"factlog use {scratch} --lang" not in combined
+
+    def test_unwritable_config_directory_reaches_the_summary_with_its_real_diagnosis(
+        self, tmp_path, config_home, capsys
+    ):
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            pytest.skip("root ignores directory permissions, so nothing is unwritable")
+        active = tmp_path / "active"
+        active.mkdir()
+        before = write_pointer(config_home, active, lang="en")
+        path = config_file(config_home)
+        path.parent.chmod(0o500)
+        scratch = tmp_path / "scratch"
+
+        try:
+            assert cli.main(["setup", "--target", str(scratch), "--lang", "ko"]) == 1
+            captured = capsys.readouterr()
+
+            assert scratch.joinpath("sources").is_dir()
+            assert "=== factlog setup: final environment check ===" in captured.out
+            assert "=== factlog setup: summary ===" in captured.out
+            assert "narration language NOT set" in captured.out
+            assert "cannot write the active-KB config" in captured.err
+            assert "config directory" in captured.err
+            assert "is not writable" in captured.err
+            assert "config.json is not the obstacle" in captured.err
+            assert path.read_bytes() == before
+            assert not list(path.parent.glob("*.tmp"))
+        finally:
+            path.parent.chmod(0o700)
+
+    def test_final_doctor_failure_keeps_environment_failure_as_the_closing_error(
+        self, tmp_path, config_home, monkeypatch, capsys
+    ):
+        active = tmp_path / "active"
+        active.mkdir()
+        before = write_pointer(config_home, active, lang="en")
+        checks = iter([True, False])
+        monkeypatch.setattr(cli, "_run_doctor_checks", lambda *a, **k: next(checks))
+        monkeypatch.setattr(
+            factlog_config,
+            "write_lang",
+            lambda _language: (_ for _ in ()).throw(OSError(28, "disk full")),
+        )
+        scratch = tmp_path / "scratch"
+
+        assert cli.main(["setup", "--target", str(scratch), "--lang", "ko"]) == 1
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+
+        assert "=== factlog setup: summary ===" in captured.out
+        assert "narration language NOT set" in captured.out
+        assert "environment still not satisfied" in captured.err
+        assert "the KB at" not in captured.err
+        assert "--lang was not applied" not in captured.err
+        assert "factlog setup complete" not in combined
+        assert config_file(config_home).read_bytes() == before
 
     def test_closing_line_names_the_target_when_it_is_not_recorded(self, tmp_path, config_home, capsys):
         """The last line is the one a user (or an LLM) acts on.

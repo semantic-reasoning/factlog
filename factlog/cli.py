@@ -2915,6 +2915,8 @@ def cmd_setup(args: argparse.Namespace) -> int:
     Idempotent and safe to re-run: deps are only installed when pyrewire is
     missing/too old, and `cmd_init` skips files/dirs that already exist.
     """
+    from factlog.common import FactlogError
+
     actions: list[str] = []
 
     # Validate --lang up front (same contract/rc as `factlog lang`) so an invalid
@@ -2988,6 +2990,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
     # sibling path open. Re-read the status here rather than reusing the plan's,
     # because `--activate` may have just replaced the damaged file with a valid one.
     lang_deferred = False
+    lang_write_error: str | None = None
     if lang_normalized is not None:
         if factlog_config.config_status() == factlog_config.UNREADABLE:
             lang_deferred = True
@@ -3009,8 +3012,25 @@ def cmd_setup(args: argparse.Namespace) -> int:
                 f"and writing it would {said.cost} — {recovery}"
             )
         else:
-            phrase = _apply_lang(lang_normalized, "factlog setup")
-            actions.append(f"{phrase} (assistant prose only)")
+            try:
+                phrase = _apply_lang(lang_normalized, "factlog setup")
+            except FactlogError as exc:
+                # Language is optional setup work, and the KB may already have
+                # been created (or activated) successfully. Preserve the exact
+                # write-boundary diagnosis, but finish the final doctor and
+                # summary so those completed actions are not hidden. This catch
+                # deliberately lives here rather than in `_apply_lang`: `lang`
+                # and `use --lang` keep their immediate-failure contract.
+                lang_write_error = str(exc)
+                print(lang_write_error, file=sys.stderr)
+                requested_action = "set" if lang_normalized else "cleared"
+                notes.append(
+                    f"narration language NOT {requested_action}: "
+                    "the active-KB config write failed "
+                    "(see error above)"
+                )
+            else:
+                actions.append(f"{phrase} (assistant prose only)")
 
     print("\n=== factlog setup: final environment check ===")
     # gate="setup": a missing git is reported but does not fail setup, whose
@@ -3058,6 +3078,15 @@ def cmd_setup(args: argparse.Namespace) -> int:
             f"\nfactlog setup: the KB at {target} is ready, but --lang was not applied "
             f"because {factlog_config.config_path()} {said.reason} (see above). "
             f"{recovery[0].upper()}{recovery[1:]}.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if final_ok and lang_write_error is not None:
+        print(
+            f"\nfactlog setup: the KB at {target} is ready, but --lang was not applied "
+            "because the active-KB config could not be written (see error above). "
+            "Resolve the reported write problem, then re-run setup with --lang.",
             file=sys.stderr,
         )
         return 1
