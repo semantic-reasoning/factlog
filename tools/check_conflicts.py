@@ -132,9 +132,10 @@ def _report_resolved_merges(scan: ConflictScan) -> None:
 
     **The equivalence message is gated on the atom count, not assumed.** "They
     collapse into a single ``accepted.dl`` atom" is a claim about the compiler,
-    and this module's group is not the compiler's key: grouping canonicalizes the
-    relation through ``policy/relation-aliases.md`` while ``engine_atom_key``
-    keeps it verbatim. Under ``CEO -> 대표``, ``삼성 CEO NFC(이재용)`` and
+    and this module's group is not the compiler's key: grouping canonicalizes
+    declared aliases and NFC-folds the resulting relation, while
+    ``engine_atom_key`` keeps it verbatim. Under ``CEO -> 대표``,
+    ``삼성 CEO NFC(이재용)`` and
     ``삼성 대표 NFD(이재용)`` are one group here and two atoms there — measured,
     with the advisory printing "single atom" at exit 0 while ``accepted.dl``
     carried both. The reader was told the duplicate was already gone and left the
@@ -199,8 +200,8 @@ def _report_resolved_merges(scan: ConflictScan) -> None:
             print(line)
         print(
             "  These spellings are canonically equivalent, so this check treats them as "
-            "one value — it canonicalizes the relation through "
-            "policy/relation-aliases.md before grouping. The engine atom does not: it "
+            "one value — it canonicalizes declared aliases and NFC-folds the resulting "
+            "relation before grouping. The engine atom does not: it "
             "keys the relation verbatim, so each relation spelling still enters "
             "facts/accepted.dl as a separate atom and the duplicate survives this "
             "run's exit 0. Unify the relation spelling as well as the value at the "
@@ -243,22 +244,13 @@ def _report_resolved_merges(scan: ConflictScan) -> None:
     )
 
 
-def _report_split_relations(scan: ConflictScan) -> None:
-    """Disclose subjects whose single-valued relation is written several ways.
+def _report_relation_atom_divergence(scan: ConflictScan) -> None:
+    """Disclose conflict-free relation spellings that compile as separate atoms.
 
-    Membership folds and grouping does not, so those rows *pass* the membership
-    test, enter the grouping loop, and then split on the relation axis into pairs
-    that never meet. When each pair holds one value the module reports "0
-    conflicts" about rows that, read together, contradict each other — and the
-    likeliest mixed KB is exactly this one, because a normalization form is a
-    property of the source document and the filesystem it came from, so a whole
-    row flips at once rather than one field.
-
-    Deferring the *grouping* decision is the #210 maintainer call this change
-    leaves open (see ``collect_conflicts``). Deferring the *disclosure* is not the
-    same thing: at exit 0 there is no CONFLICT line to hang the
-    "(relation written in N mixed Unicode normalization forms)" suffix on, so
-    without this the run says nothing at all.
+    Conflict grouping compares canonically equivalent relation spellings
+    together, but the engine atom identity still preserves the relation bytes.
+    At exit 0 there is no CONFLICT line to carry the spelling list, so disclose
+    the remaining compiler divergence before finalize writes separate atoms.
 
     Pairs already covered by a CONFLICT line are skipped — that line carries the
     suffix and the spelling list on stderr, and repeating it here would double-
@@ -280,16 +272,15 @@ def _report_split_relations(scan: ConflictScan) -> None:
     # each have one. There is no single axis to name — the pair is the count.
     print(
         f"check_conflicts: {len(lines)} (subject, relation) pair(s) whose single-valued relation "
-        "is written in several Unicode normalization forms, so their rows were compared "
-        "separately:"
+        "is written in several Unicode normalization forms:"
     )
     for line in lines:
         print(line)
     print(
-        "  Relation-name membership is folded but grouping is not, so rows spelled one way "
-        "were never compared against rows spelled the other, and a contradiction between "
-        "them would not be reported above. Unify the spelling in sources/ and re-collect, "
-        "then re-run."
+        "  Conflict analysis compared these spellings together as one relation. The current "
+        "compiler still preserves relation spelling in atom identity, so if finalize proceeds "
+        "they enter accepted.dl as separate relation/3 atoms. Unify the spelling in sources/ "
+        "and re-collect, then re-run."
     )
 
 
@@ -388,28 +379,25 @@ def main(argv: list[str] | None = None) -> int:
     if not conflicts:
         print(f"check_conflicts: 0 conflicts across {len(single_valued)} single-valued relation(s)")
         _report_resolved_merges(scan)
-        _report_split_relations(scan)
+        _report_relation_atom_divergence(scan)
         return 0
 
     print(f"check_conflicts: {len(conflicts)} conflict(s) found", file=sys.stderr)
     _report_resolved_merges(scan)
-    _report_split_relations(scan)
+    _report_relation_atom_divergence(scan)
     aliases = relation_aliases()
     # Whether folding merged spellings anywhere. This is an *extra* disclosure,
     # never a replacement for the supersede guidance: a contradiction that a mixed
     # spelling merely joined is still a contradiction, and unifying the spelling
     # does not resolve it.
     any_mixed = False
-    # Membership is folded but grouping is not (#210 is a maintainer call, see
-    # collect_conflicts), so one contradiction written with the relation spelled
-    # two ways surfaces as two CONFLICT lines that are byte-different and look
-    # identical. Collapsing them means folding the grouping key, which is exactly
-    # the deferred decision — so disclose instead, as the subject axis does.
+    # Grouping folds the relation under NFC and restores one authored spelling,
+    # so disclose the other spellings for the same provenance reason as the
+    # subject axis: the representative does not grep to every source row.
     # ``relation_variants`` counts spellings over every pair examined, not only
-    # the conflicting ones: a row hiding under the other spelling is invisible to
-    # this conflict whether or not it happens to conflict by itself, and that is
-    # the fact worth naming. Re-keyed on the fold so the reported subject (a raw
-    # spelling) finds it. The count comes from the rows, not from
+    # conflicting ones. Re-keyed on the fold so the reported subject and relation
+    # representatives find their provenance channel. The count comes from rows,
+    # not from
     # policy/single-valued.md: sv holds folded names, so several policy spellings
     # collapse to one element there.
     relation_spellings = {(_fold(s), r): names for (s, r), names in scan.relation_variants.items()}

@@ -2505,10 +2505,8 @@ def cmd_status(args: argparse.Namespace) -> int:
     # written NFC in one row and NFD in another read 3 here and 2 in
     # accepted.dl).
     #
-    # Folding needs the RELATION byte-identical across the rows: engine_atom_key
-    # folds subject and object under NFC and keeps the relation verbatim
-    # (#210/#345, pinned by tests/unit/test_conflict_unicode.py's
-    # test_alias_merged_rows_keep_the_separate_atom_wording). Two rows whose
+    # Folding still needs the RELATION byte-identical across the rows:
+    # engine_atom_key keeps it verbatim until #386. Two rows whose
     # relations differ only by normalization stay two atoms, and their keys
     # render identically on screen — do not "fix" that here.
     #

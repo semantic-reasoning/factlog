@@ -60,7 +60,7 @@ printf '%s' "$out" | grep -qE "vocabulary: +[0-9]+ entit\(y/ies\), 1 literal\(s\
 # and this one must not leave a folded ledger behind for them.
 #
 # Only subject and object vary by normalization. engine_atom_key keeps the
-# RELATION verbatim (#210/#345), so writing both rows wholly in NFD/NFC would
+# RELATION verbatim until #386, so writing both rows wholly in NFD/NFC would
 # stop exercising the fold while looking identical on screen.
 FKB="$(mktemp -d)/wiki"
 # Full scaffold: compile_facts refuses a root missing pages/ or decisions/.
@@ -204,6 +204,8 @@ nfd = lambda s: unicodedata.normalize("NFD", s)
 (kb / "policy" / "single-valued.md").write_text(f"# single-valued\n- {nfc('소속')}\n", encoding="utf-8")
 if axis == "subject":     # a REAL contradiction, hidden by a mixed subject
     rows = [(nfc("김철수"), nfc("소속"), "AAA"), (nfd("김철수"), nfc("소속"), "BBB")]
+elif axis == "relation":  # a REAL contradiction, formerly split by relation
+    rows = [(nfc("김철수"), nfc("소속"), "AAA"), (nfc("김철수"), nfd("소속"), "BBB")]
 else:                     # NOT a contradiction: one value, two spellings
     rows = [(nfc("김철수"), nfc("소속"), nfc("한국대")), (nfc("김철수"), nfc("소속"), nfd("한국대"))]
 (kb / "facts" / "candidates.csv").write_text(
@@ -220,6 +222,12 @@ out="$("$PYTHON" -m factlog status --target "$KBX" 2>&1)"
 [ "$grc" -eq 1 ] && printf '%s' "$out" | grep -qE "conflicts: +1 " \
   && ok "mixed-subject KB: status agrees with the gate (both see the contradiction)" \
   || bad "mixed-subject divergence: gate rc=$grc, $(printf '%s' "$out" | grep conflicts)"
+divergence_case relation
+set +e; "$PYTHON" "$CHK" --wiki "$KBX" >/dev/null 2>&1; grc=$?; set -e
+out="$("$PYTHON" -m factlog status --target "$KBX" 2>&1)"
+[ "$grc" -eq 1 ] && printf '%s' "$out" | grep -qE "conflicts: +1 " \
+  && ok "mixed-relation KB: status agrees with the folded gate" \
+  || bad "mixed-relation divergence: gate rc=$grc, $(printf '%s' "$out" | grep conflicts)"
 divergence_case object
 set +e; "$PYTHON" "$CHK" --wiki "$KBX" >/dev/null 2>&1; grc=$?; set -e
 out="$("$PYTHON" -m factlog status --target "$KBX" 2>&1)"

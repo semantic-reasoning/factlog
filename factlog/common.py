@@ -852,12 +852,11 @@ def _relation_names_from(path: Path) -> set[str]:
     `backtick`-quoted token if present, else the first whitespace token (quote a
     name that contains spaces). Absent file → empty set.
 
-    Names are returned VERBATIM — no NFC coercion. single-valued.md's consumer
-    (factlog.conflicts._canonicalize) deliberately preserves an NFD-authored name
-    so a non-participating relation is reported exactly as written (#210/#227),
-    and normalizing here breaks its NFD membership test. attribute-relations.md
-    handles the same problem without touching the fact side; see
-    _attribute_relations_from."""
+    Names are returned VERBATIM — no NFC coercion. The conflict core folds them
+    for membership and grouping, then restores an authored representative so a
+    uniformly NFD relation is still reported as written (#210/#345).
+    attribute-relations.md handles the same problem without touching the fact
+    side; see _attribute_relations_from."""
     if not path.is_file():
         return set()
     names: set[str] = set()
@@ -1828,23 +1827,19 @@ def engine_atom_key(row: dict[str, str]) -> tuple[str, str, str]:
       one group there, so the checker remains stricter on that axis. See
       ``factlog.conflicts.collect_conflicts``.
     * *relation* — left verbatim for engine atom identity and corroboration's
-      general fact/source list. The conflict core canonicalizes declared aliases
-      for the checker, status, and competing-values clause, while preserving
-      non-participating spellings. NFC-folding the remaining relation axis is the
-      deferred #210 call: it changes which
-      rows collide on an axis where "no silent NFC coercion for a
-      non-participating relation" was a deliberate promise, and deciding that is
-      a maintainer's, not this fix's. So two spellings of one relation still
-      make two ``relation/3`` atoms.
+      general fact/source list until #386. The conflict core already folds this
+      axis for the checker, status, and competing-values clause while restoring
+      an authored spelling for reports. Thus two spellings of one relation still
+      make two ``relation/3`` atoms even though conflict analysis compares them
+      together.
 
       Read that as "this function does not fold it", never as "the axis is
       unfolded". ``canonical_atoms`` NFC-folds the relation before its alias
       lookup, so the SAME ``accepted.dl`` can carry two ``relation/3`` atoms and
       one ``canonical/3`` atom for one aliased pair; and ``_canonical_value``
       folds a query's relation argument, so one spelling typed by the user
-      already matches both. The #210/#345 question is therefore not whether to
-      start folding this axis but whether to make the rest agree with the two
-      places that already do.
+      already matches both. #386 tracks making engine identity and its provenance
+      maps agree with those folded consumers.
 
     NFC only — never NFKC, never casefold. Fullwidth ``ＡＢＣ`` and ``ABC``, and
     ``a`` and ``A``, are different values and must stay different atoms.
@@ -1906,7 +1901,7 @@ def kb_spellings(rows: list[dict[str, str]]) -> dict[str, str]:
 
     The diagnostic used to differ by spelling — one form drew a loud
     ``entity_not_accepted``, another a silent ``rows: 0``. It no longer does, and
-    the reason is worth knowing before re-deriving this decision (#210/#345):
+    the reason is worth knowing before re-deriving this decision (#342):
     :func:`kb_query_spellings` now resolves query constants, and on the rejected
     file ``삼성`` and ``서울`` are each spelled one way, so both ENDPOINTS resolve
     and clear the membership gate. Only ``이재용`` is spelled two ways, and it is
@@ -2722,7 +2717,8 @@ quoted_constants = _quoted_constants
 # position (see resolve_query_spellings).
 #
 # The RELATION argument is deliberately absent from every entry. ``engine_atom_key``
-# folds the subject and object axes and leaves the relation axis alone, so one
+# folds the subject and object axes and leaves the relation axis alone until
+# #386, so one
 # ``accepted.dl`` may legitimately hold two spellings of one relation name and
 # there is no single spelling to resolve a relation constant onto. Relation
 # matching handles its own folding through ``_canonical_value`` on both sides
@@ -2761,9 +2757,9 @@ def kb_query_spellings(facts: list[dict[str, str]]) -> dict[str, str]:
       compiled by an older factlog, or an ``accepted.dl`` edited by hand, is
       described correctly by this map and incorrectly by the other.
     * the value pool is ``value_set`` — subjects and objects only, never relation
-      names. Relation names must stay out: this PR leaves the relation axis
-      unfolded, and a value that is also a relation name would otherwise take
-      part in a fold it has no representative for.
+      names. Relation names must stay out while engine identity leaves that axis
+      unfolded (#386), or a value that is also a relation name would otherwise
+      take part in a fold it has no representative for.
 
     **A value spelled more than one way is refused, not guessed.** The refusal
     is on the RAW spellings: a key is kept only when the whole KB writes that

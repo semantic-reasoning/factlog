@@ -162,6 +162,31 @@ printf '%s' "$co" | grep -qF "A사 (1 src); B사 (1 src)" \
   && ok "both competing values listed under one subject" \
   || bad "competing values wrong: $(printf '%s' "$co" | tail -2)"
 
+# --- mixed relation spellings share one competing-values pair (#345) --------
+RKB="$(mktemp -d)/wiki"
+"$PYTHON" -m factlog init --target "$RKB" >/dev/null
+printf 'a\n' > "$RKB/sources/a.md"
+printf 'b\n' > "$RKB/sources/b.md"
+"$PYTHON" - "$RKB" <<'PY'
+import sys, unicodedata
+from pathlib import Path
+kb = Path(sys.argv[1])
+nfc = lambda s: unicodedata.normalize("NFC", s)
+nfd = lambda s: unicodedata.normalize("NFD", s)
+(kb / "policy" / "single-valued.md").write_text(f"# single-valued\n- {nfc('소속')}\n", encoding="utf-8")
+(kb / "facts" / "candidates.csv").write_text(
+    "subject,relation,object,source,status,confidence,note\n"
+    f"김철수,{nfc('소속')},A사,sources/a.md,confirmed,0.9,\n"
+    f"김철수,{nfd('소속')},B사,sources/b.md,confirmed,0.9,\n",
+    encoding="utf-8",
+)
+PY
+co="$("$PYTHON" "$CORR" --wiki "$RKB" 2>&1)"
+printf '%s' "$co" | grep -qF "A사 (1 src); B사 (1 src)" \
+  && [ "$(printf '%s' "$co" | grep -c 'with competing values')" -eq 1 ] \
+  && ok "#345: mixed relation spellings share one competing pair" \
+  || bad "#345: mixed relation support was split: $(printf '%s' "$co" | tail -3)"
+
 # --- one source backing two spellings counts once (#325) ---------------------
 # The report aggregates source SETS per folded value rather than summing counts:
 # both spellings come from one file, and adding two per-spelling counts would

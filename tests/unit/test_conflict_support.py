@@ -106,6 +106,25 @@ def test_aliases_group_under_canonical_relation_and_preserve_sources():
     }
 
 
+def test_canonical_relation_spellings_share_one_support_pair():
+    relation = "소속"
+    nfd_relation = unicodedata.normalize("NFD", relation)
+    facts = [
+        row("S", relation, "A", "sources/a.md"),
+        row("S", nfd_relation, "B", "sources/b.md"),
+    ]
+    expected = {
+        ("S", relation): {
+            "A": ("sources/a.md",),
+            "B": ("sources/b.md",),
+        }
+    }
+    for permutation in itertools.permutations(facts):
+        assert conflicts.collect_conflict_support(
+            list(permutation), {relation}
+        ) == expected
+
+
 def test_support_is_order_stable_and_uses_written_subject_representative():
     nfd_subject = unicodedata.normalize("NFD", "김철수")
     facts = [

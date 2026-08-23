@@ -117,6 +117,16 @@ if run_conflicts; then bad "NFD relation: real value difference (5000억 vs 5400
 printf '# single-valued\n\n- 주_속성\n' > "$KB/policy/single-valued.md"
 rm -f "$KB/policy/typed-relations.md"
 
+# --- #345: relation NFC/NFD spellings share one conflict group ---------------
+NFD_OWNER="$("$PYTHON" -c 'import unicodedata; print(unicodedata.normalize("NFD","소속"))')"
+printf '# single-valued\n\n- 소속\n' > "$KB/policy/single-valued.md"
+csv '김철수,소속,A사,sources/x.md,confirmed,0.9,' "김철수,$NFD_OWNER,B사,sources/x.md,confirmed,0.9,"
+cout="$("$PYTHON" "$CONFLICTS" --wiki "$KB" 2>&1 || true)"
+if [ "$(printf '%s' "$cout" | grep -c '  CONFLICT:')" -eq 1 ]; then ok "#345: mixed relation spellings produce one conflict"; else bad "#345: mixed relation conflict was split or missed"; fi
+csv '김철수,소속,A사,sources/x.md,confirmed,0.9,' "김철수,$NFD_OWNER,A사,sources/x.md,confirmed,0.9,"
+cout="$("$PYTHON" "$CONFLICTS" --wiki "$KB" 2>&1)"
+if printf '%s' "$cout" | grep -qF 'separate relation/3 atoms'; then ok "#345: conflict-free mixed relation spelling discloses engine divergence"; else bad "#345: engine relation divergence was silent"; fi
+
 # --- #227: canonicalize single-valued conflict detection over alias variants ---
 # Set up: published_year is single-valued; 게재연도 and 발행년도 are aliases.
 printf '# single-valued\n\n- published_year\n' > "$KB/policy/single-valued.md"

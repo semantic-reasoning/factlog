@@ -106,12 +106,13 @@ When policy files load successfully, `tools/check_conflicts.py`, `factlog
 status`, and the **competing-values section** of `tools/corroboration.py` all use
 the same authoritative grouping from `factlog.conflicts`. Declared aliases fold
 to the canonical relation name, typed objects group on their parsed scalar, and
-subjects plus untyped objects group under NFC equivalence. Thus
+subjects, relations, plus untyped objects group under NFC equivalence. Thus
 `amount(5400,"억")` and `amount(0.54,"조")` are one value at all three surfaces,
 while an ASCII/full-width pair is two values because the full-width side does
-not parse. Relation spellings outside a declared alias retain their written form
-for grouping and report provenance; NFC-folded single-valued membership does not
-silently rewrite the whole relation axis.
+not parse. Relation grouping treats NFC-equivalent spellings as one identity
+while restoring a spelling actually authored for report provenance. General
+engine `relation/3` atom identity still preserves relation bytes, so mixed
+spellings can remain separate atoms until #386 aligns that boundary.
 
 The three surfaces still have different roles and detail. `check_conflicts` is
 finalize's exit-1 gate and can disclose even resolved merges in detail; `status`

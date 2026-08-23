@@ -68,10 +68,11 @@ def _fold(value: str) -> str:
     amount-quote normalization on top of the Unicode fold, which would perturb
     the typed-literal key space this module builds through ``literal_types``.
 
-    One operation, three call sites, so: this is the *grouping* fold, applied to
-    subjects and objects inside this module. ``common.fold_relation_name`` is the
-    same NFC applied to a policy relation name for a *membership* test, and every
-    consumer that tests membership must use it (see its docstring).
+    One operation, three axes, so: this is the *grouping* fold, applied to
+    subjects, relations, and objects inside this module.
+    ``common.fold_relation_name`` is the same NFC exposed for policy relation
+    membership, and every consumer that tests membership must use it (see its
+    docstring).
     ``common.composed_spelling`` picks which raw spelling of a folded group to
     display. Nothing else should re-derive any of the three.
     """
@@ -351,12 +352,12 @@ class ConflictScan(NamedTuple):
       because "these are the same string written two ways" is false here and the
       reader needs the other sentence — including the part where the engine
       cannot reproduce the merge at all.
-    * *relation_variants* — ``{(reported subject, NFC relation): sorted raw
-      relation spellings}`` wherever one folded relation was written more than
-      one way for a subject. Membership folds but grouping does not, so those
-      rows sit in **separate** pairs: a contradiction between them is invisible
-      to this module, and at exit 0 nothing else in the run mentions the rows at
-      all. Keyed on all pairs, not only conflicting ones, for that reason.
+    * *relation_variants* — ``{(reported subject, NFC relation): sorted
+      canonicalized relation spellings}`` wherever one folded relation was
+      written more than one way for a subject. Membership and grouping both fold, while the
+      representative and this channel preserve authored provenance. Keyed on all
+      pairs because conflict-free mixed spellings still compile as separate
+      engine atoms until #386 aligns that identity.
     * *object_relations* — ``{reported object: sorted raw relation spellings}``
       per key: the relation names the rows behind each raw object were actually
       written under. Same key set as *object_variants*. Grouping canonicalizes
@@ -415,14 +416,13 @@ def _group_conflict_rows(
         obj = row["object"]
         spec = typed.get(canon) or typed.get(_fold(relation))
         key = _group_key(obj, spec)
-        pair = (_fold(row["subject"]), canon)
+        pair = (_fold(row["subject"]), _fold(canon))
         by_key.setdefault(pair, {}).setdefault(key, set()).add(obj)
         unfolded.setdefault(pair, {})[obj] = _group_key_unfolded(obj, spec)
         raw_subjects.setdefault(pair, set()).add(row["subject"])
         object_relations.setdefault(pair, {}).setdefault(obj, set()).add(relation)
-        split = (pair[0], _fold(canon))
-        raw_relations.setdefault(split, set()).add(canon)
-        relation_subjects.setdefault(split, set()).add(row["subject"])
+        raw_relations.setdefault(pair, set()).add(canon)
+        relation_subjects.setdefault(pair, set()).add(row["subject"])
         sources.setdefault(pair, {}).setdefault(key, set()).add(row.get("source", ""))
     return _ConflictGroups(
         by_key,
@@ -470,21 +470,21 @@ def collect_conflicts(
     would rewrite the reported subject spelling of unrelated relations and break
     byte-identity on inputs where folding merges nothing.
 
-    **Relation axis (#325):** it is two mechanisms, and only *grouping* is
-    deferred. Membership — whether a relation is declared single-valued at all —
-    is folded above, because it gates entry to the loop and
+    **Relation axis (#345):** membership and grouping both use NFC equivalence.
+    Membership — whether a relation is declared single-valued at all — is folded
+    above because it gates entry to the loop and
     ``common._relation_names_from`` does not normalize the names it reads from
     policy/single-valued.md. Left raw it was a byte comparison between two
     hand-written files, so a KB written uniformly in NFD never reached the check
     and exited 0 with a contradiction in it. That is a *wider* false negative
     than the mixed-subject one above — it needs no mixed spelling at all, just
     one consistently decomposed KB, which is the scenario ``_fold`` itself cites.
-    Grouping stays verbatim: two spellings of one relation remain two groups, and
-    the reported relation is byte-for-byte as written. Folding that as well is
-    mechanically possible and the #210 pins survive it, so "the pins forbid it"
-    would be a false reason; the real reason is that it changes which rows
-    collide, and how far #210's "no silent NFC coercion for non-participating
-    relations" was meant to reach is a maintainer's call. Raised as a follow-up.
+    Grouping then folds the canonicalized relation too, so mixed NFC/NFD rows
+    cannot split a real contradiction into singleton groups. The reported name
+    is restored from the canonicalized spellings actually written: an all-NFD
+    KB stays NFD, while a mixed group prefers its authored NFC spelling. This
+    preserves #210's provenance contract without treating canonically equivalent
+    strings as separate predicates.
 
     **Engine agreement, and exactly how far it reaches (#342).**
     ``common.dedup_engine_atoms`` keys on ``common.engine_atom_key``, which
@@ -520,12 +520,10 @@ def collect_conflicts(
     is still a merge the author did not ask for, even now that the engine
     reproduces it.
 
-    **The relation axis is NOT untouched — do not read #342 as leaving it
-    clean.** Grouping here is verbatim and ``engine_atom_key`` leaves the
-    relation raw, so *those two* split two spellings of one relation the same
-    way. That agreement is only between this module and ``relation/3``, and only
-    while no alias is declared: ``_canonicalize`` collapses the relation axis
-    here whenever ``policy/relation-aliases.md`` names it, so
+    **The relation axis still diverges from engine atom identity (#386).** This
+    module folds it while ``engine_atom_key`` leaves it raw. The same divergence
+    already existed for declared aliases: ``_canonicalize`` collapses the
+    relation axis here whenever ``policy/relation-aliases.md`` names it, so
     ``삼성 CEO NFC(이재용)`` and ``삼성 대표 NFD(이재용)`` under ``CEO -> 대표``
     are ONE group here and **two** atoms in ``accepted.dl`` — measured. That is
     why ``_report_resolved_merges`` counts atoms with ``_atom_count`` instead of
@@ -539,11 +537,9 @@ def collect_conflicts(
     * ``common._canonical_value`` (#213) folds the relation argument of a query,
       so one spelling typed by the user matches both atoms.
 
-    Whoever judges #210/#345 needs that: the axis is already folded at the query
-    layer and in the canonical block, and the choice is not "start folding" but
-    "make the rest agree with what those two already do". Folding it in
-    ``engine_atom_key`` remains deferred, and deliberately so — it changes which
-    rows collide — but the premise "both sides raw, nothing diverges" is false.
+    #386 tracks folding ``engine_atom_key`` and the provenance maps keyed by it.
+    Until then, the checker discloses conflict-free mixed relation spellings
+    before finalize writes separate atoms.
 
     **The typed projection still does not fold (#325 follow-up).** ``_group_key``
     folds *before* ``literal_types.normalize``; the engine's counterpart,
@@ -565,10 +561,10 @@ def collect_conflicts(
     atoms in the engine, and only this module ever calls them one value.
 
     Aligning the typed projection too is the root fix and a follow-up of its
-    own: it changes which rows enter the typed side-relations, hence what
-    ``factlog ask`` answers, and it needs the deferred #210 relation-axis call
-    decided first. What belongs *here* is that the checker never merges on that
-    basis in silence — see ``_parse_merge`` and ``_report_resolved_merges``.
+    own (#387): it changes which rows enter the typed side-relations, hence what
+    ``factlog ask`` answers. What belongs *here* is that the checker never merges
+    on that basis in silence — see ``_parse_merge`` and
+    ``_report_resolved_merges``.
     """
     groups_result = _group_conflict_rows(facts, single_valued, typed, aliases)
     by_key = groups_result.by_key
@@ -602,7 +598,10 @@ def collect_conflicts(
             }
             merged = dict(sorted(merged.items()))
             if merged or any(_fold_classes(sorted(raws)) for raws in groups.values()):
-                reported = (_representative(subjects), pair[1])
+                reported = (
+                    _representative(subjects),
+                    _representative(raw_relations[pair]),
+                )
                 object_variants[reported] = _variant_map(groups)
                 reported_relations[reported] = _relation_map(object_relations[pair])
                 if merged:
@@ -611,7 +610,10 @@ def collect_conflicts(
         # Representative restoration on both axes: report strings as written.
         # Distinct folded subjects cannot share a representative (the choice is a
         # function of the fold), so reported keys stay unique.
-        reported = (_representative(subjects), pair[1])
+        reported = (
+            _representative(subjects),
+            _representative(raw_relations[pair]),
+        )
         objects = _variant_map(groups)
         conflicts[reported] = sorted(objects)
         subject_variants[reported] = sorted(subjects)
@@ -674,7 +676,10 @@ def collect_conflict_support(
     for pair, value_groups in grouped.by_key.items():
         if len(value_groups) <= 1:
             continue
-        reported = (_representative(grouped.raw_subjects[pair]), pair[1])
+        reported = (
+            _representative(grouped.raw_subjects[pair]),
+            _representative(grouped.raw_relations[pair]),
+        )
         support = {
             _representative(raw_objects): tuple(sorted(grouped.sources[pair][key]))
             for key, raw_objects in value_groups.items()

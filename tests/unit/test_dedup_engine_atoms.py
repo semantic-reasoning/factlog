@@ -269,9 +269,9 @@ class TestCanonicallyEquivalentSpellingsCollapse:
     # ever catch a LATER change that over-folds. Kept for that, not offered as
     # evidence that #342 was fixed.
     def test_relation_axis_is_deliberately_not_folded_GUARD(self):
-        # #210's deferred call: the checker's grouping keeps the relation
-        # verbatim and so does this. Both sides raw is agreement, not a gap that
-        # this fix opened — but it IS the axis that still costs two atoms.
+        # #386 boundary: engine identity still keeps the relation
+        # verbatim. Conflict grouping now folds it, so this guard records the
+        # residual axis that still costs two atoms.
         rows = [
             _row("연구소", _nfc("소속"), "한국대학교", source="sources/a.md"),
             _row("연구소", _nfd("소속"), "한국대학교", source="sources/b.md"),

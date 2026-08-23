@@ -274,7 +274,7 @@ class TestNonEquivalentNotationsStayDistinct:
 
 
 class TestRelationAxisMembershipVsGrouping:
-    """The relation axis is two mechanisms, and only one of them is deferred.
+    """Relation membership and grouping share NFC identity.
 
     *Membership* — is this relation declared single-valued at all — is folded, so
     a KB written uniformly in NFD reaches the check instead of being skipped.
@@ -284,11 +284,9 @@ class TestRelationAxisMembershipVsGrouping:
     (routine on macOS, the very scenario ``_fold`` cites) never entered the
     grouping loop at all and exited 0 with a contradiction in it.
 
-    *Grouping* — which rows share a conflict key — stays verbatim and is the part
-    genuinely deferred to a follow-up, because that is what #210's "no silent NFC
-    coercion for non-participating relations" speaks to. Each fixture below uses
-    the realistic policy set (one NFC name), which is what the policy file
-    actually yields.
+    *Grouping* uses the same canonical identity, then restores an authored
+    spelling for reports. Each fixture below uses the realistic policy set (one
+    NFC name), which is what the policy file actually yields.
     """
 
     def test_uniform_nfd_kb_reaches_the_membership_gate(self):
@@ -304,18 +302,18 @@ class TestRelationAxisMembershipVsGrouping:
         assert len(conflicts) == 1
         ((_, relation), objects), = conflicts.items()
         assert objects == ["A사", "B사"]
-        # Membership folded, grouping did not: the relation is reported as written.
+        # Representative restoration keeps a uniformly NFD relation as written.
         assert relation == _nfd("소속")
         assert relation != _nfc("소속")
 
-    def test_mixed_relation_forms_still_split(self):
-        # Grouping is untouched, so two spellings of one relation remain two
-        # groups and no contradiction is reported. This is the deferred axis.
+    def test_mixed_relation_forms_share_one_conflict_group(self):
         facts = [
             _fact("김철수", _nfc("소속"), "A사"),
             _fact("김철수", _nfd("소속"), "B사"),
         ]
-        assert check_conflicts.detect_conflicts(facts, {_nfc("소속")}, {}, {}) == {}
+        assert check_conflicts.detect_conflicts(facts, {_nfc("소속")}, {}, {}) == {
+            ("김철수", _nfc("소속")): ["A사", "B사"]
+        }
 
     def test_nfd_relation_name_reported_verbatim(self):
         # #210's contract, now exercised *through* a folded membership test: the
@@ -326,13 +324,25 @@ class TestRelationAxisMembershipVsGrouping:
         (_, relation), = conflicts
         assert relation == nfd_rel
 
+    def test_relation_grouping_is_nfc_only(self):
+        fullwidth = [
+            _fact("갑", "ABC", "x"),
+            _fact("갑", "ＡＢＣ", "y"),
+        ]
+        case = [
+            _fact("갑", "owner", "x"),
+            _fact("갑", "Owner", "y"),
+        ]
+        assert check_conflicts.detect_conflicts(fullwidth, {"ABC", "ＡＢＣ"}) == {}
+        assert check_conflicts.detect_conflicts(case, {"owner", "Owner"}) == {}
+
 
 class TestVariantChannels:
     """``collect_conflicts`` exposes the raw spellings behind each reported string.
 
     ``detect_conflicts`` keeps its established return shape (36 pinned tests
     assert it); the spelling maps ride extra channels so ``main`` can report a
-    merge without duplicating the grouping logic. Both folded axes get a channel —
+    merge without duplicating the grouping logic. All three folded axes get a channel —
     the information loss is the same on each.
     """
 
@@ -655,6 +665,20 @@ class TestFoldingThatResolvesAConflict:
         assert "single facts/accepted.dl atom" not in out
         # and it names the cause, so the reader knows what to unify
         assert "relation spelling" in out
+
+    def test_mixed_relation_and_object_explains_both_grouping_mechanisms(
+        self, monkeypatch, capsys
+    ):
+        facts = [
+            _fact("연구소", _nfc("소속"), _nfc("한국대학교")),
+            _fact("연구소", _nfd("소속"), _nfd("한국대학교")),
+        ]
+        assert _run_main(monkeypatch, facts, {_nfc("소속")}) == 0
+        out = capsys.readouterr().out
+        assert "canonicalizes declared aliases and NFC-folds the resulting" in out
+        assert "relation before grouping" in out
+        assert "through policy/relation-aliases.md" not in out
+        assert "separate atom" in out
 
     def test_atom_count_is_the_gate_not_the_presence_of_aliases(self, monkeypatch, capsys):
         # PIN, the other branch. A relation-aliases.md file exists and this
@@ -1085,34 +1109,27 @@ class TestFoldEnabledTypedParseIsDisclosed:
         assert len(seen) == 1
 
 
-class TestSplitRelationIsDisclosedAtExitZero:
-    """Rows that pass membership and then vanish on the relation axis.
-
-    Membership folds, grouping does not, so a KB whose rows flipped NFC↔NFD as a
-    whole — subject and relation together, the realistic shape — enters the
-    grouping loop and then splits into two singleton pairs. The checker looked at
-    two rows that contradict each other and printed "0 conflicts". Deferring the
-    grouping decision is the #210 maintainer call; deferring the *disclosure* has
-    no such justification, because at exit 0 there is no CONFLICT line to hang
-    the existing "(relation written in N mixed …)" suffix on.
-    """
+class TestRelationAtomDivergenceIsDisclosedAtExitZero:
+    """Conflict grouping folds relations before the engine atom identity does."""
 
     def test_whole_row_flipped_is_disclosed(self, monkeypatch, capsys):
         rel = [_nfc("소속"), _nfd("소속")]
         facts = [
             _fact(_nfc("김철수"), rel[0], "A사"),
-            _fact(_nfd("김철수"), rel[1], "B사"),
+            _fact(_nfd("김철수"), rel[1], "A사"),
         ]
         assert _run_main(monkeypatch, facts, {_nfc("소속")}) == 0
         out = capsys.readouterr().out
         assert "(subject, relation) pair(s)" in out
         assert ascii(rel[0]) in out and ascii(rel[1]) in out
-        assert "never compared against" in out
+        assert "compared these spellings together" in out
+        assert "separate relation/3 atoms" in out
+        assert "never compared" not in out
 
     def test_split_relation_names_the_subject_as_written(self, monkeypatch, capsys):
         facts = [
             _fact(_nfc("김철수"), _nfc("소속"), "A사"),
-            _fact(_nfd("김철수"), _nfd("소속"), "B사"),
+            _fact(_nfd("김철수"), _nfd("소속"), "A사"),
         ]
         _run_main(monkeypatch, facts, {_nfc("소속")})
         assert f"on '{_nfc('김철수')}'" in capsys.readouterr().out
@@ -1133,9 +1150,8 @@ class TestSplitRelationIsDisclosedAtExitZero:
         assert "(relation written in 2 mixed Unicode normalization forms)" in captured.err
 
     def test_non_conflicting_spelling_still_reaches_the_conflict_line(self, monkeypatch, capsys):
-        # One spelling conflicts on its own, the other holds a single value. The
-        # hidden row is invisible to that conflict either way, so the suffix must
-        # count spellings over every pair examined, not only conflicting ones.
+        # The folded group reports all three values and retains both authored
+        # spellings in its provenance disclosure.
         facts = [
             _fact("김철수", _nfc("소속"), "A사"),
             _fact("김철수", _nfc("소속"), "B사"),
@@ -1159,7 +1175,7 @@ class TestSplitRelationIsDisclosedAtExitZero:
         # spelling must not implicate another's.
         facts = [
             _fact("김철수", _nfc("소속"), "A사"),
-            _fact("김철수", _nfd("소속"), "B사"),
+            _fact("김철수", _nfd("소속"), "A사"),
             _fact("박영희", _nfc("소속"), "C사"),
         ]
         _run_main(monkeypatch, facts, {_nfc("소속")})
@@ -1172,9 +1188,9 @@ class TestSplitRelationIsDisclosedAtExitZero:
         # — "2 subject(s)" reads as two people when there is one.
         facts = [
             _fact("김철수", _nfc("소속"), "A사"),
-            _fact("김철수", _nfd("소속"), "B사"),
+            _fact("김철수", _nfd("소속"), "A사"),
             _fact("김철수", _nfc("직급"), "부장"),
-            _fact("김철수", _nfd("직급"), "과장"),
+            _fact("김철수", _nfd("직급"), "부장"),
         ]
         assert _run_main(monkeypatch, facts, {_nfc("소속"), _nfc("직급")}) == 0
         out = capsys.readouterr().out
@@ -1190,9 +1206,9 @@ class TestSplitRelationIsDisclosedAtExitZero:
         # direction in turn; the count is over pairs and names neither axis.
         facts = [
             _fact("김철수", _nfc("소속"), "A사"),
-            _fact("김철수", _nfd("소속"), "B사"),
+            _fact("김철수", _nfd("소속"), "A사"),
             _fact("박영희", _nfc("소속"), "C사"),
-            _fact("박영희", _nfd("소속"), "D사"),
+            _fact("박영희", _nfd("소속"), "C사"),
         ]
         assert _run_main(monkeypatch, facts, {_nfc("소속")}) == 0
         out = capsys.readouterr().out
@@ -1203,13 +1219,7 @@ class TestSplitRelationIsDisclosedAtExitZero:
 
 
 class TestRelationSpellingIsDisclosed:
-    """One contradiction reported as N lines must say why there are N.
-
-    Membership is folded but grouping is not (the #210 call is deferred), so a
-    relation spelled two ways yields two groups and two CONFLICT lines that are
-    byte-different and visually identical. Collapsing them would mean folding the
-    grouping key — the maintainer decision this PR deliberately leaves open — so
-    the fix here is disclosure, matching what the subject axis already does.
+    """A folded contradiction still names every authored relation spelling.
 
     The policy file does not drive the count: ``sv`` is a set of folded names, so
     two policy spellings collapse to one element. The count comes purely from
@@ -1225,6 +1235,7 @@ class TestRelationSpellingIsDisclosed:
         ]
         assert _run_main(monkeypatch, facts, {_nfc("소속")}) == 1
         err = capsys.readouterr().err
+        assert err.count("  CONFLICT:") == 1
         assert "(relation written in 2 mixed Unicode normalization forms)" in err
 
     def test_mixed_relation_spellings_are_printed_escaped(self, monkeypatch, capsys):

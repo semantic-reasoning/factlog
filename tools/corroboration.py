@@ -66,7 +66,8 @@ def main(argv: list[str] | None = None) -> int:
     # signal this tool exists to give, under-reported in exactly the mixed KB
     # #325 is about. Sources are counted per folded fact, so a source backing
     # both spellings counts once (summing the raw counts would double it). The
-    # relation axis stays raw, matching the gate's deferred #210 decision.
+    # The general fact list follows raw engine relation identity until #386;
+    # the competing-values clause uses the conflict core's folded relation axis.
     backing: dict[tuple[str, str, str], set[str]] = {}
     triple_spellings: dict[tuple[str, str, str], tuple[set[str], set[str]]] = {}
     for row in engine_facts(facts):

@@ -8,8 +8,8 @@ here and 2 in the file — a contradiction a user hits by opening the file and
 counting, with no judgement in between.
 
 **Folding needs the relation byte-identical.** ``common.engine_atom_key`` folds
-subject and object under NFC and keeps the relation verbatim (#210/#345, pinned
-by ``test_conflict_unicode.test_alias_merged_rows_keep_the_separate_atom_wording``).
+subject and object under NFC and keeps the relation verbatim until #386, pinned
+by ``test_conflict_unicode.test_alias_merged_rows_keep_the_separate_atom_wording``.
 Two rows written wholly in NFD and wholly in NFC therefore stay TWO atoms, and
 their keys render identically on screen. Every folding fixture below varies only
 subject and object; a fixture that also varied the relation would silently stop
