@@ -2450,18 +2450,6 @@ def cmd_vocab(args: argparse.Namespace) -> int:
     return 0
 
 
-# The whole line run_logic_check.py writes into facts/logic_report.txt when the
-# engine never ran (#338). Matched byte for byte against a whole line, the same
-# way hooks/gate_check.sh matches it — its `_records_engine_failure` splits the
-# report on "\n", strips trailing CRs and compares for equality, which is what
-# the reader below does; the constant is also spelled out in
-# tools/run_logic_check.py as ENGINE_FAILED_STATUS_LINE. All three are one
-# vocabulary and change together. Its natural home is factlog/common.py, next to
-# the other shared report vocabulary — worth hoisting when something else needs
-# it, and not worth a third reader having to rediscover the coupling meanwhile.
-ENGINE_FAILED_STATUS_LINE = "status: engine-did-not-run"
-
-
 def cmd_status(args: argparse.Namespace) -> int:
     """Summarise the active KB's state: sources, facts by status, vocabulary,
     conflicts, logic-report freshness, and engine availability."""
@@ -2714,7 +2702,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         report_lines = [
             ln.decode("utf-8", errors="replace") for ln in report_byte_lines
         ]
-        if ENGINE_FAILED_STATUS_LINE.encode("utf-8") in report_byte_lines:
+        if common.records_engine_failure(raw):
             # A report of a run in which THE ENGINE NEVER RAN is not a result, and
             # freshness is the wrong question to ask of it: /factlog check has just
             # written it, so it IS fresh by mtime, and reporting that would say a

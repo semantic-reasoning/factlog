@@ -17,6 +17,35 @@ from types import TracebackType
 
 from factlog import literal_types
 
+ENGINE_FAILED_STATUS_LINE = "status: engine-did-not-run"
+
+
+def records_engine_failure(report: str | bytes) -> bool:
+    """Whether *report* contains the engine-failure marker as a physical line.
+
+    A physical line is separated by LF only.  Every trailing CR is ignored so
+    LF and CRLF reports compare alike, but a CR elsewhere remains data.  The
+    comparison is whole-line and preserves the input representation: bytes are
+    never decoded, so malformed UTF-8 cannot manufacture or hide the marker.
+
+    The ``str`` path lets the report writer validate text before encoding; the
+    ``bytes`` path is the trust boundary used by readers of an on-disk report.
+    """
+    if isinstance(report, bytes):
+        marker: str | bytes = ENGINE_FAILED_STATUS_LINE.encode("utf-8")
+        newline: str | bytes = b"\n"
+        carriage_return: str | bytes = b"\r"
+    elif isinstance(report, str):
+        marker = ENGINE_FAILED_STATUS_LINE
+        newline = "\n"
+        carriage_return = "\r"
+    else:
+        raise TypeError("report must be str or bytes")
+    return any(
+        line.rstrip(carriage_return) == marker for line in report.split(newline)
+    )
+
+
 _PYREWIRE_IMPORT_ERROR: Exception | None = None
 _PYREWIRE_IMPORT_TRACEBACK: TracebackType | None = None
 try:

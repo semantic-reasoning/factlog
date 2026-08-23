@@ -27,6 +27,7 @@ import factlog_config  # noqa: E402
 os.environ["FACTLOG_ROOT"] = factlog_config.resolve_root_from_argv("--wiki")
 
 from common import (  # noqa: E402
+    ENGINE_FAILED_STATUS_LINE,
     FACTS_DIR,
     KNOWN_STATUSES,
     QUERY_PREDICATES,
@@ -52,6 +53,7 @@ from common import (  # noqa: E402
     query_args,
     query_shape_error,
     review_required_question,
+    records_engine_failure,
 )
 
 
@@ -949,8 +951,9 @@ def evaluate_queries(
 # describes a run in which THE ENGINE NEVER RAN. It is the whole discriminator
 # between "engine ran and found nothing" and "there is nothing to find out from
 # here", so it is matched as a whole line, byte for byte, on both sides. Change
-# it in one place only together with the other two: `_records_engine_failure` in
-# hooks/gate_check.sh and the same comparison in factlog/cli.py.
+# Its vocabulary and comparison rule live in factlog/common.py. The gate keeps
+# one install-independent stdlib copy because it must still decide safely when
+# importing the package is impossible.
 #
 # The marker is NEGATIVE — a successful report carries no status line at all —
 # for one reason: the success report's text is a published contract
@@ -1014,8 +1017,6 @@ def evaluate_queries(
 # The cost of the negative marker is also that a report truncated inside its
 # first three lines would lose it and read as a success; _write_report closes
 # that by replacing the file atomically.
-ENGINE_FAILED_STATUS_LINE = "status: engine-did-not-run"
-
 # Characters that may not appear inside a report line. Two families, and the
 # second was learned the hard way:
 #
@@ -1197,7 +1198,7 @@ def engine_failure_report(exc: BaseException) -> str:
     reason = one_line(" ".join(str(exc).split())) or exc.__class__.__name__
     accepted = FACTS_DIR / "accepted.dl"
     query = FACTS_DIR / "query.dl"
-    return "\n".join(
+    report = "\n".join(
         [
             "Logic Check Report",
             "==================",
@@ -1227,6 +1228,11 @@ def engine_failure_report(exc: BaseException) -> str:
             "",
         ]
     )
+    if not records_engine_failure(report):
+        raise RuntimeError(
+            "engine failure report violates the shared status-line contract"
+        )
+    return report
 
 
 def main() -> None:

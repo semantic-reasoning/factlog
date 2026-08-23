@@ -845,17 +845,19 @@ query="${KB_ROOT}/facts/query.dl"
 # test readability and `stat` still answers. Blocker 2 forged the marker; this
 # erased it. Both end with the gate wrong about the same file.
 #
-# Judged in PYTHON, not sed/grep, for three reasons:
+# Judged in an embedded stdlib-only Python predicate, not sed/grep, for three
+# reasons:
 #   - it is the only way to tell "no marker" from "could not look", which is the
 #     whole fix; grep's exit 2 does not survive a pipeline and `set -o pipefail`
 #     cannot distinguish which stage failed;
-#   - the comparison is then byte-for-byte the same operation factlog/cli.py
-#     performs — same split, same rstrip, same equality — so the two readers
-#     agree by construction rather than by two texts being kept in sync;
+#   - this is the one intentionally independent copy of
+#     factlog.common.records_engine_failure — same split, same rstrip, same
+#     equality — and the differential corpus keeps the two implementations in
+#     sync;
 #   - this hook already REQUIRES Python 3.11+ and denies without it (fail-closed
 #     branch 1 above), so it adds no dependency. Nothing here imports factlog:
 #     it is stdlib only, so a broken package cannot turn the judgement into a
-#     crash. (Sharing one predicate with cli.py is #364, deliberately not here.)
+#     crash. Importing factlog here would erase that isolation.
 #
 # The verdict is read from STDOUT, not from the exit status, because Python
 # exits 1 on an uncaught traceback and 1 is a verdict — "no marker", the allow
