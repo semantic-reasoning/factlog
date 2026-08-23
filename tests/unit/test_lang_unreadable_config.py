@@ -372,12 +372,18 @@ class TestTheWriteBoundary:
         proc = run_cli(blocked_by_a_directory, "lang", "ko", "--force")
         self.assert_explained(proc, blocked_by_a_directory)
 
-    def test_the_refusal_it_prints_names_a_command_that_works(self, blocked_by_a_directory):
-        """The refusal and the crash were one command apart: whatever `--force`
-        does here, it must not be a traceback."""
+    def test_the_refusal_names_the_manual_recovery_not_the_failing_shortcut(
+        self, blocked_by_a_directory
+    ):
         refusal = run_cli(blocked_by_a_directory, "lang", "ko")
         assert refusal.returncode == 1
-        assert "factlog lang ko --force" in refusal.stderr, refusal.stderr
+        assert "move or remove that path, then re-run" in refusal.stderr.lower()
+        assert (
+            "because writing it would require you to decide how to handle what "
+            "occupies that path first. "
+            "Move or remove that path, then re-run\n"
+        ) in refusal.stderr
+        assert "factlog lang ko --force" not in refusal.stderr
         forced = run_cli(blocked_by_a_directory, "lang", "ko", "--force")
         assert "Traceback" not in forced.stderr, forced.stderr
 

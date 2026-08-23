@@ -769,11 +769,13 @@ def _not_active_lines(current: str | None, target) -> tuple[str, str]:
 class _Unreadable(NamedTuple):
     """The fragments every "I would not write this config" sentence is built from.
 
-    ``UNREADABLE`` covers two unrelated failures, and the prose was written for
+    ``UNREADABLE`` covers three unrelated failures, and the prose was written for
     only one of them. A truncated write has bytes worth preserving and is fixed
     by repairing the file; a symlink whose target is not mounted has no bytes at
     all, holds a *pointer* rather than a root, and is fixed by mounting the
-    volume or re-pointing the link. Three sentences in three places say this —
+    volume or re-pointing the link; a directory, FIFO, or socket directly at the
+    config path is something to move or remove, not a file to repair. Three
+    sentences in three places say this —
     the activation refusal, the ``--lang`` deferral note, and ``setup``'s rc-1
     closing line — so the branch lives here once instead of three times, which is
     how the first two drifted out of agreement in the first place.
@@ -814,6 +816,7 @@ class _Unreadable(NamedTuple):
     remedy: str
     lost: str
     lost_root: str
+    allow_overwrite_hint: bool
 
 
 _CONFIG_SYMLINK_REPLACEMENT = (
@@ -847,17 +850,32 @@ def _unreadable() -> _Unreadable:
     # Two questions, two predicates — see the class docstring. What a write
     # destroys is decided by the link alone, because `os.replace` swaps the link
     # and not its target, so the indirection goes whatever the far end holds.
-    if path.is_symlink():
+    is_symlink = path.is_symlink()
+    if is_symlink:
         lost = lost_root = (
             _config_symlink_replacement_notice() or _CONFIG_SYMLINK_REPLACEMENT
+        )
+    elif not path.is_file():
+        # A directory, FIFO or socket has no config bytes or recorded root to
+        # repair. Some platforms let rename replace FIFO/socket entries while a
+        # directory rejects it, but neither is safe to advertise as an automatic
+        # overwrite: the user must first decide what the special path is for.
+        return _Unreadable(
+            "is occupied by something other than a regular file",
+            "leaving that path untouched",
+            "require you to decide how to handle what occupies that path first",
+            "move or remove that path, then re-run",
+            "the non-regular config path is gone — it is a regular file now",
+            "the non-regular config path is gone — it is a regular file now",
+            False,
         )
     else:
         lost = "any narration language in it is gone"
         lost_root = "any KB root it may still have held is gone"
-    # What is *wrong* is decided by reachability. `config_status` classifies this
-    # pair together because both mean "do not write"; only the words differ, so
-    # the split is here rather than there.
-    if path.is_symlink() and not path.exists():
+    # What is *wrong* is decided by reachability and file kind. `config_status`
+    # deliberately folds these into UNREADABLE because they all mean "do not
+    # write"; only the words and safe recovery differ, so the split is here.
+    if is_symlink and not path.exists():
         return _Unreadable(
             "is a symlink whose target is not reachable right now",
             "leaving the link in place",
@@ -869,6 +887,7 @@ def _unreadable() -> _Unreadable:
             "mount it or re-point the link",
             lost,
             lost_root,
+            True,
         )
     return _Unreadable(
         "could not be read",
@@ -877,7 +896,33 @@ def _unreadable() -> _Unreadable:
         "repair that file",
         lost,
         lost_root,
+        True,
     )
+
+
+def _recovery_options(
+    said: _Unreadable,
+    standard: str,
+    overwrite: str,
+    *,
+    joiner: str = ", or ",
+) -> str:
+    """A complete recovery phrase, with a destructive shortcut only when safe.
+
+    Directories and special files need an explicit human decision, so merely
+    passing ``--force`` or using another writer is not advertised for them.
+    Other unreadable classes retain their established deliberate-overwrite exit.
+    """
+    if not said.allow_overwrite_hint:
+        return standard
+    return f"{standard}{joiner}{overwrite}"
+
+
+def _config_overwrite_is_safe_to_advertise() -> bool:
+    """Whether a config-writing shortcut is a responsible recovery hint."""
+    if factlog_config.config_status() != factlog_config.UNREADABLE:
+        return True
+    return _unreadable().allow_overwrite_hint
 
 
 def _unreadable_lines(target) -> tuple[str, str]:
@@ -893,7 +938,11 @@ def _unreadable_lines(target) -> tuple[str, str]:
     return (
         f"active-KB config at {factlog_config.config_path()} {said.reason} — "
         f"{said.preserved}; {target} is not recorded in it",
-        f"{said.remedy}, or overwrite it deliberately: factlog use {target}",
+        _recovery_options(
+            said,
+            said.remedy,
+            f"overwrite it deliberately: factlog use {target}",
+        ),
     )
 
 
@@ -967,7 +1016,7 @@ def _reach_note(target, *, quiet_when: str | None = None) -> str | None:
     fix = f"pass --target {target}"
     if source == "env":
         fix += f", or point $FACTLOG_ROOT at {target}"
-    else:
+    elif _config_overwrite_is_safe_to_advertise():
         fix += f", or record it: factlog use {target}"
     return f"a flagless command would target {effective} (from {origin}), not {target} — {fix}"
 
@@ -1427,11 +1476,15 @@ def cmd_lang(args: argparse.Namespace) -> int:
         # that did — `setup --lang` exits 1 for this reason on the same refusal.
         # Nothing is written, so `preserved` is the one place these fragments are
         # literally true rather than a promise to keep.
+        recovery = _recovery_options(
+            replacing,
+            replacing.remedy,
+            f"overwrite it deliberately: {_lang_force_hint(code)}",
+        )
         print(
             f"factlog lang: narration language NOT set: {factlog_config.config_path()} "
             f"{replacing.reason} — {replacing.preserved}, because writing it would "
-            f"{replacing.cost}. {replacing.remedy[0].upper()}{replacing.remedy[1:]}, "
-            f"or overwrite it deliberately: {_lang_force_hint(code)}",
+            f"{replacing.cost}. {recovery[0].upper()}{recovery[1:]}",
             file=sys.stderr,
         )
         return 1
@@ -2939,12 +2992,21 @@ def cmd_setup(args: argparse.Namespace) -> int:
         if factlog_config.config_status() == factlog_config.UNREADABLE:
             lang_deferred = True
             said = _unreadable()
+            standard_recovery = (
+                said.remedy
+                if not said.allow_overwrite_hint
+                else f"{said.remedy}, then set the language with `factlog lang`"
+            )
+            recovery = _recovery_options(
+                said,
+                standard_recovery,
+                f"record this KB and the language together: "
+                f"{_lang_via_use_hint(target, lang_normalized)}",
+                joiner="; or ",
+            )
             notes.append(
                 f"narration language NOT set: {factlog_config.config_path()} {said.reason}, "
-                f"and writing it would {said.cost} — {said.remedy}, "
-                "then set the language with `factlog lang`; "
-                f"or record this KB and the language together: "
-                f"{_lang_via_use_hint(target, lang_normalized)}"
+                f"and writing it would {said.cost} — {recovery}"
             )
         else:
             phrase = _apply_lang(lang_normalized, "factlog setup")
@@ -2980,12 +3042,22 @@ def cmd_setup(args: argparse.Namespace) -> int:
         # three agreeing signals — rc 0, a "complete" line, and `factlog lang`
         # printing empty — with only prose to say the request had been declined.
         said = _unreadable()
+        standard_recovery = (
+            said.remedy
+            if not said.allow_overwrite_hint
+            else f"{said.remedy}, then set the language with `factlog lang`"
+        )
+        recovery = _recovery_options(
+            said,
+            standard_recovery,
+            f"record this KB and the language together: "
+            f"{_lang_via_use_hint(target, lang_normalized)}",
+            joiner="; or ",
+        )
         print(
             f"\nfactlog setup: the KB at {target} is ready, but --lang was not applied "
             f"because {factlog_config.config_path()} {said.reason} (see above). "
-            f"{said.remedy[0].upper()}{said.remedy[1:]}, then set the language "
-            f"with `factlog lang`; or record this KB and the language together: "
-            f"{_lang_via_use_hint(target, lang_normalized)}.",
+            f"{recovery[0].upper()}{recovery[1:]}.",
             file=sys.stderr,
         )
         return 1

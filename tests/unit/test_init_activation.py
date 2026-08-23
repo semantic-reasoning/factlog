@@ -24,8 +24,12 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import socket
+import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -55,6 +59,7 @@ def run_init(*args: str, config_home: Path):
         text=True,
         env=env,
         check=False,
+        timeout=15,
     )
 
 
@@ -340,6 +345,7 @@ class TestDamagedConfigIsNotOverwritten:
         assert "mount it, re-point" not in out, (
             f"reads as a two-step procedure; the two are alternatives: {out}"
         )
+        assert "overwrite it deliberately: factlog use" in out
 
     def test_says_it_could_not_read_the_file(self, tmp_path, config_home):
         path = config_file(config_home)
@@ -350,6 +356,29 @@ class TestDamagedConfigIsNotOverwritten:
 
         assert "could not be read" in out, f"silently skipped instead of reporting: {out}"
         assert str(path) in out, f"the file to repair is not named: {out}"
+        assert "overwrite it deliberately: factlog use" in out
+
+    @pytest.mark.parametrize("target_kind", ["malformed-file", "directory"])
+    def test_reachable_symlink_keeps_its_deliberate_overwrite_exit(
+        self, tmp_path, config_home, target_kind
+    ):
+        path = config_file(config_home)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        target = tmp_path / "linked-config"
+        if target_kind == "directory":
+            target.mkdir()
+        else:
+            target.write_text('{"root": "/real/kb", ', encoding="utf-8")
+        path.symlink_to(target)
+
+        proc = run_init(
+            "--target", str(tmp_path / "scratch"), config_home=config_home
+        )
+
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert path.is_symlink()
+        assert "is occupied by something other than a regular file" not in proc.stdout
+        assert "overwrite it deliberately: factlog use" in proc.stdout
 
     def test_an_unreadable_file_keeps_its_language(self, tmp_path, config_home):
         """``chmod 000``: the read fails, so a write would drop ``lang`` too."""
@@ -996,7 +1025,12 @@ class TestADirectoryAtTheConfigPath:
 
         assert proc.returncode == 0, proc.stdout + proc.stderr
         assert "Traceback" not in proc.stderr, proc.stderr
-        assert "could not be read" in proc.stdout, proc.stdout
+        assert "is occupied by something other than a regular file" in proc.stdout
+        assert "leaving that path untouched" in proc.stdout
+        assert "move or remove that path, then re-run" in proc.stdout
+        assert "leaving its bytes untouched" not in proc.stdout
+        assert "repair that file" not in proc.stdout
+        assert "factlog use" not in proc.stdout
 
     @pytest.mark.parametrize("argv", [("init", "--activate"), ("use",)])
     def test_both_escape_hatches_explain_instead_of_crashing(
@@ -1027,6 +1061,168 @@ class TestADirectoryAtTheConfigPath:
         # config for good.
         strays = [p.name for p in blocked.parent.iterdir() if p.name.endswith(".tmp")]
         assert not strays, f"a failed write left {strays} behind while claiming nothing changed"
+
+
+@pytest.fixture(params=["directory", "fifo", "socket"])
+def nonregular_config(request, config_home, monkeypatch):
+    """A direct config-path occupant that is not a regular file or symlink."""
+    if request.param == "socket":
+        if not hasattr(socket, "AF_UNIX"):
+            pytest.skip("Unix-domain sockets are not available on this platform")
+        # sockaddr_un paths are commonly capped near 104 bytes; pytest's nested
+        # tmp_path is longer on macOS. tempfile chooses an existing native temp
+        # root rather than assuming POSIX /tmp.
+        short_home = Path(tempfile.mkdtemp(prefix="f370-"))
+        effective_home = short_home
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(effective_home))
+        path = config_file(effective_home)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        owner = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            try:
+                owner.bind(str(path))
+            except OSError as exc:
+                pytest.skip(f"cannot bind a Unix-domain socket here: {exc}")
+            assert stat.S_ISSOCK(path.lstat().st_mode)
+            yield request.param, path, stat.S_ISSOCK, effective_home
+        finally:
+            owner.close()
+            shutil.rmtree(short_home, ignore_errors=True)
+        return
+
+    effective_home = config_home
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(effective_home))
+    path = config_file(effective_home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if request.param == "directory":
+        path.mkdir()
+        predicate = stat.S_ISDIR
+    elif request.param == "fifo":
+        if not hasattr(os, "mkfifo"):
+            pytest.skip("FIFO is not available on this platform")
+        os.mkfifo(path)
+        predicate = stat.S_ISFIFO
+    assert predicate(path.lstat().st_mode)
+    yield request.param, path, predicate, effective_home
+
+
+def run_factlog(config_home: Path, *argv: str):
+    env = dict(os.environ)
+    env["XDG_CONFIG_HOME"] = str(config_home)
+    env["PYTHONPATH"] = str(REPO_ROOT)
+    env.pop("FACTLOG_ROOT", None)
+    return subprocess.run(
+        [sys.executable, "-m", "factlog", *argv],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+        timeout=15,
+    )
+
+
+class TestNonRegularConfigPathGuidance:
+    def _assert_refusal(self, text: str) -> None:
+        lowered = text.lower()
+        assert "is occupied by something other than a regular file" in lowered
+        assert "leaving that path untouched" in lowered
+        assert "move or remove that path, then re-run" in lowered
+        assert "bytes untouched" not in lowered
+        assert "repair that file" not in lowered
+        assert "kb root it may still have held" not in lowered
+
+    def test_init_has_only_the_manual_recovery(
+        self, tmp_path, config_home, nonregular_config
+    ):
+        _, path, predicate, effective_home = nonregular_config
+        proc = run_init("--target", str(tmp_path / "kb"), config_home=effective_home)
+
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        self._assert_refusal(proc.stdout)
+        assert (
+            f"active-KB config at {path} is occupied by something other than a "
+            "regular file — leaving that path untouched;"
+        ) in proc.stdout
+        assert "\n  move or remove that path, then re-run\n" in proc.stdout
+        assert "factlog use" not in proc.stdout
+        assert predicate(path.lstat().st_mode)
+
+    def test_lang_has_no_force_shortcut(self, config_home, nonregular_config):
+        _, path, predicate, effective_home = nonregular_config
+        proc = run_factlog(effective_home, "lang", "ko")
+
+        assert proc.returncode == 1, proc.stdout + proc.stderr
+        self._assert_refusal(proc.stderr)
+        assert (
+            "because writing it would require you to decide how to handle what "
+            "occupies that path first. "
+            "Move or remove that path, then re-run\n"
+        ) in proc.stderr
+        assert "--force" not in proc.stderr
+        assert predicate(path.lstat().st_mode)
+
+    def test_setup_deferral_and_closing_have_no_use_shortcut(
+        self,
+        tmp_path,
+        config_home,
+        nonregular_config,
+        monkeypatch,
+        capsys,
+    ):
+        _, path, predicate, _ = nonregular_config
+        monkeypatch.setattr(cli, "_pyrewire_ok", lambda: True)
+        monkeypatch.setattr(cli, "_run_doctor_checks", lambda *a, **k: True)
+
+        assert cli.main(["setup", "--target", str(tmp_path / "kb"), "--lang", "ko"]) == 1
+        captured = capsys.readouterr()
+
+        self._assert_refusal(captured.out)
+        assert (
+            "and writing it would require you to decide how to handle what "
+            "occupies that path first — "
+            "move or remove that path, then re-run\n"
+        ) in captured.out
+        assert "factlog use" not in captured.out
+        assert "factlog use" not in captured.err
+        assert "--force" not in captured.out + captured.err
+        assert "move or remove that path, then re-run" in captured.err.lower()
+        assert (
+            "is occupied by something other than a regular file (see above). "
+            "Move or remove that path, then re-run.\n"
+        ) in captured.err
+        assert predicate(path.lstat().st_mode)
+
+    @pytest.mark.parametrize("command", ["use", "lang-force", "init-activate"])
+    def test_explicit_successful_special_file_replacement_is_described(
+        self,
+        command,
+        tmp_path,
+        config_home,
+        nonregular_config,
+    ):
+        kind, path, _, effective_home = nonregular_config
+        if kind == "directory":
+            pytest.skip("a regular file cannot atomically replace a directory")
+        kb = tmp_path / "kb"
+        (kb / "sources").mkdir(parents=True)
+
+        if command == "use":
+            proc = run_factlog(effective_home, "use", str(kb))
+        elif command == "lang-force":
+            proc = run_factlog(effective_home, "lang", "ko", "--force")
+        else:
+            proc = run_init(
+                "--target", str(kb), "--activate", config_home=effective_home
+            )
+
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert stat.S_ISREG(path.lstat().st_mode)
+        assert proc.stdout.count(
+            "the non-regular config path is gone — it is a regular file now"
+        ) == 1, proc.stdout
+        assert "KB root it may still have held" not in proc.stdout
+        assert "narration language in it is gone" not in proc.stdout
 
 
 class TestExplicitFlags:
