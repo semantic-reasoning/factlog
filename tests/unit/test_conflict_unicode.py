@@ -20,10 +20,62 @@ Folding is NFC only — compatibility variants (fullwidth) and case stay distinc
 from __future__ import annotations
 
 import itertools
+import os
+import subprocess
+import sys
 import unicodedata
+from pathlib import Path
 
 import check_conflicts
 import common
+from factlog import conflicts as conflict_core
+
+
+def test_checker_reexports_the_installed_conflict_core():
+    assert check_conflicts.collect_conflicts is conflict_core.collect_conflicts
+    assert check_conflicts.detect_conflicts is conflict_core.detect_conflicts
+    assert check_conflicts._group_key is conflict_core._group_key
+    assert check_conflicts._group_key_unfolded is conflict_core._group_key_unfolded
+    assert check_conflicts._canonicalize is conflict_core._canonicalize
+    assert check_conflicts._fold is conflict_core._fold
+    assert check_conflicts._representative is conflict_core._representative
+    assert conflict_core.ConflictScan._fields == (
+        "conflicts",
+        "subject_variants",
+        "object_variants",
+        "parse_merges",
+        "relation_variants",
+        "object_relations",
+    )
+
+
+def test_wiki_prepass_wins_before_the_package_core_import(tmp_path):
+    ambient = tmp_path / "ambient"
+    selected = tmp_path / "selected"
+    for root in (ambient, selected):
+        for directory in ("facts", "policy", "sources", "pages", "decisions"):
+            (root / directory).mkdir(parents=True)
+        (root / "facts" / "candidates.csv").write_text(
+            "subject,relation,object,source,status,confidence,note\n",
+            encoding="utf-8",
+        )
+    (selected / "policy" / "single-valued.md").write_text("- owner\n", encoding="utf-8")
+    (selected / "facts" / "candidates.csv").write_text(
+        "subject,relation,object,source,status,confidence,note\n"
+        "Selected,owner,A,sources/a.md,confirmed,0.9,\n"
+        "Selected,owner,B,sources/b.md,confirmed,0.9,\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(Path(check_conflicts.__file__)), "--wiki", str(selected)],
+        env=dict(os.environ, FACTLOG_ROOT=str(ambient)),
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert "on 'Selected' has 2 values" in result.stderr
 
 
 def _fact(subject: str, relation: str, obj: str, status: str = "confirmed") -> dict[str, str]:
