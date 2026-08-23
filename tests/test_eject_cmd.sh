@@ -210,6 +210,19 @@ out="$("$PYTHON" -m factlog eject report.html --target "$KB" --dry-run 2>&1)"
   && ok "a bare filename still matches every source with that name (4 refs)" \
   || bad "bare filename matching narrowed: $(printf '%s' "$out" | grep -c '^  - ') refs"
 
+# POSIX gives backslash no path meaning. A real root-level filename containing
+# one must not be redirected to the nested slash path by Windows normalization.
+KB="$(mktemp -d)/wiki"; seed_dup "$KB" path
+printf 'literal backslash name\n' > "$KB/sources/sub\\report.html"
+printf '%s\n' 'I,rel,J,sources/sub\report.html,confirmed,0.9,' \
+  >> "$KB/facts/candidates.csv"
+"$PYTHON" -m factlog eject 'sub\report.html' --target "$KB" --delete-original >/dev/null 2>&1
+[ ! -f "$KB/sources/sub\\report.html" ] \
+  && [ -f "$KB/sources/sub/report.html" ] \
+  && [ -f "$KB/runs/sources/sub/report.html.md" ] \
+  && ok "POSIX keeps backslash as a filename character" \
+  || bad "POSIX backslash filename was reinterpreted as a path"
+
 # --- an absolute path inside the KB resolves to its KB-relative ref -----------
 KB="$(mktemp -d)/wiki"; seed_dup "$KB" path
 "$PYTHON" -m factlog eject "$KB/sources/sub/report.html" --target "$KB" >/dev/null 2>&1

@@ -3339,6 +3339,16 @@ class _EjectSelection(NamedTuple):
     strip_runs: bool
 
 
+def _as_eject_ref_path(raw: str, sep: str) -> str:
+    """Spell a native ``eject`` path like the POSIX refs stored in a KB.
+
+    Backslash is a path separator on Windows but a valid filename character on
+    POSIX.  Keep the platform decision injectable so the Windows spelling can
+    be pinned without requiring a Windows test runner.
+    """
+    return raw.replace("\\", "/") if sep == "\\" else raw
+
+
 def _select_eject_facts(args, rows, fact_specs, target, nfc):
     """Fact mode: select candidate rows matching the given (subject, relation,
     object) triple(s). Returns an _EjectSelection, or an int exit code when there
@@ -3377,6 +3387,7 @@ def _select_eject_sources(args, rows, disk_refs, all_refs, target, nfc):
     """Source / --orphans mode: select source refs to retire (and their on-disk
     conversions/originals). Returns an _EjectSelection, or an int exit code when
     nothing matches. Prints the plan exactly as cmd_eject used to inline."""
+    import os
     import re
     from pathlib import Path, PurePosixPath
 
@@ -3531,9 +3542,11 @@ def _select_eject_sources(args, rows, disk_refs, all_refs, target, nfc):
                     given; compared against conv_origin to reach the conversion
                     that path produced. None when the argument names no original
                     under sources/ (a conversion ref, or a bare name);
-          raw     — the argument as written, for the bare filename / stem rules.
+          match_name — the argument with the native separator spelled like a
+                    stored ref, for path detection and filename / stem rules.
         """
         raw = nfc(name)
+        match_name = _as_eject_ref_path(raw, os.sep)
         p = Path(raw)
         if p.is_absolute():
             # Resolve an *absolute* argument, and the root with it: this machine
@@ -3557,7 +3570,7 @@ def _select_eject_sources(args, rows, disk_refs, all_refs, target, nfc):
                     kb_rel = None
             kb_rel = nfc(kb_rel) if kb_rel is not None else None
             if kb_rel is not None and (kb_rel == "sources" or kb_rel.startswith("sources/")):
-                return {kb_rel}, kb_rel[len("sources/"):] or None, raw
+                return {kb_rel}, kb_rel[len("sources/"):] or None, match_name
             # An original outside sources/ — anywhere else in the KB, or outside
             # it entirely — has no subtree for ingest to mirror, so it always
             # converts to a *flat* runs/sources/<name> whose rebuilt origin is a
@@ -3575,18 +3588,18 @@ def _select_eject_sources(args, rows, disk_refs, all_refs, target, nfc):
             # conversion paired there and unpaired here.
             base = nfc(p.name)
             fallback = base if base and base not in src_basenames else None
-            return ({kb_rel} if kb_rel is not None else set()), fallback, raw
+            return ({kb_rel} if kb_rel is not None else set()), fallback, match_name
         # A relative argument is read KB-relative (`sources/...`, `runs/...`) or
         # sources-relative (`sub/report.html`). PurePosixPath folds "./" and "//"
         # but keeps ".." verbatim: no normpath/realpath here, so the comparison
         # never rewrites a path into something the recorded origin spells
         # differently.
-        norm = PurePosixPath(raw).as_posix() if "/" in raw else raw
+        norm = PurePosixPath(match_name).as_posix() if "/" in match_name else match_name
         if norm.startswith("sources/"):
-            return {raw, norm}, norm[len("sources/"):] or None, raw
+            return {raw, norm}, norm[len("sources/"):] or None, match_name
         if norm.startswith("runs/sources/"):
-            return {raw, norm}, None, raw  # names a conversion, not an original
-        return {raw, norm}, norm, raw
+            return {raw, norm}, None, match_name  # names a conversion, not an original
+        return {raw, norm}, norm, match_name
 
     def matches(ref: str, sel: tuple[set[str], str | None, str]) -> bool:
         refs, src_rel, name = sel
