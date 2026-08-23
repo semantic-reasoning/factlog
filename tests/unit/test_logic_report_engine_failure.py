@@ -86,6 +86,35 @@ def _break_engine_import(tmp_path: Path) -> Path:
     return shim
 
 
+def _top_level_engine_shim(tmp_path: Path, statement: str, name: str) -> Path:
+    shim = tmp_path / name
+    shim.mkdir()
+    (shim / "pyrewire.py").write_text(statement + "\n", encoding="utf-8")
+    return shim
+
+
+def _package_engine_shim(tmp_path: Path, body: str, name: str) -> Path:
+    shim = tmp_path / name
+    package = shim / "pyrewire"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text(body, encoding="utf-8")
+    return shim
+
+
+def _run_python(shim: Path, code: str) -> subprocess.CompletedProcess:
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(shim), env.get("PYTHONPATH", "")]
+    ).rstrip(os.pathsep)
+    return subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(REPO_ROOT),
+    )
+
+
 class TestReportIsWrittenWhenTheEngineCannotRun:
     def test_missing_accepted_dl_still_writes_a_report(self, tmp_path):
         kb = _kb(tmp_path)
@@ -113,7 +142,85 @@ class TestReportIsWrittenWhenTheEngineCannotRun:
         assert _report(kb).is_file(), (
             f"no report written; stderr={result.stderr!r}"
         )
-        assert MARKER in _report(kb).read_text(encoding="utf-8")
+        text = _report(kb).read_text(encoding="utf-8")
+        assert MARKER in text
+        assert "reason type: FactlogError" in text
+        assert "pip install 'pyrewire>=1.0.3'" in text
+        assert "simulated broken engine install" not in text
+
+    @pytest.mark.parametrize(
+        ("shim", "message", "error_type"),
+        [
+            (
+                lambda root: _top_level_engine_shim(
+                    root,
+                    'raise OSError("dlopen: broken native extension")',
+                    "oserror-shim",
+                ),
+                "dlopen: broken native extension",
+                "OSError",
+            ),
+            (
+                lambda root: _package_engine_shim(
+                    root,
+                    '''__version__ = "1.0.4"
+def __getattr__(name):
+    if name == "EasySession":
+        raise RuntimeError("EasySession loader exploded")
+    raise AttributeError(name)
+''',
+                    "runtime-shim",
+                ),
+                "EasySession loader exploded",
+                "RuntimeError",
+            ),
+        ],
+    )
+    def test_ordinary_import_failure_replaces_stale_report_with_exact_cause(
+        self, tmp_path, shim, message, error_type
+    ):
+        kb = _kb(tmp_path)
+        before = _report(kb).read_bytes()
+
+        result = _run(kb, extra_pythonpath=shim(tmp_path))
+
+        assert result.returncode != 0
+        after = _report(kb).read_bytes()
+        assert after != before
+        text = after.decode()
+        assert MARKER in text
+        assert f"reason: {message}" in text
+        assert f"reason type: {error_type}" in text
+        assert message in result.stderr
+        assert error_type in result.stderr
+        assert "pip install" not in result.stderr
+
+    def test_partial_module_is_unusable_and_its_failure_wins(self, tmp_path):
+        shim = _package_engine_shim(
+            tmp_path,
+            '''__version__ = "1.0.4"
+def __getattr__(name):
+    if name == "EasySession":
+        raise RuntimeError("partial EasySession failure")
+    raise AttributeError(name)
+''',
+            "partial-runtime-shim",
+        )
+        result = _run_python(
+            shim,
+            """from factlog import common
+print(common.pyrewire is None, common.EasySession is None)
+try:
+    common.require_pyrewire_version()
+except Exception as exc:
+    print(type(exc).__name__, str(exc))
+""",
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == [
+            "True True",
+            "RuntimeError partial EasySession failure",
+        ]
 
     def test_program_the_engine_refuses_still_writes_a_report(self, tmp_path):
         """A cause that is NOT a FactlogError.
@@ -140,6 +247,119 @@ class TestReportIsWrittenWhenTheEngineCannotRun:
         # The traceback still reaches stderr — the report does not replace it.
         assert "ParseError" in result.stderr
         assert "reason type: ParseError" in text
+
+
+class TestDeferredImportFailureState:
+    def test_repeated_require_keeps_traceback_shape_stable(self, tmp_path):
+        shim = _top_level_engine_shim(
+            tmp_path,
+            'raise OSError("stable import traceback")',
+            "stable-traceback-shim",
+        )
+        result = _run_python(
+            shim,
+            """import traceback
+from factlog import common
+for _ in range(2):
+    try:
+        common.require_pyrewire_version()
+    except Exception as exc:
+        frames = traceback.extract_tb(exc.__traceback__)
+        gate_frames = sum(frame.name == "require_pyrewire_version" for frame in frames)
+        print(type(exc).__name__, str(exc), gate_frames, repr(traceback.format_tb(exc.__traceback__)))
+""",
+        )
+        assert result.returncode == 0, result.stderr
+        first, second = result.stdout.splitlines()
+        assert first == second
+        assert first.startswith("OSError stable import traceback 1 ")
+
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            (
+                '''raise ImportError("top-level package missing")
+''',
+                "FactlogError pyrewire가 필요합니다. 예: pip install 'pyrewire>=1.0.3'",
+            ),
+            (
+                '''__version__ = "1.0.4"
+def __getattr__(name):
+    if name == "EasySession":
+        raise ImportError("EasySession unavailable")
+    raise AttributeError(name)
+''',
+                "FactlogError pyrewire가 필요합니다. 예: pip install 'pyrewire>=1.0.3'",
+            ),
+            (
+                '''__version__ = "1.0.3"
+class EasySession:
+    pass
+''',
+                "ok",
+            ),
+            (
+                '''__version__ = "1.0.2"
+class EasySession:
+    pass
+''',
+                "FactlogError pyrewire 1.0.3 이상이 필요합니다. 현재 버전: 1.0.2",
+            ),
+        ],
+    )
+    def test_import_and_version_compatibility_matrix(
+        self, tmp_path, body, expected
+    ):
+        shim = _package_engine_shim(
+            tmp_path, body, f"compat-{abs(hash(body))}"
+        )
+        result = _run_python(
+            shim,
+            """from factlog import common
+try:
+    common.require_pyrewire_version()
+except Exception as exc:
+    print(type(exc).__name__, str(exc))
+else:
+    print("ok")
+""",
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == expected
+
+    @pytest.mark.parametrize(
+        ("statement", "expected_returncode", "stderr_text", "name"),
+        [
+            ('raise SystemExit(73)', 73, "", "system-exit-shim"),
+            (
+                'raise KeyboardInterrupt("stop import")',
+                None,
+                "KeyboardInterrupt: stop import",
+                "keyboard-shim",
+            ),
+        ],
+    )
+    def test_base_exception_is_not_deferred_or_reported(
+        self,
+        tmp_path,
+        statement,
+        expected_returncode,
+        stderr_text,
+        name,
+    ):
+        kb = _kb(tmp_path)
+        before = _report(kb).read_bytes()
+        shim = _top_level_engine_shim(tmp_path, statement, name)
+
+        result = _run(kb, extra_pythonpath=shim)
+
+        if expected_returncode is not None:
+            assert result.returncode == expected_returncode
+        else:
+            assert result.returncode != 0
+        if stderr_text:
+            assert stderr_text in result.stderr
+        assert _report(kb).read_bytes() == before
 
 
 class TestTheFailureReportDoesNotReadAsAResult:

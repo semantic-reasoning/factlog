@@ -1255,17 +1255,12 @@ def main() -> None:
         # `run_wirelog` alone would trade a wrong word for a stale report, which
         # is the whole defect #338 exists to remove.
         #
-        # It also under-labels. A run that dies before reaching
-        # this try still leaves the previous report standing, and one such path
-        # is a real engine failure rather than a hypothetical: `common` guards
-        # its `import pyrewire` with `except ImportError` ONLY, so an engine
-        # whose import fails some other way — a broken native extension raising
-        # OSError from dlopen — propagates out of the `from common import ...`
-        # above, at module import time, where no handler here can run. Measured:
-        # no report is written, and the traceback is the only output. Widening
-        # that guard belongs next to it in factlog/common.py, not here; catching
-        # it at this module's import would mean rebuilding FACTS_DIR without the
-        # module that defines it.
+        # It can also under-label a run that dies before reaching this try.
+        # Ordinary failures while importing pyrewire are deliberately deferred
+        # by common until run_wirelog calls require_pyrewire_version, so broken
+        # native extensions still arrive inside this report boundary. Control-
+        # flow BaseExceptions remain immediate module-import exits and never
+        # write a report.
         #
         # BEST EFFORT, because reporting the failure must not REPLACE it. With
         # facts/ read-only, writing raised PermissionError from inside this

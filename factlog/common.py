@@ -13,13 +13,24 @@ from collections import defaultdict, deque
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from types import TracebackType
 
 from factlog import literal_types
 
+_PYREWIRE_IMPORT_ERROR: Exception | None = None
+_PYREWIRE_IMPORT_TRACEBACK: TracebackType | None = None
 try:
     import pyrewire
     from pyrewire import EasySession
 except ImportError:  # pragma: no cover - exercised only on machines without pyrewire.
+    pyrewire = None
+    EasySession = None
+except Exception as exc:  # pragma: no cover - isolated import shims exercise this.
+    # A broken native dependency can raise OSError/RuntimeError while importing.
+    # Let non-engine helpers remain importable, but preserve the original failure
+    # until engine use is requested. BaseException deliberately is not caught.
+    _PYREWIRE_IMPORT_ERROR = exc
+    _PYREWIRE_IMPORT_TRACEBACK = exc.__traceback__
     pyrewire = None
     EasySession = None
 
@@ -209,6 +220,11 @@ def version_tuple(value: str) -> tuple[int, ...]:
 
 
 def require_pyrewire_version() -> None:
+    if _PYREWIRE_IMPORT_ERROR is not None:
+        # Reset to the import-time traceback on every attempt. Raising the same
+        # exception object without this would accumulate one version-gate frame
+        # per call and make repeated diagnostics depend on call count.
+        raise _PYREWIRE_IMPORT_ERROR.with_traceback(_PYREWIRE_IMPORT_TRACEBACK)
     if EasySession is None or pyrewire is None:
         raise FactlogError("pyrewire가 필요합니다. 예: pip install 'pyrewire>=1.0.3'")
     current = version_tuple(str(getattr(pyrewire, "__version__", "0")))
