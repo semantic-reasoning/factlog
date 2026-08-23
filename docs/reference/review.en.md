@@ -123,3 +123,27 @@ to `candidates.csv`**; just rebuild `accepted.dl` with `/factlog check`.
 > **Migration:** Existing `confirmed` rows remain engine input for compatibility.
 > New extraction runs are always placed in the pending queue, even if they claim
 > an engine or retired status; review them with `factlog accept` or `factlog reject`.
+
+### Recovering an existing review ledger
+
+`tools/validate.py` requires these four exact heading lines in
+`decisions/open-questions.md`. Validation does not modify the file.
+
+```text
+## 중복 개념 후보
+## 모호한 관계명
+## 출처 부족
+## 기존 내용과 충돌할 수 있는 항목
+```
+
+If the file is absent, replace `<KB_PATH>` with the actual KB path and run:
+
+```bash
+factlog init --target <KB_PATH> --no-activate
+```
+
+This never overwrites existing files or changes the active-KB configuration,
+though it may create other missing scaffold files. If the file already exists
+with missing or renamed headings, `init` does not repair it. Preserve its prose
+and bullets, rename equivalent headings back to the exact forms above, add only
+the headings that are truly absent, and rerun validation.

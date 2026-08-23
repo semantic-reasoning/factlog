@@ -15,6 +15,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 _TOOLS_DIR = Path(__file__).resolve().parent
 if str(_TOOLS_DIR) not in sys.path:
@@ -31,6 +32,62 @@ import factlog_config  # noqa: E402
 os.environ["FACTLOG_ROOT"] = factlog_config.resolve_root()[0]
 
 from common import FACT_HEADER, KNOWN_STATUSES, logic_policy_md_has_rules  # noqa: E402
+
+
+REVIEW_HEADINGS: tuple[str, ...] = (
+    "## 중복 개념 후보",
+    "## 모호한 관계명",
+    "## 출처 부족",
+    "## 기존 내용과 충돌할 수 있는 항목",
+)
+
+
+class ReviewLedgerState(NamedTuple):
+    exists: bool
+    missing: bool
+    text: str
+    missing_headings: tuple[str, ...]
+
+
+def review_ledger_state(root: Path) -> ReviewLedgerState:
+    """Read the review ledger once and find exact machine insertion anchors.
+
+    CRLF is accepted through ``splitlines``. Indented/suffixed headings are not:
+    insertion requires exact lines. A heading in a fenced code example is prose,
+    not an insertion anchor, and is ignored.
+    """
+    path = root / "decisions" / "open-questions.md"
+    if not path.is_file():
+        truly_missing = not path.exists() and not path.is_symlink()
+        return ReviewLedgerState(False, truly_missing, "", ())
+    text = read(path)
+    headings: set[str] = set()
+    fence: tuple[str, int] | None = None
+    for line in text.splitlines():
+        if fence is not None:
+            closing = re.fullmatch(r" {0,3}(`{3,}|~{3,})[ \t]*", line)
+            if (
+                closing
+                and closing.group(1)[0] == fence[0]
+                and len(closing.group(1)) >= fence[1]
+            ):
+                fence = None
+            continue
+
+        opening = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+        if opening:
+            marker, info = opening.groups()
+            if marker[0] == "~" or "`" not in info:
+                fence = (marker[0], len(marker))
+                continue
+        if line in REVIEW_HEADINGS:
+            headings.add(line)
+    return ReviewLedgerState(
+        True,
+        False,
+        text,
+        tuple(heading for heading in REVIEW_HEADINGS if heading not in headings),
+    )
 
 
 
@@ -171,7 +228,9 @@ def validate_logic_policy(root: Path) -> list[str]:
     return [f"policy/logic-policy.dl does not match policy/logic-policy.md: {detail}"]
 
 
-def validate(root: Path) -> list[str]:
+def validate(
+    root: Path, *, review_state: ReviewLedgerState | None = None
+) -> list[str]:
     errors: list[str] = []
     for dirname in ["sources", "pages", "facts", "decisions", "policy"]:
         if not (root / dirname).is_dir():
@@ -268,15 +327,23 @@ def validate(root: Path) -> list[str]:
                 if source_error:
                     errors.append(f"facts/candidates.csv line {idx} {source_error}")
 
-    decisions = root / "decisions" / "open-questions.md"
-    if not decisions.is_file():
+    review_state = review_state or review_ledger_state(root)
+    if review_state.missing:
         errors.append("missing decisions/open-questions.md")
         decision_text = ""
+    elif not review_state.exists:
+        errors.append(
+            "decisions/open-questions.md must be a regular file; move or repair "
+            "the obstructing path"
+        )
+        decision_text = ""
     else:
-        decision_text = read(decisions)
-        for section in ["중복", "모호", "출처", "충돌"]:
-            if section not in decision_text:
-                errors.append(f"decisions/open-questions.md should keep a {section!r} review section")
+        decision_text = review_state.text
+        for heading in review_state.missing_headings:
+            errors.append(
+                "decisions/open-questions.md should keep exact review heading "
+                f"{heading!r}"
+            )
         decision_bullets = [line for line in decision_text.splitlines() if line.lstrip().startswith("- ")]
         if any(row.get("status") == "needs_review" for row in rows) and not decision_bullets:
             errors.append("needs_review facts exist but decisions/open-questions.md has no review bullets")
@@ -326,11 +393,32 @@ def main() -> int:
     parser.add_argument("root", nargs="?", default=os.environ["FACTLOG_ROOT"])
     args = parser.parse_args()
     root = Path(args.root).expanduser().resolve()
-    errors = validate(root)
+    review_state = review_ledger_state(root)
+    errors = validate(root, review_state=review_state)
     if errors:
         print("Fact sync validation failed:")
         for error in errors:
             print(f"- {error}")
+        if review_state.missing:
+            print(
+                "hint: replace <KB_PATH> with this KB's path and run "
+                "factlog init --target <KB_PATH> --no-activate. This may create "
+                "other missing scaffold files but never overwrites existing files."
+            )
+        elif not review_state.exists:
+            print(
+                "hint: decisions/open-questions.md is obstructed by a non-file path. "
+                "Move or repair that path first; factlog init cannot replace it."
+            )
+        elif review_state.missing_headings:
+            missing = ", ".join(repr(heading) for heading in review_state.missing_headings)
+            print(
+                "hint: preserve existing prose and bullets, then restore these exact "
+                f"machine insertion heading lines: {missing}. If an equivalent heading "
+                "was renamed, rename it back instead of adding a duplicate section; if it "
+                "is truly absent, add it. Re-run validate afterwards. factlog init does "
+                "not modify an existing decisions/open-questions.md."
+            )
         return 1
     print(f"Fact sync validation passed: {root}")
     return 0

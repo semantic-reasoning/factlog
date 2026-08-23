@@ -88,13 +88,13 @@ reason type: FactlogError
 
 훅은 `Write` 와 `Edit` 에만 걸리므로 복구는 **Bash 로** 합니다. 컴파일을 먼저
 돌려 `facts/accepted.dl` 을 만들면 풀립니다. 단 `facts/candidates.csv` 가 없으면
-컴파일 자체가 `missing facts/candidates.csv` 로 멈추므로, 없을 때만 헤더 한 줄을
-먼저 만들어 줍니다. `factlog init` 은 이 파일을 다시 만들어 주지 않습니다.
+컴파일 자체가 `missing facts/candidates.csv` 로 멈춥니다. 기존 파일을 덮어쓰거나
+활성 KB를 바꾸지 않고 누락된 스캐폴드를 만들려면 `--no-activate`로 `factlog init`을
+다시 실행하세요. 다른 누락된 스캐폴드 파일도 함께 만들어질 수 있습니다.
 
 ```bash
-cd <KB 루트>
-[ -f facts/candidates.csv ] || \
-  echo 'subject,relation,object,source,status,confidence,note' > facts/candidates.csv
+factlog init --target <KB_PATH> --no-activate
+cd <KB_PATH>
 "${CLAUDE_PLUGIN_ROOT}"/tools/factlog_python.sh "${CLAUDE_PLUGIN_ROOT}"/tools/compile_facts.py
 "${CLAUDE_PLUGIN_ROOT}"/tools/factlog_python.sh "${CLAUDE_PLUGIN_ROOT}"/tools/run_logic_check.py
 ```

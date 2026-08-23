@@ -85,13 +85,13 @@ no report exists.
 The hook only matches `Write` and `Edit`, so recovery runs through **Bash**.
 Compiling first — which produces `facts/accepted.dl` — is what clears it. Note
 that if `facts/candidates.csv` is absent the compile itself stops with `missing
-facts/candidates.csv`, so seed a header row when the file is missing. `factlog
-init` does not recreate it.
+facts/candidates.csv`. Re-run `factlog init` with `--no-activate` to create any
+missing scaffold files without overwriting existing files or changing the active
+KB. It may also create other missing scaffold files.
 
 ```bash
-cd <KB root>
-[ -f facts/candidates.csv ] || \
-  echo 'subject,relation,object,source,status,confidence,note' > facts/candidates.csv
+factlog init --target <KB_PATH> --no-activate
+cd <KB_PATH>
 "${CLAUDE_PLUGIN_ROOT}"/tools/factlog_python.sh "${CLAUDE_PLUGIN_ROOT}"/tools/compile_facts.py
 "${CLAUDE_PLUGIN_ROOT}"/tools/factlog_python.sh "${CLAUDE_PLUGIN_ROOT}"/tools/run_logic_check.py
 ```

@@ -524,9 +524,8 @@ explanation of its purpose.
     # validate (#327). Headings are byte-identical to what
     # merge_candidates.decision_section() emits, so `sync` fills these sections
     # instead of appending duplicates; tests/unit/test_init_validate_clean.py pins
-    # the two together. validate looks for each section by plain substring, so the
-    # prose below must not repeat its own section's keyword (중복/모호/출처/충돌) —
-    # otherwise the prose answers the check and a deleted heading goes unnoticed.
+    # the two together. validate requires each heading as an exact line outside a
+    # fenced code block so prose examples cannot satisfy the ledger contract.
     "decisions/open-questions.md": """\
 # Open Questions
 
