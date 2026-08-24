@@ -1333,7 +1333,14 @@ def _apply_lang(normalized: str, command: str) -> str:
     damaged-config guard above never fires. *command* names the caller so the
     message says which command could not write.
     """
+    replacing_symlink = (
+        _config_symlink_replacement_notice()
+        if factlog_config.config_status() == factlog_config.READABLE
+        else None
+    )
     _config_write_or_explain(command, lambda: factlog_config.write_lang(normalized or None))
+    if replacing_symlink is not None:
+        print(f"{command}: {replacing_symlink}")
     if normalized:
         return f"narration language set to {normalized}"
     return "narration language cleared"

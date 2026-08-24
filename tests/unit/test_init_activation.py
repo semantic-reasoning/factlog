@@ -716,6 +716,144 @@ class TestUseOwnsTheSameDisclosures:
 
 
 class TestReadableConfigSymlinkReplacementDisclosure:
+    @pytest.mark.parametrize(
+        ("language", "expected"),
+        [("en", {"root": "/real/kb", "lang": "en"}), ("", {"root": "/real/kb"})],
+    )
+    def test_direct_language_write_names_loss_once_and_preserves_far_end(
+        self, language, expected, tmp_path, config_home, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+        path, far_end, before, raw_target = seed_readable_symlink(
+            config_home, tmp_path
+        )
+
+        assert cli.main(["lang", language]) == 0
+        out = capsys.readouterr().out
+        notice = f"{SYMLINK_NOTICE}: {raw_target!r}"
+
+        assert out.count(notice) == 1
+        assert len(notice.splitlines()) == 1
+        assert str(far_end.resolve()) not in notice
+        assert not path.is_symlink()
+        assert far_end.read_bytes() == before
+        assert json.loads(path.read_text(encoding="utf-8")) == expected
+
+    def test_language_query_and_invalid_value_do_not_replace_or_disclose(
+        self, tmp_path, config_home, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+        path, far_end, before, _ = seed_readable_symlink(config_home, tmp_path)
+
+        assert cli.main(["lang"]) == 0
+        assert cli.main(["lang", "x" * 33]) == 2
+        captured = capsys.readouterr()
+
+        assert SYMLINK_NOTICE not in captured.out + captured.err
+        assert path.is_symlink()
+        assert far_end.read_bytes() == before
+
+    def test_failed_direct_language_write_prints_no_false_notice(
+        self, tmp_path, config_home, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+        path, far_end, before, _ = seed_readable_symlink(config_home, tmp_path)
+
+        def fail_lang(_language):
+            raise OSError(28, "disk full")
+
+        monkeypatch.setattr(factlog_config, "write_lang", fail_lang)
+        assert cli.main(["lang", "en"]) == 1
+        captured = capsys.readouterr()
+
+        assert SYMLINK_NOTICE not in captured.out + captured.err
+        assert path.is_symlink()
+        assert far_end.read_bytes() == before
+
+    def test_language_only_setup_names_loss_once(
+        self, tmp_path, config_home, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+        path, far_end, before, raw_target = seed_readable_symlink(
+            config_home, tmp_path
+        )
+        monkeypatch.setattr(cli, "_run_doctor_checks", lambda *a, **k: True)
+        scratch = tmp_path / "scratch"
+
+        assert (
+            cli.main(
+                ["setup", "--target", str(scratch), "--no-activate", "--lang", "en"]
+            )
+            == 0
+        )
+        out = capsys.readouterr().out
+        notice = f"{SYMLINK_NOTICE}: {raw_target!r}"
+
+        assert out.count(notice) == 1
+        assert not path.is_symlink()
+        assert far_end.read_bytes() == before
+        assert json.loads(path.read_text(encoding="utf-8")) == {
+            "root": "/real/kb",
+            "lang": "en",
+        }
+
+    def test_setup_activation_and_language_disclose_only_root_replacement(
+        self, tmp_path, config_home, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+        path, far_end, before, raw_target = seed_readable_symlink(
+            config_home, tmp_path
+        )
+        monkeypatch.setattr(cli, "_run_doctor_checks", lambda *a, **k: True)
+        scratch = tmp_path / "scratch"
+
+        assert (
+            cli.main(
+                ["setup", "--target", str(scratch), "--activate", "--lang", "en"]
+            )
+            == 0
+        )
+        out = capsys.readouterr().out
+        notice = f"{SYMLINK_NOTICE}: {raw_target!r}"
+
+        assert out.count(notice) == 1
+        assert not path.is_symlink()
+        assert far_end.read_bytes() == before
+        assert json.loads(path.read_text(encoding="utf-8")) == {
+            "root": resolved(scratch),
+            "lang": "en",
+        }
+
+    def test_failed_language_only_setup_prints_no_false_notice(
+        self, tmp_path, config_home, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+        path, far_end, before, _ = seed_readable_symlink(config_home, tmp_path)
+        monkeypatch.setattr(cli, "_run_doctor_checks", lambda *a, **k: True)
+
+        def fail_lang(_language):
+            raise OSError(28, "disk full")
+
+        monkeypatch.setattr(factlog_config, "write_lang", fail_lang)
+        assert (
+            cli.main(
+                [
+                    "setup",
+                    "--target",
+                    str(tmp_path / "scratch"),
+                    "--no-activate",
+                    "--lang",
+                    "en",
+                ]
+            )
+            == 1
+        )
+        captured = capsys.readouterr()
+
+        assert SYMLINK_NOTICE not in captured.out + captured.err
+        assert path.is_symlink()
+        assert far_end.read_bytes() == before
+
     def test_use_names_the_loss_and_preserves_the_far_end(
         self, tmp_path, config_home, monkeypatch, capsys
     ):
