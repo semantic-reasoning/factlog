@@ -1244,6 +1244,62 @@ def nonregular_config(request, config_home, monkeypatch):
     yield request.param, path, predicate, effective_home
 
 
+@pytest.fixture(params=["directory", "fifo", "socket"])
+def nonregular_symlink_target(request, tmp_path, config_home, monkeypatch):
+    """A relative config symlink whose reachable target is not a regular file."""
+    owner = None
+    short_home = None
+    if request.param == "socket":
+        if not hasattr(socket, "AF_UNIX"):
+            pytest.skip("Unix-domain sockets are not available on this platform")
+        short_home = Path(tempfile.mkdtemp(prefix="f390-"))
+        effective_home = short_home
+    else:
+        effective_home = config_home
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(effective_home))
+    path = config_file(effective_home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    target = effective_home / "targets" / request.param
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if request.param == "directory":
+        target.mkdir()
+        target.joinpath("keep.txt").write_text("keep\n", encoding="utf-8")
+        predicate = stat.S_ISDIR
+    elif request.param == "fifo":
+        if not hasattr(os, "mkfifo"):
+            pytest.skip("FIFO is not available on this platform")
+        os.mkfifo(target)
+        predicate = stat.S_ISFIFO
+    else:
+        owner = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            owner.bind(str(target))
+        except OSError as exc:
+            owner.close()
+            shutil.rmtree(short_home, ignore_errors=True)
+            pytest.skip(f"cannot bind a Unix-domain socket here: {exc}")
+        predicate = stat.S_ISSOCK
+    raw_target = os.path.relpath(target, path.parent)
+    path.symlink_to(raw_target)
+    inode = target.lstat().st_ino
+    assert predicate(target.lstat().st_mode)
+    try:
+        yield (
+            request.param,
+            path,
+            target,
+            predicate,
+            effective_home,
+            raw_target,
+            inode,
+        )
+    finally:
+        if owner is not None:
+            owner.close()
+        if short_home is not None:
+            shutil.rmtree(short_home, ignore_errors=True)
+
+
 def run_factlog(config_home: Path, *argv: str):
     env = dict(os.environ)
     env["XDG_CONFIG_HOME"] = str(config_home)
@@ -1361,6 +1417,174 @@ class TestNonRegularConfigPathGuidance:
         ) == 1, proc.stdout
         assert "KB root it may still have held" not in proc.stdout
         assert "narration language in it is gone" not in proc.stdout
+
+
+class TestNonRegularSymlinkTargetGuidance:
+    def _assert_refusal(self, text: str, raw_target: str) -> None:
+        lowered = text.lower()
+        assert (
+            f"symlink whose reachable target {raw_target!r} is not a regular file"
+            in text
+        )
+        assert "leaving both the link and its non-regular target untouched" in text
+        assert "re-point the link to a readable regular config file" in lowered
+        assert (
+            "replace the non-regular target with one after preserving anything needed"
+            in lowered
+        )
+        assert "remove the link" in lowered
+        assert "remove the link, then re-run" in lowered
+        assert "leaving its bytes untouched" not in text
+        assert "KB root it may still hold" not in text
+        assert "repair that file" not in text
+
+    @pytest.mark.parametrize("command", ["init", "lang", "setup"])
+    def test_refusal_paths_name_link_and_target_without_opening_it(
+        self, command, tmp_path, nonregular_symlink_target
+    ):
+        kind, path, target, predicate, home, raw_target, inode = (
+            nonregular_symlink_target
+        )
+        scratch = tmp_path / f"scratch-{kind}-{command}"
+        if command == "init":
+            proc = run_init("--target", str(scratch), config_home=home)
+            assert proc.returncode == 0, proc.stdout + proc.stderr
+        elif command == "lang":
+            proc = run_factlog(home, "lang", "ko")
+            assert proc.returncode == 1, proc.stdout + proc.stderr
+        else:
+            proc = run_factlog(
+                home, "setup", "--target", str(scratch), "--lang", "ko"
+            )
+            assert proc.returncode == 1, proc.stdout + proc.stderr
+        output = proc.stdout + proc.stderr
+
+        self._assert_refusal(output, raw_target)
+        reason = (
+            f"is a symlink whose reachable target {raw_target!r} is not a regular file"
+        )
+        preserved = "leaving both the link and its non-regular target untouched"
+        cost = (
+            "replace the link with a regular config file while leaving its "
+            "non-regular target unchanged"
+        )
+        remedy = (
+            "re-point the link to a readable regular config file, replace the "
+            "non-regular target with one after preserving anything needed, or "
+            "remove the link, then re-run"
+        )
+        if command == "init":
+            assert f"active-KB config at {path} {reason} — {preserved};" in proc.stdout
+            assert f"\n  {remedy}, or overwrite it deliberately: factlog use" in proc.stdout
+        elif command == "lang":
+            assert f"{reason} — {preserved}, because writing it would {cost}." in proc.stderr
+            assert f"{remedy[0].upper()}{remedy[1:]}, or overwrite it deliberately:" in proc.stderr
+        else:
+            joint = (
+                "record this KB and the language together: "
+                f"factlog use {scratch} --lang ko"
+            )
+            assert f"{reason}, and writing it would {cost} — {joint}" in proc.stdout
+            assert (
+                f"because {path} {reason} (see above). "
+                f"{joint[0].upper()}{joint[1:]}."
+            ) in proc.stderr
+            assert "then set the language with `factlog lang`" not in output
+        assert "factlog use" in output or "--force" in output
+        assert path.is_symlink()
+        assert os.readlink(path) == raw_target
+        assert target.lstat().st_ino == inode
+        assert predicate(target.lstat().st_mode)
+        if kind == "directory":
+            assert target.joinpath("keep.txt").read_text(encoding="utf-8") == "keep\n"
+
+    def test_reach_note_keeps_the_deliberate_repoint_hint(
+        self, tmp_path, nonregular_symlink_target, monkeypatch
+    ):
+        _, path, target, predicate, _, raw_target, inode = nonregular_symlink_target
+        monkeypatch.delenv("FACTLOG_ROOT", raising=False)
+
+        note = cli._reach_note(tmp_path / "scratch")
+
+        assert note is not None and "factlog use" in note
+        assert path.is_symlink() and os.readlink(path) == raw_target
+        assert target.lstat().st_ino == inode
+        assert predicate(target.lstat().st_mode)
+
+    def test_removing_the_link_makes_the_documented_manual_recovery_succeed(
+        self, nonregular_symlink_target
+    ):
+        _, path, target, predicate, home, _, inode = nonregular_symlink_target
+        path.unlink()
+
+        proc = run_factlog(home, "lang", "ko")
+
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert path.is_file() and not path.is_symlink()
+        assert target.lstat().st_ino == inode
+        assert predicate(target.lstat().st_mode)
+
+    @pytest.mark.parametrize("command", ["use", "lang-force", "init-activate"])
+    def test_deliberate_writes_replace_only_the_link_once(
+        self, command, tmp_path, nonregular_symlink_target
+    ):
+        kind, path, target, predicate, home, raw_target, inode = (
+            nonregular_symlink_target
+        )
+        kb = tmp_path / f"kb-{kind}-{command}"
+        (kb / "sources").mkdir(parents=True)
+        if command == "use":
+            proc = run_factlog(home, "use", str(kb))
+        elif command == "lang-force":
+            proc = run_factlog(home, "lang", "ko", "--force")
+        else:
+            proc = run_init(
+                "--target", str(kb), "--activate", config_home=home
+            )
+
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert proc.stdout.count(SYMLINK_NOTICE) == 1
+        assert repr(raw_target) in proc.stdout
+        assert path.is_file() and not path.is_symlink()
+        assert target.lstat().st_ino == inode
+        assert predicate(target.lstat().st_mode)
+        if kind == "directory":
+            assert target.joinpath("keep.txt").read_text(encoding="utf-8") == "keep\n"
+
+    def test_readlink_failure_falls_back_without_crashing(
+        self, nonregular_symlink_target, monkeypatch
+    ):
+        _, path, target, predicate, _, _, inode = nonregular_symlink_target
+
+        def fail_readlink(_self):
+            raise OSError("lost race")
+
+        monkeypatch.setattr(type(path), "readlink", fail_readlink)
+        said = cli._unreadable()
+
+        assert "reachable target is not a regular file" in said.reason
+        assert "lost race" not in said.reason
+        assert target.lstat().st_ino == inode
+        assert predicate(target.lstat().st_mode)
+
+    def test_target_stat_race_falls_back_to_unreachable_without_crashing(
+        self, nonregular_symlink_target, monkeypatch
+    ):
+        _, path, target, predicate, _, raw_target, inode = nonregular_symlink_target
+        real_stat = type(path).stat
+
+        def fail_target_stat(self, *args, **kwargs):
+            if self == path:
+                raise OSError("target changed")
+            return real_stat(self, *args, **kwargs)
+
+        monkeypatch.setattr(type(path), "stat", fail_target_stat)
+        said = cli._unreadable()
+
+        assert said.reason == "is a symlink whose target is not reachable right now"
+        assert repr(raw_target) in said.lost
+        assert target.lstat().st_ino == inode
+        assert predicate(target.lstat().st_mode)
 
 
 class TestExplicitFlags:
