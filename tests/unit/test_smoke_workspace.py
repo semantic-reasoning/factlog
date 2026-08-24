@@ -135,6 +135,52 @@ def _group_exists(pgid: int) -> bool:
     return True
 
 
+def _group_has_live_members(pgid: int) -> bool:
+    """Whether *pgid* has a process that can still execute.
+
+    Linux can retain an orphaned descendant as a zombie after this test signals
+    it.  ``killpg(pgid, 0)`` still sees that process group, even though a zombie
+    cannot execute or keep the inherited smoke pipes open and this process is
+    not its parent, so cannot reap it.  Other POSIX systems retain the portable
+    existence check.
+    """
+    proc = Path("/proc")
+    if not sys.platform.startswith("linux") or not proc.is_dir():
+        return _group_exists(pgid)
+    try:
+        entries = list(proc.iterdir())
+    except OSError:
+        return _group_exists(pgid)
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            text = entry.joinpath("stat").read_text(encoding="utf-8")
+            _, separator, tail = text.rpartition(")")
+            fields = tail.split()
+            if not separator or len(fields) < 3:
+                return _group_exists(pgid)
+            state = fields[0]
+            member_pgid = int(fields[2])
+        except FileNotFoundError:
+            # Normal /proc race: the process exited between listing and reading.
+            continue
+        except (OSError, ValueError):
+            return _group_exists(pgid)
+        if member_pgid == pgid and state != "Z":
+            return True
+    return False
+
+
+def _wait_for_group_termination(pgid: int, timeout: float = 1.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while _group_has_live_members(pgid):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.01)
+    return True
+
+
 def _signal_group(pgid: int, sent: signal.Signals) -> None:
     try:
         os.killpg(pgid, sent)
@@ -328,7 +374,7 @@ def test_test_cleanup_kills_descendants_after_the_session_leader_exits():
 
         _terminate_groups([process])
 
-        assert not _group_exists(process.pid)
+        assert _wait_for_group_termination(process.pid)
     finally:
         _signal_group(process.pid, signal.SIGKILL)
 

@@ -1821,9 +1821,11 @@ class TestNonRegularSymlinkTargetGuidance:
     ):
         _, path, target, predicate, _, raw_target, inode = nonregular_symlink_target
         real_stat = type(path).stat
+        followed_target = []
 
         def fail_target_stat(self, *args, **kwargs):
-            if self == path:
+            if self == path and kwargs.get("follow_symlinks", True):
+                followed_target.append(True)
                 raise OSError("target changed")
             return real_stat(self, *args, **kwargs)
 
@@ -1831,6 +1833,7 @@ class TestNonRegularSymlinkTargetGuidance:
         said = cli._unreadable()
 
         assert said.reason == "is a symlink whose target is not reachable right now"
+        assert followed_target == [True]
         assert repr(raw_target) in said.lost
         assert target.lstat().st_ino == inode
         assert predicate(target.lstat().st_mode)

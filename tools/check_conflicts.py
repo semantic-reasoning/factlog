@@ -26,7 +26,6 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-import unicodedata
 from pathlib import Path
 
 _TOOLS_DIR = Path(__file__).parent
@@ -53,15 +52,15 @@ from common import (  # noqa: E402
 from factlog.conflicts import (  # noqa: E402
     ConflictScan,
     DigitWidthOffender,
-    _canonicalize,
+    _canonicalize as _canonicalize,
     _fold,
     _fold_classes,
-    _group_key,
-    _group_key_unfolded,
-    _representative,
+    _group_key as _group_key,
+    _group_key_unfolded as _group_key_unfolded,
+    _representative as _representative,
     collect_conflicts,
     collect_conflict_digit_width_offenders,
-    detect_conflicts,
+    detect_conflicts as detect_conflicts,
 )
 
 

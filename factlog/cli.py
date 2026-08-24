@@ -19,7 +19,7 @@ import sys
 from pathlib import Path as _Path
 from typing import Callable, NamedTuple
 
-from factlog import __version__, ingest, literal_types
+from factlog import __version__, ingest
 from factlog import config as factlog_config
 from factlog.common import FACT_HEADER, _atomic_write_text
 
