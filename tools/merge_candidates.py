@@ -94,6 +94,7 @@ from common import (  # noqa: E402
     sync_ignore_patterns,
 )
 from factlog import literal_types  # noqa: E402
+from factlog.markdown import scan_markdown_structure  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -567,22 +568,44 @@ def decision_section(row: dict[str, str]) -> str:
 
 
 def insert_bullet(text: str, section: str, bullet: str) -> str:
-    lines = text.splitlines()
+    structure = scan_markdown_structure(text)
+    lines = list(structure.lines)
+    outside = set(structure.outside_indexes)
     # Idempotency by exact line, not substring: a plain `bullet in text` dropped a
     # new bullet whenever it was a prefix-substring of a longer existing bullet
     # (e.g. "...note" skipped because "...note extra" was already present).
-    if bullet.rstrip() in {line.rstrip() for line in lines}:
+    # Fenced examples are prose, not ledger records.
+    if bullet.rstrip() in {lines[index].rstrip() for index in outside}:
         return text
-    try:
-        index = lines.index(section)
-    except ValueError:
+    index = next(
+        (index for index in structure.outside_indexes if lines[index] == section),
+        None,
+    )
+    if structure.unclosed_fence_start is not None:
+        # There is no structural EOF after an unmatched opener. Repair only the
+        # prefix, then attach the opener and code body byte-for-byte: do not
+        # synthesize a closer or let the historical LF normalization strip code.
+        offset = structure.line_start_offsets[structure.unclosed_fence_start]
+        repaired = insert_bullet(text[:offset], section, bullet)
+        if index is None:
+            repaired += "\n"
+        return repaired + text[offset:]
+
+    if index is None:
+        # Preserve the historical missing-section append path byte-for-byte,
+        # including its treatment of CRLF/lone-CR and trailing whitespace.
         if text and not text.endswith("\n"):
             text += "\n"
         return f"{text}\n{section}\n{bullet}\n"
 
-    insert_at = index + 1
-    while insert_at < len(lines) and not lines[insert_at].startswith("## "):
-        insert_at += 1
+    insert_at = next(
+        (
+            candidate
+            for candidate in structure.outside_indexes
+            if candidate > index and lines[candidate].startswith("## ")
+        ),
+        len(lines),
+    )
     if insert_at > index + 1 and lines[insert_at - 1].strip():
         lines.insert(insert_at, "")
         insert_at += 1

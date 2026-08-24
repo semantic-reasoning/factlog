@@ -32,6 +32,7 @@ import factlog_config  # noqa: E402
 os.environ["FACTLOG_ROOT"] = factlog_config.resolve_root()[0]
 
 from common import FACT_HEADER, KNOWN_STATUSES, logic_policy_md_has_rules  # noqa: E402
+from factlog.markdown import scan_markdown_structure  # noqa: E402
 
 
 REVIEW_HEADINGS: tuple[str, ...] = (
@@ -52,36 +53,21 @@ class ReviewLedgerState(NamedTuple):
 def review_ledger_state(root: Path) -> ReviewLedgerState:
     """Read the review ledger once and find exact machine insertion anchors.
 
-    CRLF is accepted through ``splitlines``. Indented/suffixed headings are not:
-    insertion requires exact lines. A heading in a fenced code example is prose,
-    not an insertion anchor, and is ignored.
+    LF, CRLF, and lone CR are accepted by the shared Markdown scanner.
+    Indented/suffixed headings are not: insertion requires exact lines. A heading
+    in a fenced code example is prose, not an insertion anchor, and is ignored.
     """
     path = root / "decisions" / "open-questions.md"
     if not path.is_file():
         truly_missing = not path.exists() and not path.is_symlink()
         return ReviewLedgerState(False, truly_missing, "", ())
     text = read(path)
-    headings: set[str] = set()
-    fence: tuple[str, int] | None = None
-    for line in text.splitlines():
-        if fence is not None:
-            closing = re.fullmatch(r" {0,3}(`{3,}|~{3,})[ \t]*", line)
-            if (
-                closing
-                and closing.group(1)[0] == fence[0]
-                and len(closing.group(1)) >= fence[1]
-            ):
-                fence = None
-            continue
-
-        opening = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
-        if opening:
-            marker, info = opening.groups()
-            if marker[0] == "~" or "`" not in info:
-                fence = (marker[0], len(marker))
-                continue
-        if line in REVIEW_HEADINGS:
-            headings.add(line)
+    structure = scan_markdown_structure(text)
+    headings = {
+        structure.lines[index]
+        for index in structure.outside_indexes
+        if structure.lines[index] in REVIEW_HEADINGS
+    }
     return ReviewLedgerState(
         True,
         False,
@@ -344,7 +330,13 @@ def validate(
                 "decisions/open-questions.md should keep exact review heading "
                 f"{heading!r}"
             )
-        decision_bullets = [line for line in decision_text.splitlines() if line.lstrip().startswith("- ")]
+    decision_structure = scan_markdown_structure(decision_text)
+    if review_state.exists:
+        decision_bullets = [
+            decision_structure.lines[index]
+            for index in decision_structure.outside_indexes
+            if decision_structure.lines[index].lstrip().startswith("- ")
+        ]
         if any(row.get("status") == "needs_review" for row in rows) and not decision_bullets:
             errors.append("needs_review facts exist but decisions/open-questions.md has no review bullets")
 
@@ -372,7 +364,10 @@ def validate(
         for source_ref in re.findall(r"(?:runs/)?sources/[^\s`)>,]+?\.(?:md|txt|csv)(?:#[^\s`)>,]+)?", text):
             source_error = validate_source_ref(root, source_ref)
             stale_record = f"stale_source: {page.relative_to(root).as_posix()} references removed source {source_ref}"
-            if source_error and stale_record not in decision_text:
+            if source_error and not any(
+                stale_record in decision_structure.lines[index]
+                for index in decision_structure.outside_indexes
+            ):
                 stale_pages.append(f"{page.relative_to(root)} {source_error}")
     errors.extend(stale_pages)
     return errors

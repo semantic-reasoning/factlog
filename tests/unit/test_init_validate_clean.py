@@ -27,6 +27,7 @@ import pytest
 
 import validate
 from common import FACT_HEADER
+from factlog.markdown import scan_markdown_structure
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from factlog.cli import _TEMPLATES, _init_kb  # noqa: E402
@@ -222,6 +223,79 @@ class TestSyncFillsTheScaffoldedSections:
             len(following),
         )
         assert bullet < next_heading, "bullet did not land inside the 중복 section"
+
+
+class TestFencedLedgerWriterValidatorParity:
+    def test_needs_review_fenced_bullet_fails_then_writer_repairs_once(self, fresh_kb):
+        import merge_candidates
+
+        row = {
+            "subject": "A",
+            "relation": "related_to",
+            "object": "B",
+            "source": "sources/x.md",
+            "status": "needs_review",
+            "confidence": "0.5",
+            "note": "ambiguous",
+        }
+        facts = fresh_kb / "facts" / "candidates.csv"
+        facts.write_text(
+            ",".join(FACT_HEADER) + "\n" + ",".join(row[key] for key in FACT_HEADER) + "\n",
+            encoding="utf-8",
+        )
+        ledger = fresh_kb / "decisions" / "open-questions.md"
+        expected_bullet = (
+            "- needs_review: A / related_to / B "
+            "(sources/x.md, confidence=0.5) - ambiguous"
+        )
+        ledger.write_text(
+            _TEMPLATES["decisions/open-questions.md"]
+            + f"\n```markdown\n{expected_bullet}\n```\n",
+            encoding="utf-8",
+        )
+        error = "needs_review facts exist but decisions/open-questions.md has no review bullets"
+        assert error in validate.validate(fresh_kb)
+
+        assert merge_candidates.write_decisions(fresh_kb, [row]) == [expected_bullet]
+        assert error not in validate.validate(fresh_kb)
+        first = ledger.read_bytes()
+        assert merge_candidates.write_decisions(fresh_kb, [row]) == []
+        assert ledger.read_bytes() == first
+        structure = scan_markdown_structure(ledger.read_text(encoding="utf-8"))
+        outside = [structure.lines[index] for index in structure.outside_indexes]
+        assert outside.count(expected_bullet) == 1
+
+    def test_stale_fenced_record_fails_then_writer_repairs_once(self, fresh_kb):
+        import merge_candidates
+
+        page = fresh_kb / "pages" / "a.md"
+        page.write_text("source: sources/gone.md\n", encoding="utf-8")
+        ledger = fresh_kb / "decisions" / "open-questions.md"
+        expected_bullet = (
+            "- stale_source: pages/a.md references removed source sources/gone.md"
+        )
+        ledger.write_text(
+            _TEMPLATES["decisions/open-questions.md"]
+            + f"\n~~~markdown\n{expected_bullet}\n~~~\n",
+            encoding="utf-8",
+        )
+
+        def stale_errors():
+            return [
+                error
+                for error in validate.validate(fresh_kb)
+                if "pages/a.md" in error and "sources/gone.md" in error
+            ]
+
+        assert stale_errors()
+        assert merge_candidates.record_stale_page_refs(fresh_kb) == [expected_bullet]
+        assert stale_errors() == []
+        first = ledger.read_bytes()
+        assert merge_candidates.record_stale_page_refs(fresh_kb) == []
+        assert ledger.read_bytes() == first
+        structure = scan_markdown_structure(ledger.read_text(encoding="utf-8"))
+        outside = [structure.lines[index] for index in structure.outside_indexes]
+        assert outside.count(expected_bullet) == 1
 
 
 class TestLegacyReviewLedgerRecovery:
