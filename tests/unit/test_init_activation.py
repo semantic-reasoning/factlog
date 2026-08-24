@@ -1046,6 +1046,255 @@ class TestReadableConfigSymlinkReplacementDisclosure:
             "root": resolved(newkb),
             "lang": "ko",
         }
+        combined = captured.out + captured.err
+        assert "narration language update failed while setting 'en'" in captured.out
+        assert "config currently records 'ko' as the narration language" in captured.out
+        assert combined.count("factlog use: cannot write the active-KB config") == 1
+        assert "narration language set to" not in combined
+
+
+class TestUseLanguageWritePartialSuccess:
+    @pytest.mark.parametrize(
+        ("initial", "language", "unreadable", "expected"),
+        [
+            pytest.param("ko", "en", False, "ko", id="set-preserves-other"),
+            pytest.param(None, "en", False, None, id="set-preserves-unset"),
+            pytest.param("en", "en", False, "en", id="set-current-value"),
+            pytest.param("ko", "", False, "ko", id="clear-preserves-value"),
+            pytest.param(None, "", False, None, id="clear-already-unset"),
+            pytest.param(None, "en", True, None, id="set-after-unreadable-root"),
+            pytest.param(None, "", True, None, id="clear-after-unreadable-root"),
+        ],
+    )
+    def test_reports_completed_root_and_observed_language_state(
+        self,
+        initial,
+        language,
+        unreadable,
+        expected,
+        tmp_path,
+        config_home,
+        monkeypatch,
+        capsys,
+    ):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+        monkeypatch.delenv("FACTLOG_ROOT", raising=False)
+        path = config_file(config_home)
+        if unreadable:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('{"root": "/old", "lang": "ko"', encoding="utf-8")
+        elif initial is None:
+            write_pointer(config_home, tmp_path / "old")
+        else:
+            write_pointer(config_home, tmp_path / "old", lang=initial)
+        newkb = tmp_path / "newkb"
+        (newkb / "sources").mkdir(parents=True)
+
+        def fail_lang(_language):
+            raise OSError(28, "disk full")
+
+        monkeypatch.setattr(factlog_config, "write_lang", fail_lang)
+        assert cli.main(["use", str(newkb), "--lang", language]) == 1
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert data["root"] == resolved(newkb)
+        assert factlog_config.read_lang() == expected
+        operation = f"setting {language!r}" if language else "clearing"
+        assert f"narration language update failed while {operation}" in captured.out
+        if expected is None:
+            assert "config currently records no narration language" in captured.out
+        else:
+            assert (
+                f"config currently records {expected!r} as the narration language"
+                in captured.out
+            )
+        assert combined.count("factlog use: cannot write the active-KB config") == 1
+        assert "factlog use: cannot write the active-KB config" not in captured.out
+        assert "Traceback" not in combined
+        assert "narration language set to" not in combined
+        assert "narration language cleared" not in combined
+        assert captured.out.count("replaced an unreadable config") == int(unreadable)
+
+    def test_quotes_arbitrary_recorded_language_on_one_line(
+        self, tmp_path, config_home, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+        monkeypatch.delenv("FACTLOG_ROOT", raising=False)
+        recorded = "ko\nforged status\x1b[31m"
+        write_pointer(config_home, tmp_path / "old", lang=recorded)
+        newkb = tmp_path / "newkb"
+        (newkb / "sources").mkdir(parents=True)
+        monkeypatch.setattr(
+            factlog_config,
+            "write_lang",
+            lambda _language: (_ for _ in ()).throw(OSError(28, "disk full")),
+        )
+
+        assert cli.main(["use", str(newkb), "--lang", "en"]) == 1
+        captured = capsys.readouterr()
+        diagnostic = [
+            line
+            for line in captured.out.splitlines()
+            if "narration language update failed" in line
+        ]
+
+        assert diagnostic == [
+            "  narration language update failed while setting 'en'; "
+            f"config currently records {recorded!r} as the narration language"
+        ]
+        assert factlog_config.read_lang() == recorded
+
+    def test_flushes_partial_state_before_main_prints_the_cause(
+        self, tmp_path, config_home, monkeypatch
+    ):
+        import io
+
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+        monkeypatch.delenv("FACTLOG_ROOT", raising=False)
+        write_pointer(config_home, tmp_path / "old", lang="ko")
+        newkb = tmp_path / "newkb"
+        (newkb / "sources").mkdir(parents=True)
+        monkeypatch.setattr(
+            factlog_config,
+            "write_lang",
+            lambda _language: (_ for _ in ()).throw(OSError(28, "disk full")),
+        )
+        events = []
+
+        class EventStream(io.StringIO):
+            def __init__(self, label):
+                super().__init__()
+                self.label = label
+
+            def write(self, value):
+                events.append((self.label, "write", value))
+                return super().write(value)
+
+            def flush(self):
+                events.append((self.label, "flush", ""))
+                return super().flush()
+
+        stdout = EventStream("stdout")
+        stderr = EventStream("stderr")
+        monkeypatch.setattr(sys, "stdout", stdout)
+        monkeypatch.setattr(sys, "stderr", stderr)
+
+        assert cli.main(["use", str(newkb), "--lang", "en"]) == 1
+
+        partial = next(
+            i for i, event in enumerate(events) if "language update failed" in event[2]
+        )
+        flushed = next(
+            i
+            for i, event in enumerate(events)
+            if i > partial and event[:2] == ("stdout", "flush")
+        )
+        cause = next(
+            i
+            for i, event in enumerate(events)
+            if "factlog use: cannot write the active-KB config" in event[2]
+        )
+        assert partial < flushed < cause
+        assert stderr.getvalue().count(
+            "factlog use: cannot write the active-KB config"
+        ) == 1
+
+    def test_failure_keeps_environment_override_and_reach_guidance(
+        self, tmp_path, config_home, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+        env_root = tmp_path / "environment"
+        env_root.mkdir()
+        monkeypatch.setenv("FACTLOG_ROOT", str(env_root))
+        write_pointer(config_home, tmp_path / "old", lang="ko")
+        newkb = tmp_path / "newkb"
+        (newkb / "sources").mkdir(parents=True)
+        monkeypatch.setattr(
+            factlog_config,
+            "write_lang",
+            lambda _language: (_ for _ in ()).throw(OSError(28, "disk full")),
+        )
+
+        assert cli.main(["use", str(newkb), "--lang", "en"]) == 1
+        out = capsys.readouterr().out
+
+        assert pointer(config_home) == resolved(newkb)
+        assert "$FACTLOG_ROOT" in out
+        assert "outranks" in out
+        assert "a flagless command" in out
+        assert str(env_root.resolve()) in out
+
+    def test_root_failure_never_attempts_language_write(
+        self, tmp_path, config_home, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+        newkb = tmp_path / "newkb"
+        (newkb / "sources").mkdir(parents=True)
+        lang_calls = []
+
+        monkeypatch.setattr(
+            factlog_config,
+            "write_root",
+            lambda _target: (_ for _ in ()).throw(OSError(28, "disk full")),
+        )
+        monkeypatch.setattr(
+            factlog_config, "write_lang", lambda language: lang_calls.append(language)
+        )
+
+        assert cli.main(["use", str(newkb), "--lang", "en"]) == 1
+        captured = capsys.readouterr()
+        assert lang_calls == []
+        assert "active KB set to" not in captured.out
+        assert "language update failed" not in captured.out
+
+    def test_invalid_language_calls_neither_writer(
+        self, tmp_path, config_home, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+        newkb = tmp_path / "newkb"
+        (newkb / "sources").mkdir(parents=True)
+        calls = []
+        monkeypatch.setattr(
+            factlog_config, "write_root", lambda target: calls.append(("root", target))
+        )
+        monkeypatch.setattr(
+            factlog_config, "write_lang", lambda lang: calls.append(("lang", lang))
+        )
+
+        assert cli.main(["use", str(newkb), "--lang", "x" * 33]) == 2
+        capsys.readouterr()
+        assert calls == []
+
+    @pytest.mark.parametrize(
+        ("language", "expected_line"),
+        [
+            pytest.param("en", "  narration language set to en\n", id="set"),
+            pytest.param("", "  narration language cleared\n", id="clear"),
+            pytest.param(None, "", id="omitted"),
+        ],
+    )
+    def test_success_output_is_unchanged(
+        self, language, expected_line, tmp_path, config_home, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+        monkeypatch.delenv("FACTLOG_ROOT", raising=False)
+        newkb = tmp_path / "newkb"
+        (newkb / "sources").mkdir(parents=True)
+        argv = ["use", str(newkb)]
+        if language is not None:
+            argv += ["--lang", language]
+
+        assert cli.main(argv) == 0
+        captured = capsys.readouterr()
+
+        assert captured.err == ""
+        assert captured.out == (
+            f"factlog use: active KB set to {newkb.resolve()}\n"
+            f"{expected_line}"
+            f"  config: {config_file(config_home)}\n"
+        )
 
 
 class TestImplicitTargetNeverLandsInTheCurrentDirectory:

@@ -1397,8 +1397,51 @@ def _apply_lang(normalized: str, command: str) -> str:
     return "narration language cleared"
 
 
+def _render_use_result(
+    target,
+    *,
+    phrase: str | None,
+    replacing: _Unreadable | None,
+    failed_lang: str | None = None,
+) -> None:
+    """Report the config state left by ``use``.
+
+    The failure form is needed because root and language are two separate atomic
+    writes.  If the second one fails, the first one is still durable and must not
+    be hidden by the exception.  Successful wording and ordering stay here too so
+    that adding the partial-success path cannot make the ordinary command drift.
+    """
+    note = (
+        ""
+        if (target / "sources").is_dir()
+        else "  (warning: no sources/ — not a factlog KB yet; run 'factlog init')"
+    )
+    print(f"factlog use: active KB set to {target}{note}")
+    if failed_lang is not None:
+        operation = f"setting {failed_lang!r}" if failed_lang else "clearing"
+        recorded = factlog_config.read_lang()
+        state = (
+            "config currently records no narration language"
+            if recorded is None
+            else f"config currently records {recorded!r} as the narration language"
+        )
+        # repr() keeps even a manually-authored value containing newlines or
+        # terminal controls on this one diagnostic line.
+        print(f"  narration language update failed while {operation}; {state}")
+    elif phrase is not None:
+        print(f"  {phrase}")
+    if replacing is not None:
+        print(f"  replaced an unreadable config ({replacing.lost})")
+    print(f"  config: {factlog_config.config_path()}")
+    for extra in (_env_override_note(), _reach_note(target)):
+        if extra:
+            print(f"  {extra}")
+
+
 def cmd_use(args: argparse.Namespace) -> int:
     from pathlib import Path
+
+    from factlog.common import FactlogError
 
     target = Path(args.target).expanduser().resolve()
     if not target.is_dir():
@@ -1442,21 +1485,21 @@ def cmd_use(args: argparse.Namespace) -> int:
     # never silently drops a configured narration language.
     phrase: str | None = None
     if normalized is not None:
-        phrase = _apply_lang(normalized, "factlog use")
-    note = "" if (target / "sources").is_dir() else "  (warning: no sources/ — not a factlog KB yet; run 'factlog init')"
-    print(f"factlog use: active KB set to {target}{note}")
-    if phrase is not None:
-        print(f"  {phrase}")
-    if replacing is not None:
-        print(f"  replaced an unreadable config ({replacing.lost})")
-    print(f"  config: {factlog_config.config_path()}")
+        try:
+            phrase = _apply_lang(normalized, "factlog use")
+        except FactlogError:
+            _render_use_result(
+                target, phrase=None, replacing=replacing, failed_lang=normalized
+            )
+            # stdout may be pipe-buffered while main's error goes to an
+            # unbuffered stderr.  Make the completed root change visible first.
+            sys.stdout.flush()
+            raise
     # `use` is where the hint from `init`/`setup` sends people, so it owes the same
     # disclosure they do: it writes rank 3, and rank 2 outranks it. Without this,
     # "active KB set to X" was followed by `where --porcelain` printing something
     # else — the exact contradiction fixed in `init` and in `setup`'s closing line.
-    for extra in (_env_override_note(), _reach_note(target)):
-        if extra:
-            print(f"  {extra}")
+    _render_use_result(target, phrase=phrase, replacing=replacing)
     return 0
 
 
